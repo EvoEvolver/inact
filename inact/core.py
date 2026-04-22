@@ -11,12 +11,13 @@ Provides:
 
 from __future__ import annotations
 
+import fnmatch
 import json
 import os
 import re
 from typing import Callable
 
-from flask import Flask, request
+from flask import Flask, request, send_file
 
 from .handlers import FileHandler
 from .pages import normalize_md, normalize_toml
@@ -45,6 +46,7 @@ class Inact:
         self._help: dict[str, Callable[[], str] | str] = {}
         self._mounts: dict[str, str] = {}  # prefix -> abs folder
         self._mount_handlers: dict[str, dict[str, FileHandler]] = {}  # prefix -> {ext -> handler}
+        self._mount_editable: dict[str, bool | list[str]] = {}  # prefix -> editable spec
         self._mcp_mounts: dict[str, str] = {}  # prefix -> MCP server label
         self._a2a_mounts: dict[str, str] = {}  # prefix -> A2A agent URL
 
@@ -75,22 +77,32 @@ class Inact:
             return fn
         return decorator
 
-    def mount(self, prefix: str, folder: str, handlers: list[FileHandler] | None = None):
+    def mount(
+        self,
+        prefix: str,
+        folder: str,
+        handlers: list[FileHandler] | None = None,
+        editable: bool | list[str] = False,
+    ):
         """
         Mount *folder* under *prefix*.
 
         Provides:
-          GET {prefix}/.ls                   list root
-          GET {prefix}/<subpath>/.ls         list subdirectory
-          GET {prefix}/.grep?q=<term>        grep root
-          GET {prefix}/<subpath>/.grep?q=…   grep subdirectory
-          GET {prefix}/<file>                serve file (plain text)
-          GET {prefix}/<file>/.info          file metadata + page count
-          GET {prefix}/<file>/p/<N>          page N of a paginated file (handler required)
+          GET  {prefix}/.ls                   list root
+          GET  {prefix}/<subpath>/.ls         list subdirectory
+          GET  {prefix}/.grep?q=<term>        grep root
+          GET  {prefix}/<subpath>/.grep?q=…   grep subdirectory
+          GET  {prefix}/<file>                serve file (plain text / handler output)
+          GET  {prefix}/<file>/.info          file metadata + page count
+          GET  {prefix}/<file>/.download      download original raw file
+          GET  {prefix}/<file>/p/<N>          page N of a paginated file (handler required)
+          GET  {prefix}/<file>/.replace       show replace info (editable files only)
+          POST {prefix}/<file>/.replace       overwrite file content (editable files only)
 
-        Pass *handlers* to inject custom renderers for specific file types, e.g.::
-
-            app.mount("/docs", "./docs", handlers=[PDFHandler()])
+        *handlers* — list of :class:`FileHandler` instances for custom file rendering.
+        *editable* — ``True`` makes all files writable; a list of glob patterns
+        (e.g. ``["*.md", "notes/"]``) restricts editability to matching paths.
+        Directory patterns must end with ``/`` and match recursively.
         """
         prefix = prefix.rstrip("/")
         abs_folder = os.path.abspath(folder)
@@ -103,11 +115,14 @@ class Inact:
                     h_dict[ext.lower() if ext.startswith(".") else "." + ext.lower()] = handler
             self._mount_handlers[prefix] = h_dict
 
+        if editable is not False:
+            self._mount_editable[prefix] = editable
+
         app = self.app
         ep = "_inact_mount_" + prefix.replace("/", "__")
 
-        @app.route(prefix + "/", defaults={"subpath": ""}, endpoint=ep + "_root")
-        @app.route(prefix + "/<path:subpath>", endpoint=ep)
+        @app.route(prefix + "/", defaults={"subpath": ""}, endpoint=ep + "_root", methods=["GET", "POST"])
+        @app.route(prefix + "/<path:subpath>", endpoint=ep, methods=["GET", "POST"])
         def _mount_handler(subpath: str, _prefix=prefix, _folder=abs_folder):
             return self._handle_mount(_prefix, _folder, subpath)
 
@@ -352,8 +367,11 @@ class Inact:
             lines.append("\nMounted directories:\n")
             for p in mount_children:
                 lines.append(f"  {p}/  (folder: {self._mounts[p]})\n")
-                lines.append(f"    {p}/.ls          list files\n")
-                lines.append(f"    {p}/.grep?q=…    search files\n")
+                lines.append(f"    {p}/.ls               list files\n")
+                lines.append(f"    {p}/.grep?q=…         search files\n")
+                lines.append(f"    {p}/<file>/.download  download raw file\n")
+                if p in self._mount_editable:
+                    lines.append(f"    {p}/<file>/.replace   overwrite file (POST)\n")
         if mcp_children:
             lines.append("\nMounted MCP servers:\n")
             for p in mcp_children:
@@ -554,6 +572,18 @@ class Inact:
             file_sub = subpath[:-6].rstrip("/")
             return self._serve_info(prefix, folder, file_sub)
 
+        # Raw file download
+        if subpath.endswith("/.download"):
+            file_sub = subpath[:-10].rstrip("/")
+            return self._serve_download(prefix, folder, file_sub)
+
+        # Editable file replace: GET shows info, POST writes new content
+        if subpath.endswith("/.replace"):
+            file_sub = subpath[:-9].rstrip("/")
+            if request.method == "POST":
+                return self._serve_replace(prefix, folder, file_sub)
+            return self._serve_replace_info(prefix, folder, file_sub)
+
         # Pagination: <file>/p/<N> — only activates when a handler is registered
         m = _PAGE_RE.match(subpath)
         if m:
@@ -574,7 +604,11 @@ class Inact:
         entries = _list_dir(folder, dir_path, prefix, subpath)
         handlers = self._mount_handlers.get(prefix, {})
         url_base = prefix + ("/" + subpath if subpath else "")
-        lines = [f"# Directory listing: {url_base}\n", f"# {len(entries)} entries\n\n"]
+        lines = [
+            f"# Directory listing: {url_base}\n",
+            f"# {len(entries)} entries\n",
+            f"# tip: append /.download to any file path to get the raw file\n\n",
+        ]
         for e in entries:
             lines.append("[[entries]]\n")
             lines.append(f'name = {toml_str(e["name"])}\n')
@@ -587,6 +621,12 @@ class Inact:
                 if ext in handlers:
                     lines.append(f'handler = {toml_str(type(handlers[ext]).__name__)}\n')
                     lines.append(f'info = {toml_str(e["path"] + "/.info")}\n')
+                rel_file = os.path.relpath(
+                    os.path.join(dir_path, e["name"]), folder
+                )
+                if self._is_editable(prefix, rel_file):
+                    lines.append(f'editable = true\n')
+                    lines.append(f'replace = {toml_str(e["path"] + "/.replace")}\n')
             lines.append("\n")
         return text_response("".join(lines))
 
@@ -674,6 +714,7 @@ class Inact:
             f"# File info: {virtual_path}\n\n",
             f"path = {toml_str(virtual_path)}\n",
             f"size = {stat.st_size}\n",
+            f"download = {toml_str(virtual_path + '/.download')}\n",
         ]
         if handler is not None:
             lines.append(f"handler = {toml_str(type(handler).__name__)}\n")
@@ -685,7 +726,91 @@ class Inact:
                     lines.append(f"first_page = {toml_str(virtual_path + '/p/1')}\n")
             except Exception:
                 pass
+        if self._is_editable(prefix, subpath):
+            lines.append(f"editable = true\n")
+            lines.append(f"replace = {toml_str(virtual_path + '/.replace')}\n")
         return text_response("".join(lines))
+
+    def _is_editable(self, prefix: str, subpath: str) -> bool:
+        spec = self._mount_editable.get(prefix, False)
+        if spec is False:
+            return False
+        if spec is True:
+            return True
+        for pattern in spec:
+            if pattern.endswith("/"):
+                # directory prefix — match recursively
+                if subpath == pattern.rstrip("/") or subpath.startswith(pattern):
+                    return True
+            elif fnmatch.fnmatch(subpath, pattern):
+                return True
+        return False
+
+    def _serve_download(self, prefix: str, folder: str, subpath: str):
+        if not subpath:
+            return text_response("ERROR 400: /.download requires a file path\n", 400)
+        safe = os.path.normpath(os.path.join(folder, subpath))
+        if not safe.startswith(folder):
+            return text_response("ERROR 403: Path traversal denied\n", 403)
+        if not os.path.isfile(safe):
+            return text_response(f"ERROR 404: File not found: {subpath}\n", 404)
+        return send_file(safe, as_attachment=True, download_name=os.path.basename(safe))
+
+    def _serve_replace_info(self, prefix: str, folder: str, subpath: str) -> tuple:
+        if not subpath:
+            return text_response("ERROR 400: /.replace requires a file path\n", 400)
+        safe = os.path.normpath(os.path.join(folder, subpath))
+        if not safe.startswith(folder):
+            return text_response("ERROR 403: Path traversal denied\n", 403)
+        if not os.path.isfile(safe):
+            return text_response(f"ERROR 404: File not found: {subpath}\n", 404)
+
+        virtual_path = prefix + "/" + subpath
+        editable = self._is_editable(prefix, subpath)
+        stat = os.stat(safe)
+
+        lines = [
+            f"# /.replace — {virtual_path}\n\n",
+            f"path = {toml_str(virtual_path)}\n",
+            f"size = {stat.st_size}\n",
+            f"editable = {str(editable).lower()}\n",
+        ]
+        if editable:
+            lines += [
+                f"\n# POST the new file content to this URL to overwrite the file.\n",
+                f"# Example:\n",
+                f"#   curl -X POST {virtual_path}/.replace \\\n",
+                f"#        -H 'Content-Type: text/plain' \\\n",
+                f"#        --data-binary @local_file.txt\n",
+            ]
+        else:
+            lines.append("\n# This file is not marked as editable in the mount configuration.\n")
+        return text_response("".join(lines))
+
+    def _serve_replace(self, prefix: str, folder: str, subpath: str) -> tuple:
+        if not subpath:
+            return text_response("ERROR 400: /.replace requires a file path\n", 400)
+        if not self._is_editable(prefix, subpath):
+            return text_response(
+                f"ERROR 403: {prefix}/{subpath} is not marked as editable\n", 403
+            )
+        safe = os.path.normpath(os.path.join(folder, subpath))
+        if not safe.startswith(folder):
+            return text_response("ERROR 403: Path traversal denied\n", 403)
+        if not os.path.isfile(safe):
+            return text_response(f"ERROR 404: File not found: {subpath}\n", 404)
+
+        data = request.get_data()
+        try:
+            with open(safe, "wb") as f:
+                f.write(data)
+        except OSError as e:
+            return text_response(f"ERROR 500: {e}\n", 500)
+
+        virtual_path = prefix + "/" + subpath
+        return text_response(
+            f"OK\npath = {toml_str(virtual_path)}\nbytes_written = {len(data)}\n"
+        )
 
 
 # ---------------------------------------------------------------------------

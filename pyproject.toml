@@ -1,11 +1,26 @@
 [project]
 name = "inact"
 version = "0.1.0"
-description = "AI-oriented web framework built on Flask"
-requires-python = ">=3.13"
+description = "AI-first zero-JS frontend framework"
+readme = "README.md"
+license = { file = "LICENSE" }
+authors = [{ name = "Zijian Zhang", email = "doomspec@outlook.com" }]
+requires-python = ">=3.11"
 dependencies = [
-    "flask>=3.1.3",
-    "markdown>=3.10.2",
-    "pyyaml>=6.0.3",
-    "tomli-w>=1.2.0",
+    "flask>=3.0",
+    "markdown>=3.5",
+    "pyyaml>=6.0",
+    "tomli-w>=1.0",
+]
+
+[project.urls]
+Repository = "https://github.com/EvoEvolver/inact"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[dependency-groups]
+dev = [
+    "hatchling>=1.29.0",
 ]

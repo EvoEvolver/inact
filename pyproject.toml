@@ -1,0 +1,11 @@
+[project]
+name = "inact"
+version = "0.1.0"
+description = "AI-oriented web framework built on Flask"
+requires-python = ">=3.13"
+dependencies = [
+    "flask>=3.1.3",
+    "markdown>=3.10.2",
+    "pyyaml>=6.0.3",
+    "tomli-w>=1.2.0",
+]

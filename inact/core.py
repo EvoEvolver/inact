@@ -47,8 +47,9 @@ class Inact:
         self._mounts: dict[str, str] = {}  # prefix -> abs folder
         self._mount_handlers: dict[str, dict[str, FileHandler]] = {}  # prefix -> {ext -> handler}
         self._mount_editable: dict[str, bool | list[str]] = {}  # prefix -> editable spec
-        self._mcp_mounts: dict[str, str] = {}  # prefix -> MCP server label
-        self._a2a_mounts: dict[str, str] = {}  # prefix -> A2A agent URL
+        self._mcp_mounts: dict[str, str] = {}     # prefix -> MCP server label
+        self._a2a_mounts: dict[str, str] = {}     # prefix -> A2A agent URL
+        self._website_mounts: dict[str, str] = {} # prefix -> base URL
 
         self._register_builtins()
 
@@ -204,12 +205,148 @@ class Inact:
         from .a2a import A2AClient
         self._attach_a2a(prefix, A2AClient(agent_url), label=agent_url)
 
+    def mount_website(self, prefix: str, base_url: str) -> None:
+        """
+        Mount a remote website at *prefix*.
+
+        All GET requests are proxied to the remote site and returned as
+        plain text (HTML is stripped) so AI agents can read them directly.
+        Appending ``/.links`` to any path lists the hyperlinks on that page.
+
+        The ``/_human/<prefix>/…`` view returns the original HTML so
+        browsers can render the page normally.
+
+        Registers:
+          GET  {prefix}/                 — fetch base URL as plain text
+          GET  {prefix}/<path>           — fetch sub-page as plain text
+          GET  {prefix}/<path>/.links    — list hyperlinks on a page (TOML)
+
+        Example::
+
+            app.mount_website("/docs", "https://docs.example.com")
+        """
+        from .website import WebsiteProxy
+        proxy = WebsiteProxy(base_url)
+        prefix = "/" + prefix.strip("/")
+        self._website_mounts[prefix] = base_url
+        ep = "_inact_web_" + prefix.replace("/", "__")
+
+        def _handler(subpath: str = ""):
+            if subpath == ".links" or subpath.endswith("/.links"):
+                page_sub = subpath[:-6].rstrip("/") if subpath.endswith("/.links") else ""
+                return _serve_links(proxy, prefix, base_url, page_sub)
+            params = dict(request.args) or None
+            try:
+                title, text, _ = proxy.fetch_text(subpath, params)
+            except Exception as exc:
+                return text_response(f"ERROR 502: {exc}\n", 502)
+            page_url = base_url.rstrip("/") + ("/" + subpath.lstrip("/") if subpath else "/")
+            header = f"# {title}\n# url: {page_url}\n\n" if title else f"# url: {page_url}\n\n"
+            return text_response(header + text)
+
+        self.app.add_url_rule(
+            prefix + "/", endpoint=ep + "_root",
+            view_func=lambda: _handler(""), defaults={},
+        )
+        self.app.add_url_rule(
+            prefix + "/<path:subpath>", endpoint=ep, view_func=_handler,
+        )
+
     def route(self, path: str, **kwargs):
         """Pass-through to Flask's @app.route."""
         return self.app.route(path, **kwargs)
 
     def run(self, **kwargs):
         self.app.run(**kwargs)
+
+    def to_mcp(self, base_url: str, name: str | None = None):
+        """
+        Export this inact app as an MCP server with a single ``fetch`` tool.
+
+        The server description auto-lists every route and mount so the agent
+        knows what paths exist before making any requests.
+
+        Requires: pip install mcp httpx
+
+        Usage::
+
+            mcp = app.to_mcp("http://localhost:5000")
+            mcp.run()                          # stdio (Claude Desktop, etc.)
+            mcp.run(transport="streamable-http", port=8080)
+        """
+        try:
+            from mcp.server.fastmcp import FastMCP
+        except ImportError:
+            raise RuntimeError("mcp package is required: pip install mcp")
+
+        import httpx
+
+        base = base_url.rstrip("/")
+        mcp_server = FastMCP(name or self.app.name, description=self._mcp_description(base))
+
+        @mcp_server.tool()
+        def fetch(path: str, method: str = "GET", body: str = "") -> str:
+            """
+            Access any route on this inact server.
+
+            path: URL path starting with / — may include query string.
+                  Examples: '/docs/.ls', '/docs/.grep?q=python',
+                  '/docs/README.md', '/docs/README.md/.info'
+            method: HTTP method. Use 'GET' to read, 'POST' to write
+                    (e.g. /.replace endpoints).
+            body: Request body for POST (plain text content to write).
+            """
+            url = base + "/" + path.lstrip("/")
+            with httpx.Client(timeout=30) as client:
+                if method.upper() == "POST":
+                    resp = client.post(url, content=body.encode())
+                else:
+                    resp = client.get(url)
+                return resp.text
+
+        return mcp_server
+
+    def _mcp_description(self, base_url: str) -> str:
+        lines = [
+            f"Inact server at {base_url} — an AI-first HTTP API.\n",
+            "All responses are plain text, designed for direct AI consumption.\n\n",
+            "Use the `fetch` tool to access any route. You can also call curl directly:\n\n",
+            f"  curl {base_url}/.help\n\n",
+        ]
+
+        if self._routes:
+            lines.append("## Routes\n\n")
+            for path in sorted(self._routes):
+                kind, _ = self._routes[path]
+                lines.append(f"  GET {path}  [{kind}]\n")
+            lines.append("\n")
+
+        if self._mounts:
+            lines.append("## Mounted folders\n\n")
+            for prefix in sorted(self._mounts):
+                lines.append(f"  {prefix}/\n")
+                lines.append(f"    GET  {prefix}/.ls                list files\n")
+                lines.append(f"    GET  {prefix}/.grep?q=<term>     search content\n")
+                lines.append(f"    GET  {prefix}/<file>             read (plain text)\n")
+                lines.append(f"    GET  {prefix}/<file>/.info       metadata + page count\n")
+                lines.append(f"    GET  {prefix}/<file>/.download   download raw bytes\n")
+                if prefix in self._mount_handlers:
+                    exts = ", ".join(sorted(self._mount_handlers[prefix]))
+                    lines.append(f"    GET  {prefix}/<file>/p/<N>      paginate ({exts})\n")
+                if prefix in self._mount_editable:
+                    lines.append(f"    POST {prefix}/<file>/.replace   overwrite file\n")
+                lines.append("\n")
+
+        if self._routes or self._mounts:
+            lines.append("## curl examples\n\n")
+            for path in sorted(self._routes)[:2]:
+                lines.append(f"  curl {base_url}{path}\n")
+            for prefix in sorted(self._mounts)[:1]:
+                lines.append(f"  curl {base_url}{prefix}/.ls\n")
+                lines.append(f"  curl '{base_url}{prefix}/.grep?q=keyword'\n")
+                lines.append(f"  curl {base_url}{prefix}/somefile.md\n")
+
+        return "".join(lines)
 
     # -----------------------------------------------------------------------
     # Built-in global routes
@@ -312,6 +449,25 @@ class Inact:
                         return render_toml(content, path)
                     return render_plain(content, path)
 
+        # Proxied website — return the raw HTML so the browser renders it natively
+        for prefix, base_url in self._website_mounts.items():
+            if path == prefix or path.startswith(prefix + "/"):
+                subpath = path[len(prefix):].lstrip("/")
+                # /.links in human view → show the links page as plain text
+                if subpath == ".links" or subpath.endswith("/.links"):
+                    page_sub = subpath[:-6].rstrip("/") if subpath.endswith("/.links") else ""
+                    from .website import WebsiteProxy
+                    return _serve_links(WebsiteProxy(base_url), prefix, base_url, page_sub)
+                params = dict(request.args) or None
+                try:
+                    from .website import WebsiteProxy
+                    content_type, body = WebsiteProxy(base_url).fetch_raw(subpath, params)
+                except Exception as exc:
+                    return text_response(f"ERROR 502: {exc}\n", 502)
+                if "text/html" in content_type:
+                    return body, 200, {"Content-Type": "text/html; charset=utf-8"}
+                return render_plain(body, path)
+
         return text_response(f"ERROR 404: No human view for {path}\n", 404)
 
     # -----------------------------------------------------------------------
@@ -357,6 +513,9 @@ class Inact:
         a2a_children = sorted(
             p for p in self._a2a_mounts if p.startswith(prefix + "/") or p == prefix
         )
+        web_children = sorted(
+            p for p in self._website_mounts if p.startswith(prefix + "/") or p == prefix
+        )
         lines = [f"# Help: {prefix or '/'}\n\n"]
         if children:
             lines.append("Routes:\n")
@@ -384,10 +543,16 @@ class Inact:
             lines.append("\nMounted A2A agents:\n")
             for p in a2a_children:
                 lines.append(f"  {p}/  (url: {self._a2a_mounts[p]})\n")
+                lines.append(f"    {p}/               help & overview\n")
                 lines.append(f"    {p}/.card          agent card (TOML)\n")
-                lines.append(f"    {p}/chat           send message (POST, JSON: "
-                             f'{{"message":"...", "context_id":"<optional>"}})\n')
-        if not children and not mount_children and not mcp_children and not a2a_children:
+                lines.append(f"    {p}/chat           list conversations (GET) / send message (POST)\n")
+        if web_children:
+            lines.append("\nMounted websites:\n")
+            for p in web_children:
+                lines.append(f"  {p}/  (url: {self._website_mounts[p]})\n")
+                lines.append(f"    {p}/<path>           fetch page as plain text\n")
+                lines.append(f"    {p}/<path>/.links    list hyperlinks on page (TOML)\n")
+        if not children and not mount_children and not mcp_children and not a2a_children and not web_children:
             lines.append("No help registered for this path.\n")
         return "".join(lines)
 
@@ -491,7 +656,7 @@ class Inact:
     # -----------------------------------------------------------------------
 
     def _attach_a2a(self, prefix: str, client, label: str) -> None:
-        """Register the .card and /chat routes for an A2A agent."""
+        """Register routes for an A2A agent."""
         import uuid as _uuid
         from .a2a import _strip_none
         from .pages import dict_to_toml
@@ -499,6 +664,40 @@ class Inact:
         prefix = "/" + prefix.strip("/")
         self._a2a_mounts[prefix] = label
         ep = "_inact_a2a_" + prefix.replace("/", "__")
+
+        # In-memory conversation log: context_id -> [{"role": ..., "text": ...}, ...]
+        _history: dict[str, list[dict]] = {}
+
+        def _help():
+            try:
+                card = client.card()
+            except Exception:
+                card = {}
+            name = card.get("name", label)
+            desc = card.get("description", "")
+            skills = card.get("skills", [])
+            lines = [f"# {name}\n"]
+            if desc:
+                lines.append(f"\n{desc}\n")
+            lines.append(f"\n## Endpoints\n\n")
+            lines.append(f"  GET  {prefix}/              this page\n")
+            lines.append(f"  GET  {prefix}/.card         agent card (TOML)\n")
+            lines.append(f"  GET  {prefix}/chat          list conversations\n")
+            lines.append(f"  GET  {prefix}/chat?context_id=<uuid>  read a conversation\n")
+            lines.append(f"  POST {prefix}/chat          send a message\n")
+            lines.append(f"\n## Sending a message\n\n")
+            lines.append(f"  POST {prefix}/chat\n")
+            lines.append(f'  Body: {{"message": "hello", "context_id": "<optional>"}}\n\n')
+            lines.append("The response includes a # context_id comment. Pass it back\n")
+            lines.append("in subsequent requests to continue the same conversation.\n")
+            if skills:
+                lines.append("\n## Skills\n\n")
+                for s in skills:
+                    lines.append(f"  {s.get('name', s.get('id', ''))}")
+                    if s.get("description"):
+                        lines.append(f" — {s['description']}")
+                    lines.append("\n")
+            return text_response("".join(lines))
 
         def _card():
             try:
@@ -513,6 +712,26 @@ class Inact:
             return text_response(body)
 
         def _chat():
+            if request.method == "GET":
+                context_id = request.args.get("context_id", "").strip()
+                if context_id:
+                    msgs = _history.get(context_id, [])
+                    lines = [f"# Conversation: {context_id}\n",
+                             f"# {len(msgs)} message(s)\n\n"]
+                    for m in msgs:
+                        lines.append(f"[{m['role']}] {m['text']}\n\n")
+                    return text_response("".join(lines))
+                # List all conversations
+                lines = [f"# Conversations at {prefix}/chat\n",
+                         f"# {len(_history)} conversation(s)\n\n"]
+                for ctx_id, msgs in _history.items():
+                    lines.append(f"[[conversations]]\n")
+                    lines.append(f"context_id = {toml_str(ctx_id)}\n")
+                    lines.append(f"messages = {len(msgs)}\n")
+                    lines.append(f"url = {toml_str(f'{prefix}/chat?context_id={ctx_id}')}\n\n")
+                return text_response("".join(lines))
+
+            # POST — send a message
             body = request.get_json(force=True, silent=True) or {}
             message = (body.get("message") or "").strip()
             if not message:
@@ -525,16 +744,25 @@ class Inact:
             context_id = (body.get("context_id") or body.get("contextId") or "").strip()
             if not context_id:
                 context_id = str(_uuid.uuid4())
+
+            _history.setdefault(context_id, []).append({"role": "user", "text": message})
+
             try:
                 reply, context_id = client.send(message, context_id)
             except Exception as exc:
+                _history[context_id].pop()  # remove the user msg we just logged
                 return text_response(f"ERROR 502: {exc}\n", 502)
+
+            _history[context_id].append({"role": "agent", "text": reply})
+
             status = 202 if reply.startswith("[input_required]") else 200
             return text_response(f"# context_id: {context_id}\n\n{reply}\n", status)
 
+        self.app.add_url_rule(prefix + "/",      endpoint=ep + "_help", view_func=_help)
         self.app.add_url_rule(prefix + "/.card", endpoint=ep + "_card", view_func=_card)
         self.app.add_url_rule(
-            prefix + "/chat", endpoint=ep + "_chat", view_func=_chat, methods=["POST"]
+            prefix + "/chat", endpoint=ep + "_chat",
+            view_func=_chat, methods=["GET", "POST"],
         )
 
     # -----------------------------------------------------------------------
@@ -816,6 +1044,23 @@ class Inact:
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+def _serve_links(proxy, prefix: str, base_url: str, page_sub: str) -> tuple:
+    from .utils import text_response, toml_str
+    params = None  # query params not forwarded for .links (avoids import of request here)
+    try:
+        _, _, links = proxy.fetch_text(page_sub, params)
+    except Exception as exc:
+        return text_response(f"ERROR 502: {exc}\n", 502)
+    page_url = base_url.rstrip("/") + ("/" + page_sub.lstrip("/") if page_sub else "/")
+    lines = [f"# Links on: {page_url}\n", f"# {len(links)} link(s)\n\n"]
+    for href, link_text in links:
+        lines.append("[[links]]\n")
+        lines.append(f"url = {toml_str(href)}\n")
+        lines.append(f"text = {toml_str(link_text)}\n")
+        lines.append("\n")
+    return text_response("".join(lines))
+
 
 def _list_dir(folder: str, dir_path: str, prefix: str, subpath: str) -> list[dict]:
     entries = []

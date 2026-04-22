@@ -20,11 +20,15 @@ def root_help():
 INACT EXAMPLE SERVER
 
 Routes:
-  GET /              Homepage (markdown)
-  GET /status        Service status (TOML)
-  GET /api           API overview (markdown)
-  GET /docs/.ls      List documentation files
-  GET /docs/.grep    Search documentation
+  GET  /                  Homepage (markdown)
+  GET  /status            Service status (TOML)
+  GET  /api               API overview (markdown)
+  GET  /docs/.ls          List documentation files
+  GET  /docs/.grep        Search documentation
+
+A2A chatbot (requires chatbot.py running on :5001):
+  GET  /chatbot/.card     Agent card
+  POST /chatbot/chat      Chat — body: {"message": "..."}
 
 Append /_human/ prefix for HTML, /.help suffix for help.
 """
@@ -62,6 +66,13 @@ A Flask toolkit for building AI-oriented websites. Every page is:
     GET /api           API overview
     GET /docs/.ls      Browse documentation
     GET /_human/       HTML version of this page
+
+## A2A Chatbot
+
+Start `chatbot.py` on port 5001, then:
+
+    GET  /chatbot/.card       Agent card
+    POST /chatbot/chat        {"message": "hello"}
 """,
         title="Inact Example",
         description="AI-friendly web server demo",
@@ -129,6 +140,13 @@ def status():
 # ---------------------------------------------------------------------------
 
 app.mount("/docs", os.path.join(os.path.dirname(__file__), "docs"))
+
+
+# ---------------------------------------------------------------------------
+# A2A chatbot (run example/chatbot.py first on port 5001)
+# ---------------------------------------------------------------------------
+
+app.mount_a2a("/chatbot", "http://localhost:5001")
 
 
 # ---------------------------------------------------------------------------

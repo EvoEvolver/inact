@@ -1,5 +1,6 @@
 from .a2a import A2AClient
 from .core import Inact
+from .website import WebsiteProxy
 from .handlers import FileHandler, PDFHandler
 from .mcp import McpClient, StdioMcpClient
 from .pages import MdContent, TomlContent
@@ -11,6 +12,7 @@ __all__ = [
     "FileHandler",
     "McpClient",
     "StdioMcpClient",
+    "WebsiteProxy",
     "PDFHandler",
     "MdContent",
     "TomlContent",

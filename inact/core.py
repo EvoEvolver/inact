@@ -11,14 +11,20 @@ Provides:
 
 from __future__ import annotations
 
+import json
 import os
+import re
 from typing import Callable
 
 from flask import Flask, request
 
+from .handlers import FileHandler
 from .pages import normalize_md, normalize_toml
 from .render import render_markdown, render_toml, render_plain, render_ls
 from .utils import text_response, toml_str
+
+# Matches pagination suffix: <file_subpath>/p/<page_number>
+_PAGE_RE = re.compile(r"^(.+)/p/(\d+)$")
 
 
 # ---------------------------------------------------------------------------
@@ -38,6 +44,8 @@ class Inact:
         self._routes: dict[str, _RouteEntry] = {}
         self._help: dict[str, Callable[[], str] | str] = {}
         self._mounts: dict[str, str] = {}  # prefix -> abs folder
+        self._mount_handlers: dict[str, dict[str, FileHandler]] = {}  # prefix -> {ext -> handler}
+        self._mcp_mounts: dict[str, str] = {}  # prefix -> MCP server URL
 
         self._register_builtins()
 
@@ -66,7 +74,7 @@ class Inact:
             return fn
         return decorator
 
-    def mount(self, prefix: str, folder: str):
+    def mount(self, prefix: str, folder: str, handlers: list[FileHandler] | None = None):
         """
         Mount *folder* under *prefix*.
 
@@ -76,10 +84,23 @@ class Inact:
           GET {prefix}/.grep?q=<term>        grep root
           GET {prefix}/<subpath>/.grep?q=…   grep subdirectory
           GET {prefix}/<file>                serve file (plain text)
+          GET {prefix}/<file>/.info          file metadata + page count
+          GET {prefix}/<file>/p/<N>          page N of a paginated file (handler required)
+
+        Pass *handlers* to inject custom renderers for specific file types, e.g.::
+
+            app.mount("/docs", "./docs", handlers=[PDFHandler()])
         """
         prefix = prefix.rstrip("/")
         abs_folder = os.path.abspath(folder)
         self._mounts[prefix] = abs_folder
+
+        if handlers:
+            h_dict: dict[str, FileHandler] = {}
+            for handler in handlers:
+                for ext in handler.extensions:
+                    h_dict[ext.lower() if ext.startswith(".") else "." + ext.lower()] = handler
+            self._mount_handlers[prefix] = h_dict
 
         app = self.app
         ep = "_inact_mount_" + prefix.replace("/", "__")
@@ -88,6 +109,53 @@ class Inact:
         @app.route(prefix + "/<path:subpath>", endpoint=ep)
         def _mount_handler(subpath: str, _prefix=prefix, _folder=abs_folder):
             return self._handle_mount(_prefix, _folder, subpath)
+
+    def mount_mcp(self, prefix: str, url: str) -> None:
+        """Mount a URL-based MCP server (Streamable HTTP transport) at *prefix*."""
+        from .mcp import McpClient
+        self._attach_mcp(prefix, McpClient(url), label=url)
+
+    def mount_mcp_npx(
+        self,
+        prefix: str,
+        package: str,
+        args: list[str] | None = None,
+        env: dict[str, str] | None = None,
+    ) -> None:
+        """
+        Mount an MCP server launched via ``npx`` at *prefix*.
+
+        The server process is spawned lazily on the first request.
+        ``-y`` is passed so npx auto-installs the package without prompting.
+
+        Example::
+
+            app.mount_mcp_npx("/fs", "@modelcontextprotocol/server-filesystem",
+                              args=["--allowed-paths", "/tmp"])
+        """
+        from .mcp import StdioMcpClient
+        client = StdioMcpClient("npx", ["-y", package, *(args or [])], env)
+        self._attach_mcp(prefix, client, label=f"npx:{package}")
+
+    def mount_mcp_uvx(
+        self,
+        prefix: str,
+        package: str,
+        args: list[str] | None = None,
+        env: dict[str, str] | None = None,
+    ) -> None:
+        """
+        Mount an MCP server launched via ``uvx`` at *prefix*.
+
+        The server process is spawned lazily on the first request.
+
+        Example::
+
+            app.mount_mcp_uvx("/git", "mcp-server-git")
+        """
+        from .mcp import StdioMcpClient
+        client = StdioMcpClient("uvx", [package, *(args or [])], env)
+        self._attach_mcp(prefix, client, label=f"uvx:{package}")
 
     def route(self, path: str, **kwargs):
         """Pass-through to Flask's @app.route."""
@@ -159,15 +227,34 @@ class Inact:
         for prefix, folder in self._mounts.items():
             if path == prefix or path.startswith(prefix + "/"):
                 subpath = path[len(prefix):].lstrip("/")
-                full = os.path.normpath(os.path.join(folder, subpath)) if subpath else folder
+
+                # Resolve pagination in human view: /<file>/p/<N>
+                page = 1
+                display_subpath = subpath
+                m = _PAGE_RE.match(subpath)
+                if m:
+                    file_sub, pg = m.group(1), int(m.group(2))
+                    _, ext = os.path.splitext(file_sub.lower())
+                    if ext in self._mount_handlers.get(prefix, {}):
+                        display_subpath = file_sub
+                        page = pg
+
+                full = os.path.normpath(os.path.join(folder, display_subpath)) if display_subpath else folder
                 if not full.startswith(folder):
                     return text_response("ERROR 403: Forbidden\n", 403)
 
                 if os.path.isdir(full):
-                    entries = _list_dir(folder, full, prefix, subpath)
-                    return render_ls(entries, path, prefix + ("/" + subpath if subpath else ""))
+                    entries = _list_dir(folder, full, prefix, display_subpath)
+                    return render_ls(entries, path, prefix + ("/" + display_subpath if display_subpath else ""))
 
                 if os.path.isfile(full):
+                    _, ext = os.path.splitext(display_subpath.lower())
+                    handler = self._mount_handlers.get(prefix, {}).get(ext)
+                    if handler is not None:
+                        content, status = handler.serve(full, prefix + "/" + display_subpath, page)
+                        if status != 200:
+                            return text_response(f"ERROR {status}: {content}\n", status)
+                        return render_plain(content, path)
                     try:
                         content = open(full, encoding="utf-8").read()
                     except Exception as e:
@@ -217,6 +304,9 @@ class Inact:
         mount_children = sorted(
             p for p in self._mounts if p.startswith(prefix + "/") or p == prefix
         )
+        mcp_children = sorted(
+            p for p in self._mcp_mounts if p.startswith(prefix + "/") or p == prefix
+        )
         lines = [f"# Help: {prefix or '/'}\n\n"]
         if children:
             lines.append("Routes:\n")
@@ -229,9 +319,112 @@ class Inact:
                 lines.append(f"  {p}/  (folder: {self._mounts[p]})\n")
                 lines.append(f"    {p}/.ls          list files\n")
                 lines.append(f"    {p}/.grep?q=…    search files\n")
-        if not children and not mount_children:
+        if mcp_children:
+            lines.append("\nMounted MCP servers:\n")
+            for p in mcp_children:
+                lines.append(f"  {p}/  (url: {self._mcp_mounts[p]})\n")
+                lines.append(f"    {p}/.tools              list tools\n")
+                lines.append(f"    {p}/.resources          list resources\n")
+                lines.append(f"    {p}/call/<name>         call a tool (POST, JSON body)\n")
+                lines.append(f"    {p}/resource?uri=…      read a resource\n")
+        if not children and not mount_children and not mcp_children:
             lines.append("No help registered for this path.\n")
         return "".join(lines)
+
+    # -----------------------------------------------------------------------
+    # MCP route factory (shared by all three mount_mcp* methods)
+    # -----------------------------------------------------------------------
+
+    def _attach_mcp(self, prefix: str, client, label: str) -> None:
+        """Register the four MCP proxy routes for *client* under *prefix*."""
+        prefix = "/" + prefix.strip("/")
+        self._mcp_mounts[prefix] = label
+        ep = "_inact_mcp_" + prefix.replace("/", "__")
+
+        def _tools():
+            try:
+                tools = client.list_tools()
+            except Exception as exc:
+                return text_response(f"ERROR 502: {exc}\n", 502)
+            lines = [f"# {len(tools)} tool(s) from {label}\n\n"]
+            for t in tools:
+                lines.append("[[tools]]\n")
+                lines.append(f"name = {toml_str(t['name'])}\n")
+                lines.append(f"description = {toml_str(t.get('description', ''))}\n")
+                call_url = prefix + "/call/" + t["name"]
+                lines.append(f"call = {toml_str(call_url)}\n")
+                schema = t.get("inputSchema")
+                if schema:
+                    lines.append(f"inputSchema = {toml_str(json.dumps(schema))}\n")
+                lines.append("\n")
+            return text_response("".join(lines))
+
+        def _call(tool_name):
+            try:
+                arguments = request.get_json(force=True, silent=True) or {}
+                content = client.call_tool(tool_name, arguments)
+            except Exception as exc:
+                return text_response(f"ERROR 502: {exc}\n", 502)
+            parts = []
+            for item in content:
+                if item.get("type") == "text":
+                    parts.append(item.get("text", ""))
+                elif item.get("type") == "image":
+                    parts.append(f"[image/{item.get('mimeType', 'unknown')}]")
+                else:
+                    parts.append(json.dumps(item))
+            return text_response("\n".join(parts))
+
+        def _resources():
+            try:
+                resources = client.list_resources()
+            except Exception as exc:
+                return text_response(f"ERROR 502: {exc}\n", 502)
+            lines = [f"# {len(resources)} resource(s) from {label}\n\n"]
+            for r in resources:
+                lines.append("[[resources]]\n")
+                lines.append(f"uri = {toml_str(r['uri'])}\n")
+                lines.append(f"name = {toml_str(r.get('name', r['uri']))}\n")
+                if "description" in r:
+                    lines.append(f"description = {toml_str(r['description'])}\n")
+                if "mimeType" in r:
+                    lines.append(f"mimeType = {toml_str(r['mimeType'])}\n")
+                read_url = prefix + "/resource?uri=" + r["uri"]
+                lines.append(f"read = {toml_str(read_url)}\n")
+                lines.append("\n")
+            return text_response("".join(lines))
+
+        def _resource():
+            uri = request.args.get("uri", "").strip()
+            if not uri:
+                return text_response(
+                    f"ERROR 400: ?uri= required\nUsage: GET {prefix}/resource?uri=<uri>\n", 400
+                )
+            try:
+                contents = client.read_resource(uri)
+            except Exception as exc:
+                return text_response(f"ERROR 502: {exc}\n", 502)
+            parts = []
+            for item in contents:
+                if item.get("type") == "text":
+                    parts.append(item.get("text", ""))
+                elif item.get("type") == "blob":
+                    parts.append(f"[binary/{item.get('mimeType', 'application/octet-stream')}]")
+                else:
+                    parts.append(json.dumps(item))
+            return text_response("\n".join(parts))
+
+        self.app.add_url_rule(prefix + "/.tools", endpoint=ep + "_tools", view_func=_tools)
+        self.app.add_url_rule(
+            prefix + "/call/<tool_name>", endpoint=ep + "_call",
+            view_func=_call, methods=["POST"],
+        )
+        self.app.add_url_rule(
+            prefix + "/.resources", endpoint=ep + "_resources", view_func=_resources
+        )
+        self.app.add_url_rule(
+            prefix + "/resource", endpoint=ep + "_resource", view_func=_resource
+        )
 
     # -----------------------------------------------------------------------
     # Mount handler
@@ -263,6 +456,19 @@ class Inact:
                 dir_sub = subpath[:-6].rstrip("/")
             return self._serve_grep(prefix, folder, dir_sub, q)
 
+        # File metadata (page count, handler type, etc.)
+        if subpath.endswith("/.info"):
+            file_sub = subpath[:-6].rstrip("/")
+            return self._serve_info(prefix, folder, file_sub)
+
+        # Pagination: <file>/p/<N> — only activates when a handler is registered
+        m = _PAGE_RE.match(subpath)
+        if m:
+            file_sub, page = m.group(1), int(m.group(2))
+            _, ext = os.path.splitext(file_sub.lower())
+            if ext in self._mount_handlers.get(prefix, {}):
+                return self._serve_file(prefix, folder, file_sub, page)
+
         return self._serve_file(prefix, folder, subpath)
 
     def _serve_ls(self, prefix: str, folder: str, subpath: str) -> tuple:
@@ -273,6 +479,7 @@ class Inact:
             return text_response(f"ERROR 404: Not a directory: {subpath}\n", 404)
 
         entries = _list_dir(folder, dir_path, prefix, subpath)
+        handlers = self._mount_handlers.get(prefix, {})
         url_base = prefix + ("/" + subpath if subpath else "")
         lines = [f"# Directory listing: {url_base}\n", f"# {len(entries)} entries\n\n"]
         for e in entries:
@@ -282,6 +489,11 @@ class Inact:
             lines.append(f'path = {toml_str(e["path"])}\n')
             if e.get("size") is not None:
                 lines.append(f'size = {e["size"]}\n')
+            if e["type"] == "file":
+                _, ext = os.path.splitext(e["name"].lower())
+                if ext in handlers:
+                    lines.append(f'handler = {toml_str(type(handlers[ext]).__name__)}\n')
+                    lines.append(f'info = {toml_str(e["path"] + "/.info")}\n')
             lines.append("\n")
         return text_response("".join(lines))
 
@@ -332,17 +544,55 @@ class Inact:
             lines.append("\n")
         return text_response("".join(lines))
 
-    def _serve_file(self, prefix: str, folder: str, subpath: str) -> tuple:
+    def _serve_file(self, prefix: str, folder: str, subpath: str, page: int = 1) -> tuple:
         safe = os.path.normpath(os.path.join(folder, subpath))
         if not safe.startswith(folder):
             return text_response("ERROR 403: Path traversal denied\n", 403)
         if not os.path.isfile(safe):
             return text_response(f"ERROR 404: File not found: {subpath}\n", 404)
+
+        _, ext = os.path.splitext(subpath.lower())
+        handler = self._mount_handlers.get(prefix, {}).get(ext)
+        if handler is not None:
+            content, status = handler.serve(safe, prefix + "/" + subpath, page)
+            return text_response(content, status)
+
         try:
             content = open(safe, encoding="utf-8").read()
         except Exception as e:
             return text_response(f"ERROR 500: {e}\n", 500)
         return text_response(content)
+
+    def _serve_info(self, prefix: str, folder: str, subpath: str) -> tuple:
+        if not subpath:
+            return text_response("ERROR 400: .info requires a file path\n", 400)
+        safe = os.path.normpath(os.path.join(folder, subpath))
+        if not safe.startswith(folder):
+            return text_response("ERROR 403: Path traversal denied\n", 403)
+        if not os.path.isfile(safe):
+            return text_response(f"ERROR 404: File not found: {subpath}\n", 404)
+
+        virtual_path = prefix + "/" + subpath
+        stat = os.stat(safe)
+        _, ext = os.path.splitext(subpath.lower())
+        handler = self._mount_handlers.get(prefix, {}).get(ext)
+
+        lines = [
+            f"# File info: {virtual_path}\n\n",
+            f"path = {toml_str(virtual_path)}\n",
+            f"size = {stat.st_size}\n",
+        ]
+        if handler is not None:
+            lines.append(f"handler = {toml_str(type(handler).__name__)}\n")
+            try:
+                pages = handler.page_count(safe)
+                if pages is not None:
+                    lines.append(f"pages = {pages}\n")
+                    lines.append(f"page_url_pattern = {toml_str(virtual_path + '/p/{{N}}')}\n")
+                    lines.append(f"first_page = {toml_str(virtual_path + '/p/1')}\n")
+            except Exception:
+                pass
+        return text_response("".join(lines))
 
 
 # ---------------------------------------------------------------------------

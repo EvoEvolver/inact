@@ -45,7 +45,8 @@ class Inact:
         self._help: dict[str, Callable[[], str] | str] = {}
         self._mounts: dict[str, str] = {}  # prefix -> abs folder
         self._mount_handlers: dict[str, dict[str, FileHandler]] = {}  # prefix -> {ext -> handler}
-        self._mcp_mounts: dict[str, str] = {}  # prefix -> MCP server URL
+        self._mcp_mounts: dict[str, str] = {}  # prefix -> MCP server label
+        self._a2a_mounts: dict[str, str] = {}  # prefix -> A2A agent URL
 
         self._register_builtins()
 
@@ -156,6 +157,37 @@ class Inact:
         from .mcp import StdioMcpClient
         client = StdioMcpClient("uvx", [package, *(args or [])], env)
         self._attach_mcp(prefix, client, label=f"uvx:{package}")
+
+    def mount_a2a(self, prefix: str, agent_url: str) -> None:
+        """
+        Mount a remote A2A agent at *prefix*.
+
+        The agent's card is fetched lazily from
+        ``{agent_url}/.well-known/agent.json`` on the first request.
+
+        Registers:
+          GET  {prefix}/.card    — agent card as TOML
+          POST {prefix}/chat     — chat with the agent
+
+        ``/chat`` accepts a JSON body::
+
+            {"message": "hello", "context_id": "<optional-uuid>"}
+
+        and returns plain text::
+
+            # context_id: <uuid>
+
+            Agent's reply here...
+
+        Pass the returned ``context_id`` back in subsequent requests to
+        continue the same conversation.
+
+        Example::
+
+            app.mount_a2a("/assistant", "https://agent.example.com")
+        """
+        from .a2a import A2AClient
+        self._attach_a2a(prefix, A2AClient(agent_url), label=agent_url)
 
     def route(self, path: str, **kwargs):
         """Pass-through to Flask's @app.route."""
@@ -307,6 +339,9 @@ class Inact:
         mcp_children = sorted(
             p for p in self._mcp_mounts if p.startswith(prefix + "/") or p == prefix
         )
+        a2a_children = sorted(
+            p for p in self._a2a_mounts if p.startswith(prefix + "/") or p == prefix
+        )
         lines = [f"# Help: {prefix or '/'}\n\n"]
         if children:
             lines.append("Routes:\n")
@@ -327,7 +362,14 @@ class Inact:
                 lines.append(f"    {p}/.resources          list resources\n")
                 lines.append(f"    {p}/call/<name>         call a tool (POST, JSON body)\n")
                 lines.append(f"    {p}/resource?uri=…      read a resource\n")
-        if not children and not mount_children and not mcp_children:
+        if a2a_children:
+            lines.append("\nMounted A2A agents:\n")
+            for p in a2a_children:
+                lines.append(f"  {p}/  (url: {self._a2a_mounts[p]})\n")
+                lines.append(f"    {p}/.card          agent card (TOML)\n")
+                lines.append(f"    {p}/chat           send message (POST, JSON: "
+                             f'{{"message":"...", "context_id":"<optional>"}})\n')
+        if not children and not mount_children and not mcp_children and not a2a_children:
             lines.append("No help registered for this path.\n")
         return "".join(lines)
 
@@ -424,6 +466,57 @@ class Inact:
         )
         self.app.add_url_rule(
             prefix + "/resource", endpoint=ep + "_resource", view_func=_resource
+        )
+
+    # -----------------------------------------------------------------------
+    # A2A route factory
+    # -----------------------------------------------------------------------
+
+    def _attach_a2a(self, prefix: str, client, label: str) -> None:
+        """Register the .card and /chat routes for an A2A agent."""
+        import uuid as _uuid
+        from .a2a import _strip_none
+        from .pages import dict_to_toml
+
+        prefix = "/" + prefix.strip("/")
+        self._a2a_mounts[prefix] = label
+        ep = "_inact_a2a_" + prefix.replace("/", "__")
+
+        def _card():
+            try:
+                raw = client.card()
+            except Exception as exc:
+                return text_response(f"ERROR 502: {exc}\n", 502)
+            safe = _strip_none(raw)
+            try:
+                body = f"# Agent card: {label}\n\n" + dict_to_toml(safe)
+            except Exception:
+                body = f"# Agent card: {label}\n\n" + json.dumps(safe, indent=2)
+            return text_response(body)
+
+        def _chat():
+            body = request.get_json(force=True, silent=True) or {}
+            message = (body.get("message") or "").strip()
+            if not message:
+                return text_response(
+                    f"ERROR 400: 'message' field required\n"
+                    f"Usage: POST {prefix}/chat\n"
+                    f'Body: {{"message": "your text", "context_id": "<optional-uuid>"}}\n',
+                    400,
+                )
+            context_id = (body.get("context_id") or body.get("contextId") or "").strip()
+            if not context_id:
+                context_id = str(_uuid.uuid4())
+            try:
+                reply, context_id = client.send(message, context_id)
+            except Exception as exc:
+                return text_response(f"ERROR 502: {exc}\n", 502)
+            status = 202 if reply.startswith("[input_required]") else 200
+            return text_response(f"# context_id: {context_id}\n\n{reply}\n", status)
+
+        self.app.add_url_rule(prefix + "/.card", endpoint=ep + "_card", view_func=_card)
+        self.app.add_url_rule(
+            prefix + "/chat", endpoint=ep + "_chat", view_func=_chat, methods=["POST"]
         )
 
     # -----------------------------------------------------------------------

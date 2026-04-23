@@ -5,7 +5,7 @@ from .apps.files import mount_files
 from .apps.forms import FormStore, mount_forms
 from .apps.todo import TodoStore, mount_todo
 from .handlers import FileHandler, PDFHandler, CSVHandler
-from .apps.mailbox import MailConfig, mount_mailbox
+from .apps.mailbox import MailStore, mount_mailbox
 from .apps.mcp import McpClient, StdioMcpClient, mount_mcp, mount_mcp_npx, mount_mcp_uvx
 from .apps.message import MessageStore, mount_message
 from .pages import MdContent, TomlContent
@@ -26,7 +26,7 @@ __all__ = [
     "FileHandler",
     "FormStore",
     "Inact",
-    "MailConfig",
+    "MailStore",
     "McpClient",
     "MdContent",
     "MessageStore",

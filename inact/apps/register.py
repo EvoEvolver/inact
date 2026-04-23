@@ -3,14 +3,17 @@ Agent registry — auto-incrementing integer IDs and API keys for agents.
 
 mount_register(prefix, storage) registers:
 
-  POST   {prefix}/             register a new agent
-                               body: {"name": "optional"}
-                               returns: id (integer starting at 1), api_key
-  GET    {prefix}/             list all agents (paginated)
-                               ?page=1&per_page=20
-  GET    {prefix}/{id}         get agent public profile (id, name, created_at)
-  DELETE {prefix}/{id}         deregister agent
-                               requires X-Api-Key header matching agent's key
+  POST   {prefix}/                register a new agent
+                                  body: {"name": "optional", "email": "optional"}
+                                  returns: id, api_key, url
+  GET    {prefix}/                list all agents (paginated)
+                                  ?page=1&per_page=20
+  GET    {prefix}/{id}            agent public profile (id, name, email, created_at)
+  POST   {prefix}/{id}/.email     set / update email address
+                                  requires X-Api-Key header
+                                  body: {"email": "agent@example.com"}
+  DELETE {prefix}/{id}            deregister agent
+                                  requires X-Api-Key header
 
 *storage* accepts a :class:`~inact.storage.Storage` object or any URL/path
 accepted by :func:`~inact.storage.make_storage`.
@@ -31,8 +34,14 @@ _DDL = [
         id         INTEGER PRIMARY KEY,
         api_key    TEXT    NOT NULL UNIQUE,
         name       TEXT    NOT NULL DEFAULT '',
+        email      TEXT    NOT NULL DEFAULT '',
         created_at BIGINT  NOT NULL
     )""",
+]
+
+# Run on existing tables that predate the email column.
+_MIGRATIONS = [
+    "ALTER TABLE agents ADD COLUMN email TEXT NOT NULL DEFAULT ''",
 ]
 
 _DEFAULT_PER_PAGE = 20
@@ -69,15 +78,19 @@ class AgentRegistry:
     def __init__(self, storage: Storage):
         self._s = storage
         self._s.init(_DDL)
+        for sql in _MIGRATIONS:
+            try:
+                self._s.execute(sql)
+            except Exception:
+                pass  # column already exists
 
-    def register(self, name: str = "") -> tuple[int, str]:
+    def register(self, name: str = "", email: str = "") -> tuple[int, str]:
         api_key = secrets.token_urlsafe(32)
         ts = int(time.time())
-        # Single atomic statement: compute next id via subquery
         self._s.execute(
-            "INSERT INTO agents (id, api_key, name, created_at) "
-            "SELECT COALESCE(MAX(id), 0) + 1, ?, ?, ? FROM agents",
-            (api_key, name, ts),
+            "INSERT INTO agents (id, api_key, name, email, created_at) "
+            "SELECT COALESCE(MAX(id), 0) + 1, ?, ?, ?, ? FROM agents",
+            (api_key, name, email, ts),
         )
         row = self._s.fetchone("SELECT id FROM agents WHERE api_key = ?", (api_key,))
         return row["id"], api_key
@@ -89,14 +102,26 @@ class AgentRegistry:
     def list_agents(self, page: int = 1, per_page: int = _DEFAULT_PER_PAGE) -> list[dict]:
         offset = (page - 1) * per_page
         return self._s.fetchall(
-            "SELECT id, name, created_at FROM agents ORDER BY id ASC LIMIT ? OFFSET ?",
+            "SELECT id, name, email, created_at FROM agents ORDER BY id ASC LIMIT ? OFFSET ?",
             (per_page, offset),
         )
 
     def get(self, agent_id: int) -> dict | None:
         return self._s.fetchone(
-            "SELECT id, name, created_at FROM agents WHERE id = ?", (agent_id,)
+            "SELECT id, name, email, created_at FROM agents WHERE id = ?", (agent_id,)
         )
+
+    def get_by_key(self, api_key: str) -> dict | None:
+        """Look up a full agent record by API key (for auth in other apps)."""
+        return self._s.fetchone(
+            "SELECT id, name, email, created_at FROM agents WHERE api_key = ?", (api_key,)
+        )
+
+    def set_email(self, agent_id: int, api_key: str, email: str) -> bool:
+        return self._s.execute(
+            "UPDATE agents SET email = ? WHERE id = ? AND api_key = ?",
+            (email, agent_id, api_key),
+        ) > 0
 
     def delete(self, agent_id: int, api_key: str) -> bool:
         return self._s.execute(
@@ -116,14 +141,18 @@ def attach_register(inact_app, prefix: str, registry: AgentRegistry) -> None:
     def _root():
         if request.method == "POST":
             body = request.get_json(force=True, silent=True) or {}
-            name = (body.get("name") or "").strip()
-            agent_id, api_key = registry.register(name)
-            return text_response(
-                f"OK\n"
-                f"id      = {agent_id}\n"
-                f"api_key = {toml_str(api_key)}\n"
-                f"url     = {toml_str(prefix + '/' + str(agent_id))}\n"
-            )
+            name  = (body.get("name")  or "").strip()
+            email = (body.get("email") or "").strip()
+            agent_id, api_key = registry.register(name, email)
+            lines = [
+                f"OK\n",
+                f"id      = {agent_id}\n",
+                f"api_key = {toml_str(api_key)}\n",
+                f"url     = {toml_str(prefix + '/' + str(agent_id))}\n",
+            ]
+            if email:
+                lines.append(f"email   = {toml_str(email)}\n")
+            return text_response("".join(lines))
         page, per_page = _parse_page_params()
         total = registry.count()
         agents = registry.list_agents(page, per_page)
@@ -133,6 +162,8 @@ def attach_register(inact_app, prefix: str, registry: AgentRegistry) -> None:
             lines.append(f"id         = {a['id']}\n")
             if a["name"]:
                 lines.append(f"name       = {toml_str(a['name'])}\n")
+            if a["email"]:
+                lines.append(f"email      = {toml_str(a['email'])}\n")
             lines.append(f"created_at = {toml_str(_fmt_ts(a['created_at']))}\n")
             lines.append(f"url        = {toml_str(prefix + '/' + str(a['id']))}\n")
             lines.append("\n")
@@ -168,9 +199,36 @@ def attach_register(inact_app, prefix: str, registry: AgentRegistry) -> None:
         ]
         if agent["name"]:
             lines.append(f"name       = {toml_str(agent['name'])}\n")
+        if agent["email"]:
+            lines.append(f"email      = {toml_str(agent['email'])}\n")
         lines.append(f"created_at = {toml_str(_fmt_ts(agent['created_at']))}\n")
         lines.append(f"url        = {toml_str(prefix + '/' + str(agent['id']))}\n")
+        if not agent["email"]:
+            lines.append(f"\n# no email set — POST {prefix}/{aid}/.email to configure\n")
         return text_response("".join(lines))
+
+    def _set_email(agent_id: str):
+        try:
+            aid = int(agent_id)
+        except ValueError:
+            return text_response("ERROR 400: agent id must be an integer\n", 400)
+        api_key = request.headers.get("X-Api-Key", "").strip()
+        if not api_key:
+            return text_response(
+                "ERROR 401: X-Api-Key header required\n"
+                f"Usage: POST {prefix}/{{id}}/.email\n"
+                "  Header: X-Api-Key: <your api_key>\n"
+                '  Body:   {"email": "you@example.com"}\n',
+                401,
+            )
+        body = request.get_json(force=True, silent=True) or {}
+        email = (body.get("email") or "").strip()
+        if not email:
+            return text_response("ERROR 400: 'email' required\n", 400)
+        ok = registry.set_email(aid, api_key, email)
+        if not ok:
+            return text_response("ERROR 404: agent not found or api_key mismatch\n", 404)
+        return text_response(f"OK\nemail = {toml_str(email)}\n")
 
     flask_app.add_url_rule(
         prefix + "/",
@@ -178,6 +236,9 @@ def attach_register(inact_app, prefix: str, registry: AgentRegistry) -> None:
     flask_app.add_url_rule(
         prefix + "/<agent_id>",
         endpoint=ep + "_agent", view_func=_agent, methods=["GET", "DELETE"])
+    flask_app.add_url_rule(
+        prefix + "/<agent_id>/.email",
+        endpoint=ep + "_email", view_func=_set_email, methods=["POST"])
 
 
 def mount_register(inact_app, prefix: str, storage) -> None:
@@ -199,8 +260,9 @@ def mount_register(inact_app, prefix: str, storage) -> None:
     attach_register(inact_app, p, AgentRegistry(backend))
     inact_app._app_mounts.append((p, (
         f"\nAgent registry: {p}\n"
-        f'  POST   {p}/      register  body: {{"name":"optional"}}  → id, api_key\n'
-        f"  GET    {p}/      list agents  (?page=1&per_page=20)\n"
-        f"  GET    {p}/{{id}}  agent profile\n"
-        f"  DELETE {p}/{{id}}  deregister  (X-Api-Key header required)\n"
+        f'  POST   {p}/             register  body: {{"name":"...","email":"..."}}  → id, api_key\n'
+        f"  GET    {p}/             list agents  (?page=1&per_page=20)\n"
+        f"  GET    {p}/{{id}}          agent profile (id, name, email, url)\n"
+        f"  POST   {p}/{{id}}/.email   set email  (X-Api-Key required)\n"
+        f"  DELETE {p}/{{id}}          deregister  (X-Api-Key required)\n"
     )))

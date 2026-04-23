@@ -161,6 +161,26 @@ def attach_message(inact_app, prefix: str, store: MessageStore,
             or request.headers.get("X-Agent-Id", "")
         ).strip()
 
+    def _root():
+        agent_id = _agent_id()
+        lines = [
+            f"# Messaging\n\n",
+            f"send_url   = {toml_str(prefix + '/send')}\n",
+            f"inbox_url  = {toml_str(prefix + '/inbox')}\n",
+            f"sent_url   = {toml_str(prefix + '/sent')}\n",
+            f"agents_url = {toml_str(prefix + '/agents')}\n",
+            f"human_url  = {toml_str('/_human' + prefix)}\n",
+        ]
+        if agent_id:
+            unread = store.count_inbox(agent_id, unread_only=True)
+            total  = store.count_inbox(agent_id)
+            lines.append(f"\nagent_id   = {toml_str(agent_id)}\n")
+            lines.append(f"unread     = {unread}\n")
+            lines.append(f"total      = {total}\n")
+        else:
+            lines.append(f"\n# tip: set X-Agent-Id header or ?agent_id= to see your inbox stats\n")
+        return text_response("".join(lines))
+
     def _send():
         body = request.get_json(force=True, silent=True) or {}
         from_id = str(body.get("from") or "").strip()
@@ -282,6 +302,9 @@ def attach_message(inact_app, prefix: str, store: MessageStore,
         )
         return html_response(html)
 
+    flask_app.add_url_rule(
+        prefix + "/",
+        endpoint=ep + "_root", view_func=_root)
     flask_app.add_url_rule(
         prefix + "/send",
         endpoint=ep + "_send", view_func=_send, methods=["POST"])

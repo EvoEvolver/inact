@@ -119,7 +119,10 @@ def attach_register(inact_app, prefix: str, registry: AgentRegistry) -> None:
             name = (body.get("name") or "").strip()
             agent_id, api_key = registry.register(name)
             return text_response(
-                f"OK\nid      = {agent_id}\napi_key = {toml_str(api_key)}\n"
+                f"OK\n"
+                f"id      = {agent_id}\n"
+                f"api_key = {toml_str(api_key)}\n"
+                f"url     = {toml_str(prefix + '/' + str(agent_id))}\n"
             )
         page, per_page = _parse_page_params()
         total = registry.count()
@@ -158,10 +161,15 @@ def attach_register(inact_app, prefix: str, registry: AgentRegistry) -> None:
         agent = registry.get(aid)
         if not agent:
             return text_response("ERROR 404: agent not found\n", 404)
-        lines = [f"id         = {agent['id']}\n"]
+        display = agent["name"] or f"agent {aid}"
+        lines = [
+            f"# {display}\n\n",
+            f"id         = {agent['id']}\n",
+        ]
         if agent["name"]:
             lines.append(f"name       = {toml_str(agent['name'])}\n")
         lines.append(f"created_at = {toml_str(_fmt_ts(agent['created_at']))}\n")
+        lines.append(f"url        = {toml_str(prefix + '/' + str(agent['id']))}\n")
         return text_response("".join(lines))
 
     flask_app.add_url_rule(

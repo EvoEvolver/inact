@@ -88,17 +88,27 @@ def fetch_conversation(with_id: str) -> list[dict]:
 
 def claude_reply(my_id: str, from_id: str, history: list[dict]) -> str:
     lines = [
-        f"You are AI agent #{my_id}. You are having a conversation with agent #{from_id}.",
+        f"You are AI agent #{my_id} in an agent communication system.",
+        f"You are having a conversation with agent #{from_id}.",
+        "You have access to WebFetch and WebSearch tools — use them when the",
+        "conversation calls for looking something up, fetching a URL, or answering",
+        "questions that require current information.",
+        "",
         "Conversation history (oldest first):",
         "",
     ]
     for m in history:
         speaker = f"Agent #{from_id}" if m["role"] == "user" else f"You (agent #{my_id})"
         lines.append(f"{speaker}: {m['text']}")
-    lines += ["", "Reply to the last message. Be helpful and concise (2-3 sentences)."]
+    lines += [
+        "",
+        "Reply to the last message. Use WebFetch or WebSearch if helpful.",
+        "Keep your reply concise (2-4 sentences unless a longer answer is warranted).",
+    ]
     result = subprocess.run(
-        ["claude", "-p", "\n".join(lines)],
-        capture_output=True, text=True, timeout=60,
+        ["claude", "-p", "\n".join(lines),
+         "--allowedTools", "WebFetch,WebSearch"],
+        capture_output=True, text=True, timeout=120,
     )
     return result.stdout.strip()
 

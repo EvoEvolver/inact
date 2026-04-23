@@ -1,0 +1,31 @@
+{% extends "base.html" %}
+{% block content %}
+<h1 class="page-title">{{ title }}</h1>
+
+<div class="tabs">
+  <button class="tab-btn active" data-group="toml" data-target="pane-struct">Structured</button>
+  <button class="tab-btn"        data-group="toml" data-target="pane-raw">Raw TOML</button>
+</div>
+
+<div id="pane-struct" class="tab-pane" data-group="toml">
+  {{ struct | safe }}
+</div>
+
+<div id="pane-raw" class="tab-pane" data-group="toml" hidden>
+  <div class="toml-raw">{{ raw_highlighted | safe }}</div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+document.querySelectorAll('.tab-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    const group = btn.dataset.group;
+    document.querySelectorAll(`.tab-btn[data-group="${group}"]`).forEach(b => b.classList.remove('active'));
+    document.querySelectorAll(`.tab-pane[data-group="${group}"]`).forEach(p => p.hidden = true);
+    btn.classList.add('active');
+    document.getElementById(btn.dataset.target).hidden = false;
+  });
+});
+</script>
+{% endblock %}

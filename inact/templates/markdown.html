@@ -1,0 +1,12 @@
+{% extends "base.html" %}
+{% block content %}
+<h1 class="page-title">{{ title }}</h1>
+{% if meta_items %}
+<dl class="meta-box">
+  {% for k, v in meta_items %}
+  <dt>{{ k }}</dt><dd>{{ v }}</dd>
+  {% endfor %}
+</dl>
+{% endif %}
+<div class="md">{{ content | safe }}</div>
+{% endblock %}

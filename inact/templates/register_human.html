@@ -1,0 +1,132 @@
+{% extends "base.html" %}
+
+{% block nav %}
+<nav>
+  <a href="{{ prefix }}/_human">Register</a>
+  <span class="sep">/</span>
+  <a href="{{ agents_api }}/">Agents API</a>
+</nav>
+{% endblock %}
+
+{% block body_wrap %}
+<div style="display:flex;justify-content:center;padding:40px 16px">
+{% block content %}
+<div class="card">
+  <h1>Inact</h1>
+  <p>Register to get an agent ID and API key.</p>
+
+  <div id="logged" hidden>
+    <div class="badge">
+      Signed in as <strong id="li-name"></strong> &nbsp;·&nbsp; Agent&nbsp;#<span id="li-id"></span>
+    </div>
+    <a id="chat-link" href="{{ chat_url }}" class="link-btn">Open chat →</a>
+    <br><a href="#" id="logout" style="font-size:12px;color:#aaa;margin-top:8px;display:inline-block">Sign out</a>
+  </div>
+
+  <div id="form-section">
+    <div class="row">
+      <input id="name" placeholder="Your name (optional)" autocomplete="off">
+      <button class="primary" id="reg-btn">Register</button>
+    </div>
+    <div id="err" class="err" hidden></div>
+  </div>
+
+  <div id="ok" hidden>
+    <div class="badge">
+      ✓ Registered as agent&nbsp;#<strong id="new-id"></strong><br>
+      <span id="new-key" style="font-size:12px"></span>
+    </div>
+    <a href="{{ chat_url }}" class="link-btn">Start chatting →</a>
+  </div>
+
+  <hr style="border:none;border-top:1px solid #eee;margin:24px 0">
+  <strong style="font-size:13px">All agents</strong>
+  <div class="agents-list" id="agents-list">
+    <div style="color:#bbb;font-size:13px;padding:8px 0">Loading…</div>
+  </div>
+</div>
+{% endblock %}
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const PREFIX = {{ prefix | tojson }};
+const AGENTS_API = {{ agents_api | tojson }};
+
+function parseBlocks(text, tag) {
+  return text.split('[[' + tag + ']]').slice(1).map(b => {
+    const o = {};
+    b.split('\n').forEach(l => {
+      const m = l.match(/^(\w+)\s*=\s*"([^"]*)"/) || l.match(/^(\w+)\s*=\s*(\S+)/);
+      if (m) o[m[1]] = m[2];
+    });
+    return o;
+  }).filter(o => o.id);
+}
+
+function load() {
+  const id  = localStorage.getItem('inact_agent_id');
+  const key = localStorage.getItem('inact_api_key');
+  const nm  = localStorage.getItem('inact_name') || '';
+  if (id && key) {
+    document.getElementById('logged').hidden = false;
+    document.getElementById('form-section').hidden = true;
+    document.getElementById('li-id').textContent = id;
+    document.getElementById('li-name').textContent = nm || ('Agent #' + id);
+  }
+  loadAgents();
+}
+
+async function loadAgents() {
+  const text = await fetch(AGENTS_API + '/').then(r => r.text()).catch(() => '');
+  const agents = parseBlocks(text, 'agents');
+  const list = document.getElementById('agents-list');
+  list.innerHTML = agents.map(a =>
+    `<div class="agent-row">
+      <span>${a.name || ('Agent #' + a.id)}</span>
+      <span style="color:#aaa;font-size:12px">#${a.id}</span>
+    </div>`
+  ).join('') || '<div style="color:#bbb;font-size:13px;padding:8px 0">No agents yet.</div>';
+}
+
+document.getElementById('reg-btn').addEventListener('click', async () => {
+  const name  = document.getElementById('name').value.trim();
+  const errEl = document.getElementById('err');
+  errEl.hidden = true;
+  try {
+    const text = await fetch(AGENTS_API + '/', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({name})
+    }).then(r => r.text());
+    const id  = (text.match(/^id\s*=\s*(\d+)/m)  || [])[1];
+    const key = (text.match(/api_key\s*=\s*"([^"]+)"/m) || [])[1];
+    if (!id || !key) throw new Error(text);
+    localStorage.setItem('inact_agent_id', id);
+    localStorage.setItem('inact_api_key',  key);
+    localStorage.setItem('inact_name',     name);
+    document.getElementById('form-section').hidden = true;
+    document.getElementById('ok').hidden = false;
+    document.getElementById('new-id').textContent  = id;
+    document.getElementById('new-key').textContent = key;
+    loadAgents();
+  } catch (e) {
+    errEl.textContent = String(e);
+    errEl.hidden = false;
+  }
+});
+
+document.getElementById('name').addEventListener('keydown', e => {
+  if (e.key === 'Enter') document.getElementById('reg-btn').click();
+});
+
+document.getElementById('logout').addEventListener('click', e => {
+  e.preventDefault();
+  ['inact_agent_id', 'inact_api_key', 'inact_name'].forEach(k => localStorage.removeItem(k));
+  location.reload();
+});
+
+load();
+</script>
+{% endblock %}

@@ -1,0 +1,166 @@
+{% extends "base.html" %}
+
+{% block nav %}{% endblock %}
+{% block body_wrap %}
+<div class="app">
+  <div class="app-header">
+    <strong>Chat</strong>
+    <small>
+      Agent&nbsp;#<span id="my-id">…</span>
+      &nbsp;·&nbsp;
+      <a href="{{ register_url }}" style="color:#aaa">switch account</a>
+    </small>
+  </div>
+
+  <div class="layout">
+    <aside>
+      <div class="aside-title">Agents</div>
+      <div id="agent-list"></div>
+    </aside>
+
+    <main>
+      <div class="chat-title" id="chat-title">Select an agent to start chatting</div>
+      <div id="messages">
+        <div class="placeholder">← choose an agent</div>
+      </div>
+      <div class="compose">
+        <div class="compose-row">
+          <textarea id="inp" placeholder="Type a message… (Enter to send)" disabled></textarea>
+          <button class="send" id="send-btn" disabled>Send</button>
+        </div>
+      </div>
+    </main>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const P  = {{ prefix      | tojson }};
+const AP = {{ agents_prefix | tojson }};
+
+let myId   = localStorage.getItem('inact_agent_id');
+let myName = localStorage.getItem('inact_name') || ('Agent #' + myId);
+if (!myId) { location.href = '/_human' + AP; }
+document.getElementById('my-id').textContent = myId;
+
+let selId = null, selName = '', timer = null, shownIds = new Set();
+
+function parseBlocks(text, tag) {
+  return text.split('[[' + tag + ']]').slice(1).map(b => {
+    const o = {};
+    b.split('\n').forEach(l => {
+      const m = l.match(/^(\w+)\s*=\s*"([^"]*)"/) || l.match(/^(\w+)\s*=\s*(\S+)/);
+      if (m) o[m[1]] = m[2];
+    });
+    return o;
+  }).filter(o => Object.keys(o).length > 0);
+}
+
+async function loadAgents() {
+  let agents = [];
+  try {
+    const text = await fetch(AP + '/').then(r => r.text());
+    agents = parseBlocks(text, 'agents');
+  } catch (_) {}
+  if (!agents.length) {
+    try {
+      const text = await fetch(P + '/agents').then(r => r.text());
+      agents = parseBlocks(text, 'agents');
+    } catch (_) {}
+  }
+  const list   = document.getElementById('agent-list');
+  const others = agents.filter(a => String(a.id) !== String(myId));
+  if (!others.length) {
+    list.innerHTML = '<div style="padding:12px 14px;font-size:13px;color:#bbb">No other agents yet.</div>';
+    return;
+  }
+  list.innerHTML = '';
+  others.forEach(a => {
+    const label = a.name || ('Agent #' + a.id);
+    const btn   = document.createElement('button');
+    btn.className = 'agent-btn';
+    btn.dataset.id = a.id;
+    btn.textContent = label;
+    btn.addEventListener('click', () => select(a.id, label));
+    list.appendChild(btn);
+  });
+}
+
+function select(id, name) {
+  selId = id; selName = name;
+  document.querySelectorAll('.agent-btn').forEach(b => b.classList.remove('active'));
+  const btn = document.querySelector(`.agent-btn[data-id="${id}"]`);
+  if (btn) btn.classList.add('active');
+  document.getElementById('chat-title').textContent = 'Chat with ' + name;
+  document.getElementById('inp').disabled      = false;
+  document.getElementById('send-btn').disabled = false;
+  shownIds.clear();
+  document.getElementById('messages').innerHTML = '';
+  if (timer) clearInterval(timer);
+  poll();
+  timer = setInterval(poll, 3000);
+}
+
+async function poll() {
+  if (!selId) return;
+  const [inbTxt, sntTxt] = await Promise.all([
+    fetch(P + '/inbox', {headers: {'X-Agent-Id': myId}}).then(r => r.text()).catch(() => ''),
+    fetch(P + '/sent',  {headers: {'X-Agent-Id': myId}}).then(r => r.text()).catch(() => ''),
+  ]);
+  const recv = parseBlocks(inbTxt, 'messages').filter(m => m.from === String(selId)).map(m => ({...m, _dir: 'recv'}));
+  const sent = parseBlocks(sntTxt, 'messages').filter(m => m.to   === String(selId)).map(m => ({...m, _dir: 'sent'}));
+  const all  = [...recv, ...sent]
+    .filter(m => m.id && !shownIds.has(m.id))
+    .sort((a, b) => a.date > b.date ? 1 : -1);
+
+  const box = document.getElementById('messages');
+  let added = 0;
+  for (const m of all) {
+    shownIds.add(m.id);
+    const body = await fetch(P + '/inbox/' + m.id)
+      .then(r => r.text())
+      .then(t => (t.split('\n---\n\n')[1] || '').trim())
+      .catch(() => '');
+    const wrap   = document.createElement('div');
+    wrap.className = 'wrap-msg ' + m._dir;
+    const ts = m.date ? new Date(m.date).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'}) : '';
+    wrap.innerHTML =
+      '<div class="bubble">' + esc(body) + '</div>' +
+      '<div class="msg-meta">' + (m._dir === 'recv' ? selName : 'You') + (ts ? ' · ' + ts : '') + '</div>';
+    box.appendChild(wrap);
+    added++;
+  }
+  if (added) box.scrollTop = box.scrollHeight;
+}
+
+async function send() {
+  const inp  = document.getElementById('inp');
+  const body = inp.value.trim();
+  if (!body || !selId) return;
+  inp.value = '';
+  inp.disabled = true;
+  document.getElementById('send-btn').disabled = true;
+  await fetch(P + '/send', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json', 'X-Agent-Id': myId},
+    body: JSON.stringify({from: myId, to: selId, body})
+  }).catch(() => {});
+  await poll();
+  inp.disabled = false;
+  document.getElementById('send-btn').disabled = false;
+  inp.focus();
+}
+
+document.getElementById('send-btn').addEventListener('click', send);
+document.getElementById('inp').addEventListener('keydown', e => {
+  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); }
+});
+
+function esc(s) {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+loadAgents();
+</script>
+{% endblock %}

@@ -47,9 +47,12 @@ class Inact:
         self._mounts: dict[str, str] = {}  # prefix -> abs folder
         self._mount_handlers: dict[str, dict[str, FileHandler]] = {}  # prefix -> {ext -> handler}
         self._mount_editable: dict[str, bool | list[str]] = {}  # prefix -> editable spec
-        self._mcp_mounts: dict[str, str] = {}     # prefix -> MCP server label
-        self._a2a_mounts: dict[str, str] = {}     # prefix -> A2A agent URL
-        self._website_mounts: dict[str, str] = {} # prefix -> base URL
+        self._mcp_mounts: dict[str, str] = {}      # prefix -> MCP server label
+        self._a2a_mounts: dict[str, str] = {}      # prefix -> A2A agent URL
+        self._website_mounts: dict[str, str] = {}  # prefix -> base URL
+        self._mailbox_mounts: dict[str, str] = {}  # prefix -> db_path
+        self._forms_mounts: dict[str, str] = {}    # prefix -> db_path
+        self._search_mounts: dict[str, str] = {}   # prefix -> label
 
         self._register_builtins()
 
@@ -252,6 +255,82 @@ class Inact:
             prefix + "/<path:subpath>", endpoint=ep, view_func=_handler,
         )
 
+    def mount_mailbox(self, prefix: str, storage) -> None:
+        """
+        Mount a persistent mailbox at *prefix*.
+
+        Provides inbox, sent folder, threading, compose, and reply.
+        Messages sent to local addresses (no ``://``) are delivered
+        directly to the inbox.
+
+        *storage* — a database URL/path, or a
+        :class:`~inact.storage.Storage` instance.
+
+        ======================================  ====================
+        ``"./mail.db"``                         SQLite file
+        ``"sqlite:///./mail.db"``               SQLite (explicit)
+        ``"postgresql://user:pw@host/db"``       PostgreSQL
+        a :class:`~inact.storage.Storage`       custom backend
+        ======================================  ====================
+
+        Example::
+
+            app.mount_mailbox("/mail", "./data/mail.db")
+            app.mount_mailbox("/mail", "postgresql://localhost/myapp")
+        """
+        from .mailbox import Mailbox, attach_mailbox
+        from .storage import Storage, make_storage
+        prefix_norm = "/" + prefix.strip("/")
+        backend = make_storage(storage) if isinstance(storage, str) else storage
+        self._mailbox_mounts[prefix_norm] = storage if isinstance(storage, str) else type(backend).__name__
+        attach_mailbox(self, prefix_norm, Mailbox(backend))
+
+    def mount_forms(self, prefix: str, storage) -> None:
+        """
+        Mount a form builder at *prefix*.
+
+        Agents can create forms with typed fields, share the submit URL,
+        and later read structured responses.
+
+        *storage* — a database URL/path, or a
+        :class:`~inact.storage.Storage` instance.
+
+        ======================================  ====================
+        ``"./forms.db"``                        SQLite file
+        ``"sqlite:///./forms.db"``              SQLite (explicit)
+        ``"postgresql://user:pw@host/db"``       PostgreSQL
+        a :class:`~inact.storage.Storage`       custom backend
+        ======================================  ====================
+
+        Example::
+
+            app.mount_forms("/forms", "./data/forms.db")
+            app.mount_forms("/forms", "postgresql://localhost/myapp")
+        """
+        from .forms import FormStore, attach_forms
+        from .storage import Storage, make_storage
+        prefix_norm = "/" + prefix.strip("/")
+        backend = make_storage(storage) if isinstance(storage, str) else storage
+        self._forms_mounts[prefix_norm] = storage if isinstance(storage, str) else type(backend).__name__
+        attach_forms(self, prefix_norm, FormStore(backend))
+
+    def mount_search(self, prefix: str, api_key: str | None = None) -> None:
+        """
+        Mount Tavily web search at *prefix*.
+
+        *api_key* — Tavily API key; falls back to the ``TAVILY_API_KEY``
+        environment variable if not supplied.
+
+        Example::
+
+            app.mount_search("/search")                        # uses env var
+            app.mount_search("/search", api_key="tvly-...")   # explicit key
+        """
+        from .search import attach_search
+        prefix_norm = "/" + prefix.strip("/")
+        self._search_mounts[prefix_norm] = "tavily"
+        attach_search(self, prefix_norm, api_key)
+
     def route(self, path: str, **kwargs):
         """Pass-through to Flask's @app.route."""
         return self.app.route(path, **kwargs)
@@ -336,6 +415,31 @@ class Inact:
                 if prefix in self._mount_editable:
                     lines.append(f"    POST {prefix}/<file>/.replace   overwrite file\n")
                 lines.append("\n")
+
+        if self._mailbox_mounts:
+            lines.append("## Mailboxes\n\n")
+            for prefix in sorted(self._mailbox_mounts):
+                lines.append(f"  {prefix}/\n")
+                lines.append(f"    GET  {prefix}/inbox             list inbox\n")
+                lines.append(f"    POST {prefix}/compose           send message\n")
+                lines.append(f"    GET  {prefix}/thread/<id>       full thread\n")
+            lines.append("\n")
+
+        if self._forms_mounts:
+            lines.append("## Forms\n\n")
+            for prefix in sorted(self._forms_mounts):
+                lines.append(f"  {prefix}/\n")
+                lines.append(f"    GET  {prefix}/                  list forms\n")
+                lines.append(f"    POST {prefix}/                  create form\n")
+                lines.append(f"    POST {prefix}/<id>/submit       submit response\n")
+                lines.append(f"    GET  {prefix}/<id>/responses    list responses\n")
+            lines.append("\n")
+
+        if self._search_mounts:
+            lines.append("## Search\n\n")
+            for prefix in sorted(self._search_mounts):
+                lines.append(f"  GET  {prefix}?q=your+query     web search (TOML)\n")
+            lines.append("\n")
 
         if self._routes or self._mounts:
             lines.append("## curl examples\n\n")
@@ -516,6 +620,15 @@ class Inact:
         web_children = sorted(
             p for p in self._website_mounts if p.startswith(prefix + "/") or p == prefix
         )
+        mail_children = sorted(
+            p for p in self._mailbox_mounts if p.startswith(prefix + "/") or p == prefix
+        )
+        forms_children = sorted(
+            p for p in self._forms_mounts if p.startswith(prefix + "/") or p == prefix
+        )
+        search_children = sorted(
+            p for p in self._search_mounts if p.startswith(prefix + "/") or p == prefix
+        )
         lines = [f"# Help: {prefix or '/'}\n\n"]
         if children:
             lines.append("Routes:\n")
@@ -552,7 +665,35 @@ class Inact:
                 lines.append(f"  {p}/  (url: {self._website_mounts[p]})\n")
                 lines.append(f"    {p}/<path>           fetch page as plain text\n")
                 lines.append(f"    {p}/<path>/.links    list hyperlinks on page (TOML)\n")
-        if not children and not mount_children and not mcp_children and not a2a_children and not web_children:
+        if mail_children:
+            lines.append("\nMailboxes:\n")
+            for p in mail_children:
+                lines.append(f"  {p}/\n")
+                lines.append(f"    GET    {p}/inbox                list inbox\n")
+                lines.append(f"    GET    {p}/inbox?unread=1       unread only\n")
+                lines.append(f"    GET    {p}/inbox/{{id}}           read message\n")
+                lines.append(f"    DELETE {p}/inbox/{{id}}           delete\n")
+                lines.append(f"    POST   {p}/inbox/{{id}}/.reply    reply\n")
+                lines.append(f"    GET    {p}/sent                  list sent\n")
+                lines.append(f"    POST   {p}/compose               send message\n")
+                lines.append(f"    GET    {p}/thread/{{id}}           full thread\n")
+        if forms_children:
+            lines.append("\nForms:\n")
+            for p in forms_children:
+                lines.append(f"  {p}/\n")
+                lines.append(f"    GET    {p}/                      list forms\n")
+                lines.append(f"    POST   {p}/                      create form\n")
+                lines.append(f"    GET    {p}/{{id}}                  form definition\n")
+                lines.append(f"    DELETE {p}/{{id}}                  delete form\n")
+                lines.append(f"    POST   {p}/{{id}}/submit           submit response\n")
+                lines.append(f"    GET    {p}/{{id}}/responses        list responses\n")
+        if search_children:
+            lines.append("\nSearch:\n")
+            for p in search_children:
+                lines.append(f"  GET  {p}?q=your+query         web search (TOML)\n")
+                lines.append(f"  GET  {p}?q=...&max=10         limit results (default 5)\n")
+        if not any([children, mount_children, mcp_children, a2a_children,
+                    web_children, mail_children, forms_children, search_children]):
             lines.append("No help registered for this path.\n")
         return "".join(lines)
 

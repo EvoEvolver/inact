@@ -1,5 +1,6 @@
 from .a2a import A2AClient
 from .core import Inact
+from .cron import CronScheduler
 from .forms import FormStore
 from .handlers import FileHandler, PDFHandler
 from .mailbox import Mailbox
@@ -11,6 +12,7 @@ from .website import WebsiteProxy
 
 __all__ = [
     "A2AClient",
+    "CronScheduler",
     "FileHandler",
     "FormStore",
     "Inact",

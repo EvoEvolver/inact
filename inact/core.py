@@ -53,6 +53,7 @@ class Inact:
         self._mailbox_mounts: dict[str, str] = {}  # prefix -> db_path
         self._forms_mounts: dict[str, str] = {}    # prefix -> db_path
         self._search_mounts: dict[str, str] = {}   # prefix -> label
+        self._cron_mounts: dict[str, str] = {}     # prefix -> label
 
         self._register_builtins()
 
@@ -331,6 +332,38 @@ class Inact:
         self._search_mounts[prefix_norm] = "tavily"
         attach_search(self, prefix_norm, api_key)
 
+    def mount_cron(self, prefix: str, storage) -> None:
+        """
+        Mount a cron scheduler at *prefix* and start the background thread.
+
+        Agents register jobs by POSTing a URL and a 5-field cron expression.
+        At each scheduled time the scheduler sends an HTTP POST to the job's
+        URL, optionally with a configured body payload.
+
+        *storage* — a database URL/path or a
+        :class:`~inact.storage.Storage` instance (same formats as
+        :meth:`mount_mailbox`).
+
+        Example::
+
+            app.mount_cron("/cron", "./data/cron.db")
+
+        Register a job::
+
+            POST /cron/
+            {"url": "https://my-agent.com/wake",
+             "schedule": "0 9 * * 1",
+             "label": "monday digest"}
+        """
+        from .cron import CronScheduler, attach_cron
+        from .storage import Storage, make_storage
+        prefix_norm = "/" + prefix.strip("/")
+        backend = make_storage(storage) if isinstance(storage, str) else storage
+        self._cron_mounts[prefix_norm] = storage if isinstance(storage, str) else type(backend).__name__
+        scheduler = CronScheduler(backend)
+        scheduler.start()
+        attach_cron(self, prefix_norm, scheduler)
+
     def route(self, path: str, **kwargs):
         """Pass-through to Flask's @app.route."""
         return self.app.route(path, **kwargs)
@@ -439,6 +472,16 @@ class Inact:
             lines.append("## Search\n\n")
             for prefix in sorted(self._search_mounts):
                 lines.append(f"  GET  {prefix}?q=your+query     web search (TOML)\n")
+            lines.append("\n")
+
+        if self._cron_mounts:
+            lines.append("## Cron schedulers\n\n")
+            for prefix in sorted(self._cron_mounts):
+                lines.append(f"  {prefix}/\n")
+                lines.append(f"    GET  {prefix}/                list jobs\n")
+                lines.append(f"    POST {prefix}/                create job\n")
+                lines.append(f"    POST {prefix}/<id>/.run       fire now\n")
+                lines.append(f"    GET  {prefix}/<id>/runs       run history\n")
             lines.append("\n")
 
         if self._routes or self._mounts:
@@ -692,8 +735,22 @@ class Inact:
             for p in search_children:
                 lines.append(f"  GET  {p}?q=your+query         web search (TOML)\n")
                 lines.append(f"  GET  {p}?q=...&max=10         limit results (default 5)\n")
+        cron_children = sorted(
+            p for p in self._cron_mounts if p.startswith(prefix + "/") or p == prefix
+        )
+        if cron_children:
+            lines.append("\nCron schedulers:\n")
+            for p in cron_children:
+                lines.append(f"  {p}/\n")
+                lines.append(f"    GET    {p}/                     list jobs\n")
+                lines.append(f"    POST   {p}/                     create job\n")
+                lines.append(f"    GET    {p}/{{id}}                 job details\n")
+                lines.append(f"    DELETE {p}/{{id}}                 delete job\n")
+                lines.append(f"    POST   {p}/{{id}}/.run            fire now\n")
+                lines.append(f"    GET    {p}/{{id}}/runs            run history\n")
         if not any([children, mount_children, mcp_children, a2a_children,
-                    web_children, mail_children, forms_children, search_children]):
+                    web_children, mail_children, forms_children, search_children,
+                    cron_children]):
             lines.append("No help registered for this path.\n")
         return "".join(lines)
 

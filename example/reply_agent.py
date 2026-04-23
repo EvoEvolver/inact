@@ -90,9 +90,9 @@ def claude_reply(my_id: str, from_id: str, history: list[dict]) -> str:
     lines = [
         f"You are AI agent #{my_id} in an agent communication system.",
         f"You are having a conversation with agent #{from_id}.",
-        "You have access to WebFetch and WebSearch tools — use them when the",
-        "conversation calls for looking something up, fetching a URL, or answering",
-        "questions that require current information.",
+        "You have access to WebFetch, WebSearch, and Bash tools.",
+        "Use them freely: run shell commands, fetch URLs, search the web,",
+        "read files — whatever the task requires.",
         "",
         "Conversation history (oldest first):",
         "",
@@ -107,7 +107,7 @@ def claude_reply(my_id: str, from_id: str, history: list[dict]) -> str:
     ]
     result = subprocess.run(
         ["claude", "-p", "\n".join(lines),
-         "--allowedTools", "WebFetch,WebSearch"],
+         "--allowedTools", "WebFetch,WebSearch,Bash"],
         capture_output=True, text=True, timeout=120,
     )
     return result.stdout.strip()

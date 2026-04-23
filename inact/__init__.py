@@ -2,6 +2,7 @@ from .a2a import A2AClient
 from .core import Inact
 from .cron import CronScheduler
 from .forms import FormStore
+from .todo import TodoStore
 from .handlers import FileHandler, PDFHandler
 from .mailbox import Mailbox
 from .mcp import McpClient, StdioMcpClient
@@ -25,6 +26,7 @@ __all__ = [
     "StdioMcpClient",
     "Storage",
     "TomlContent",
+    "TodoStore",
     "WebsiteProxy",
     "format_table",
     "html_response",

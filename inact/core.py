@@ -54,6 +54,7 @@ class Inact:
         self._forms_mounts: dict[str, str] = {}    # prefix -> db_path
         self._search_mounts: dict[str, str] = {}   # prefix -> label
         self._cron_mounts: dict[str, str] = {}     # prefix -> label
+        self._todo_mounts: dict[str, str] = {}     # prefix -> label
 
         self._register_builtins()
 
@@ -364,6 +365,28 @@ class Inact:
         scheduler.start()
         attach_cron(self, prefix_norm, scheduler)
 
+    def mount_todo(self, prefix: str, storage) -> None:
+        """
+        Mount a todo list at *prefix*.
+
+        Agents create tasks and subtasks with priorities and due dates.
+        Supports filtering by status and priority, and smart views for
+        today's tasks and overdue items.
+
+        *storage* — a database URL/path or a
+        :class:`~inact.storage.Storage` instance.
+
+        Example::
+
+            app.mount_todo("/tasks", "./data/tasks.db")
+        """
+        from .todo import TodoStore, attach_todo
+        from .storage import Storage, make_storage
+        prefix_norm = "/" + prefix.strip("/")
+        backend = make_storage(storage) if isinstance(storage, str) else storage
+        self._todo_mounts[prefix_norm] = storage if isinstance(storage, str) else type(backend).__name__
+        attach_todo(self, prefix_norm, TodoStore(backend))
+
     def route(self, path: str, **kwargs):
         """Pass-through to Flask's @app.route."""
         return self.app.route(path, **kwargs)
@@ -482,6 +505,18 @@ class Inact:
                 lines.append(f"    POST {prefix}/                create job\n")
                 lines.append(f"    POST {prefix}/<id>/.run       fire now\n")
                 lines.append(f"    GET  {prefix}/<id>/runs       run history\n")
+            lines.append("\n")
+
+        if self._todo_mounts:
+            lines.append("## Todo lists\n\n")
+            for prefix in sorted(self._todo_mounts):
+                lines.append(f"  {prefix}/\n")
+                lines.append(f"    GET  {prefix}/                list tasks\n")
+                lines.append(f"    POST {prefix}/                create task\n")
+                lines.append(f"    GET  {prefix}/.today          due today or overdue\n")
+                lines.append(f"    GET  {prefix}/.overdue        past due, not done\n")
+                lines.append(f"    POST {prefix}/<id>/.done      mark done\n")
+                lines.append(f"    POST {prefix}/<id>/subtasks   add subtask\n")
             lines.append("\n")
 
         if self._routes or self._mounts:
@@ -748,9 +783,28 @@ class Inact:
                 lines.append(f"    DELETE {p}/{{id}}                 delete job\n")
                 lines.append(f"    POST   {p}/{{id}}/.run            fire now\n")
                 lines.append(f"    GET    {p}/{{id}}/runs            run history\n")
+        todo_children = sorted(
+            p for p in self._todo_mounts if p.startswith(prefix + "/") or p == prefix
+        )
+        if todo_children:
+            lines.append("\nTodo lists:\n")
+            for p in todo_children:
+                lines.append(f"  {p}/\n")
+                lines.append(f"    GET    {p}/                     list tasks\n")
+                lines.append(f"    GET    {p}/?status=todo          filter by status\n")
+                lines.append(f"    GET    {p}/?priority=high        filter by priority\n")
+                lines.append(f"    POST   {p}/                     create task\n")
+                lines.append(f"    GET    {p}/.today               due today or overdue\n")
+                lines.append(f"    GET    {p}/.overdue             past due, not done\n")
+                lines.append(f"    GET    {p}/{{id}}                 task detail + subtasks\n")
+                lines.append(f"    POST   {p}/{{id}}                 update fields\n")
+                lines.append(f"    DELETE {p}/{{id}}                 delete\n")
+                lines.append(f"    POST   {p}/{{id}}/subtasks        add subtask\n")
+                lines.append(f"    POST   {p}/{{id}}/.done           mark done\n")
+                lines.append(f"    POST   {p}/{{id}}/.reopen         reopen\n")
         if not any([children, mount_children, mcp_children, a2a_children,
                     web_children, mail_children, forms_children, search_children,
-                    cron_children]):
+                    cron_children, todo_children]):
             lines.append("No help registered for this path.\n")
         return "".join(lines)
 

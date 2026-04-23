@@ -42,6 +42,7 @@ class Inact:
         self._mount_editable: dict[str, bool | list[str]] = {}  # prefix -> editable spec
         self._website_mounts: dict[str, str] = {}  # prefix -> base URL (used by _render_human)
         self._app_mounts: list[tuple[str, str]] = []  # (prefix, help_text) injected by mount_*
+        self._human_views: dict[str, Callable] = {}   # prefix -> fn(path) -> HTML response
 
         self._register_builtins()
 
@@ -242,6 +243,11 @@ class Inact:
                     if full.endswith(".toml"):
                         return render_toml(content, path)
                     return render_plain(content, path)
+
+        # App human views registered via _human_views
+        for prefix, view_fn in self._human_views.items():
+            if path == prefix or path.startswith(prefix + "/"):
+                return view_fn(path)
 
         # Proxied website — return the raw HTML so the browser renders it natively
         for prefix, base_url in self._website_mounts.items():

@@ -362,9 +362,7 @@ load();
     flask_app.add_url_rule(
         prefix + "/<agent_id>/.email",
         endpoint=ep + "_email", view_func=_set_email, methods=["POST"])
-    flask_app.add_url_rule(
-        prefix + "/_human",
-        endpoint=ep + "_human", view_func=_human)
+    inact_app._human_views[prefix] = lambda path: _human()
 
 
 def mount_register(inact_app, prefix: str, storage) -> None:

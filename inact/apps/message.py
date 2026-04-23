@@ -434,9 +434,7 @@ loadAgents();
     flask_app.add_url_rule(
         prefix + "/agents",
         endpoint=ep + "_agents", view_func=_agents)
-    flask_app.add_url_rule(
-        prefix + "/_human",
-        endpoint=ep + "_human", view_func=_human)
+    inact_app._human_views[prefix] = lambda path: _human()
 
 
 def mount_message(inact_app, prefix: str, storage) -> None:

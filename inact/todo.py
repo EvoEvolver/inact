@@ -1,5 +1,5 @@
 """
-Agent todo list — tasks with priorities, due dates, and arbitrary nesting.
+Agent todo list — tasks with priorities, due dates, assignees, and arbitrary nesting.
 
 A task is just a task.  Nesting is an optional relationship: set
 ``parent_id`` when creating to attach a task under another.  Any task can
@@ -8,23 +8,27 @@ have children; children can have children.
 mount_todo(prefix, storage) registers:
 
   GET    {prefix}/                     list root tasks (no parent)
-  GET    {prefix}/?status=todo         filter: status  (todo|doing|done)
-  GET    {prefix}/?priority=high       filter: priority (low|normal|high|urgent)
+  GET    {prefix}/?status=todo|done    filter by status
+  GET    {prefix}/?priority=high       filter by priority
+  GET    {prefix}/?assignee=alice      filter by assignee
   POST   {prefix}/                     create task
                                        body: {"title":"...","description":"...",
                                               "priority":"normal","due":"YYYY-MM-DD",
-                                              "parent_id":"optional-uuid"}
+                                              "assignee":"...","parent_id":"optional-uuid"}
   GET    {prefix}/.today               due today or overdue, not done (all levels)
   GET    {prefix}/.overdue             past due, not done (all levels)
+  GET    {prefix}/.unassigned          no assignee, not done (all levels)
   GET    {prefix}/{id}                 task detail + direct children
-  POST   {prefix}/{id}                 update fields (title/description/status/priority/due)
+  POST   {prefix}/{id}                 update fields (title/description/status/priority/due/assignee)
   DELETE {prefix}/{id}                 delete task and all descendants
   GET    {prefix}/{id}/children        list direct children
   POST   {prefix}/{id}/.done           mark done
   POST   {prefix}/{id}/.reopen         reopen (status → todo)
+  POST   {prefix}/{id}/.assign         set assignee  body: {"assignee":"alice"}
 
 Priority levels: low | normal | high | urgent
-Listings are sorted by priority desc, then due date asc (no-due last).
+Status values:   todo | done
+Listings sorted by priority desc, then due date asc (no-due last).
 """
 
 from __future__ import annotations
@@ -47,13 +51,19 @@ _DDL = [
         status      TEXT    NOT NULL DEFAULT 'todo',
         priority    TEXT    NOT NULL DEFAULT 'normal',
         due         TEXT,
+        assignee    TEXT    NOT NULL DEFAULT '',
         created_at  BIGINT  NOT NULL,
         updated_at  BIGINT  NOT NULL,
         done_at     BIGINT
     )""",
 ]
 
-_VALID_STATUS   = frozenset({"todo", "doing", "done"})
+# Run on existing tables that predate the assignee column.
+_MIGRATIONS = [
+    "ALTER TABLE tasks ADD COLUMN assignee TEXT NOT NULL DEFAULT ''",
+]
+
+_VALID_STATUS   = frozenset({"todo", "done"})
 _VALID_PRIORITY = frozenset({"low", "normal", "high", "urgent"})
 _PRIORITY_RANK  = {"urgent": 0, "high": 1, "normal": 2, "low": 3}
 
@@ -78,22 +88,31 @@ class TodoStore:
     def __init__(self, storage: Storage):
         self._s = storage
         self._s.init(_DDL)
+        self._migrate()
+
+    def _migrate(self) -> None:
+        for sql in _MIGRATIONS:
+            try:
+                self._s.execute(sql)
+            except Exception:
+                pass  # column already exists
 
     def create(self, title: str, description: str = "",
                priority: str = "normal", due: str | None = None,
-               parent_id: str | None = None) -> str:
+               assignee: str = "", parent_id: str | None = None) -> str:
         task_id = str(uuid.uuid4())
         now = int(time.time())
         self._s.execute(
-            "INSERT INTO tasks VALUES (?,?,?,?,?,?,?,?,?,?)",
+            "INSERT INTO tasks VALUES (?,?,?,?,?,?,?,?,?,?,?)",
             (task_id, parent_id, title, description,
-             "todo", priority, due, now, now, None),
+             "todo", priority, due, assignee, now, now, None),
         )
         return task_id
 
     def list_tasks(self, parent_id: str | None = None,
                    status: str | None = None,
-                   priority: str | None = None) -> list[dict]:
+                   priority: str | None = None,
+                   assignee: str | None = None) -> list[dict]:
         if parent_id is None:
             q, params = "SELECT * FROM tasks WHERE parent_id IS NULL", []
         else:
@@ -104,13 +123,16 @@ class TodoStore:
         if priority:
             q += " AND priority=?"
             params.append(priority)
+        if assignee is not None:
+            q += " AND assignee=?"
+            params.append(assignee)
         return sorted(self._s.fetchall(q, tuple(params)), key=_sort_key)
 
     def get(self, task_id: str) -> dict | None:
         return self._s.fetchone("SELECT * FROM tasks WHERE id=?", (task_id,))
 
     def update(self, task_id: str, fields: dict) -> bool:
-        allowed = {"title", "description", "status", "priority", "due"}
+        allowed = {"title", "description", "status", "priority", "due", "assignee"}
         updates = {k: v for k, v in fields.items() if k in allowed and v is not None}
         if not updates:
             return False
@@ -127,7 +149,6 @@ class TodoStore:
         ) > 0
 
     def delete(self, task_id: str) -> bool:
-        """Delete a task and all its descendants (recursive)."""
         for child in self._s.fetchall("SELECT id FROM tasks WHERE parent_id=?", (task_id,)):
             self.delete(child["id"])
         return self._s.execute("DELETE FROM tasks WHERE id=?", (task_id,)) > 0
@@ -139,7 +160,6 @@ class TodoStore:
         )
 
     def child_counts(self, task_id: str) -> tuple[int, int]:
-        """Return (total_children, done_children)."""
         total = self._s.fetchall(
             "SELECT COUNT(*) AS cnt FROM tasks WHERE parent_id=?", (task_id,)
         )
@@ -149,7 +169,6 @@ class TodoStore:
         return (total[0]["cnt"] if total else 0), (done[0]["cnt"] if done else 0)
 
     def today(self) -> list[dict]:
-        """All tasks (any depth) due today or overdue and not done."""
         td = _today_str()
         return sorted(
             self._s.fetchall(
@@ -159,11 +178,18 @@ class TodoStore:
         )
 
     def overdue(self) -> list[dict]:
-        """All tasks (any depth) past their due date and not done."""
         td = _today_str()
         return sorted(
             self._s.fetchall(
                 "SELECT * FROM tasks WHERE due < ? AND status != 'done'", (td,)
+            ),
+            key=_sort_key,
+        )
+
+    def unassigned(self) -> list[dict]:
+        return sorted(
+            self._s.fetchall(
+                "SELECT * FROM tasks WHERE (assignee IS NULL OR assignee='') AND status != 'done'"
             ),
             key=_sort_key,
         )
@@ -192,6 +218,8 @@ def _task_row_toml(task: dict, prefix: str,
         f"status   = {toml_str(task['status'])}\n",
         f"priority = {toml_str(task['priority'])}\n",
     ]
+    if task.get("assignee"):
+        lines.append(f"assignee = {toml_str(task['assignee'])}\n")
     if task["due"]:
         lines.append(f"due      = {toml_str(task['due'])}\n")
         if _is_overdue(task):
@@ -214,6 +242,7 @@ def _task_detail(task: dict, children: list[dict], prefix: str) -> str:
         lines.append(f"description = {toml_str(task['description'])}\n")
     lines.append(f"status      = {toml_str(task['status'])}\n")
     lines.append(f"priority    = {toml_str(task['priority'])}\n")
+    lines.append(f"assignee    = {toml_str(task.get('assignee') or '')}\n")
     if task["due"]:
         lines.append(f"due         = {toml_str(task['due'])}\n")
     if task["parent_id"]:
@@ -228,12 +257,13 @@ def _task_detail(task: dict, children: list[dict], prefix: str) -> str:
     if children:
         lines.append(f"# Children ({len(children)})\n\n")
         for child in children:
-            total, done = 0, 0  # counts shown only in root listing for brevity
             lines.append("[[children]]\n")
             lines.append(f"id       = {toml_str(child['id'])}\n")
             lines.append(f"title    = {toml_str(child['title'])}\n")
             lines.append(f"status   = {toml_str(child['status'])}\n")
             lines.append(f"priority = {toml_str(child['priority'])}\n")
+            if child.get("assignee"):
+                lines.append(f"assignee = {toml_str(child['assignee'])}\n")
             if child["due"]:
                 lines.append(f"due      = {toml_str(child['due'])}\n")
                 if _is_overdue(child):
@@ -262,6 +292,7 @@ def _parse_create_body(body: dict) -> tuple[str, dict] | tuple[None, str]:
         "description": (body.get("description") or "").strip(),
         "priority": priority,
         "due": due,
+        "assignee": (body.get("assignee") or "").strip(),
     }
 
 
@@ -283,7 +314,7 @@ def attach_todo(inact_app, prefix: str, store: TodoStore) -> None:
                     f"ERROR 400: {result}\n"
                     f"POST {prefix}/\n"
                     '  Body: {"title":"...","description":"...","priority":"normal",\n'
-                    '         "due":"YYYY-MM-DD","parent_id":"optional-uuid"}\n'
+                    '         "due":"YYYY-MM-DD","assignee":"...","parent_id":"optional-uuid"}\n'
                     f"\nPriority: low | normal | high | urgent\n",
                     400,
                 )
@@ -295,15 +326,20 @@ def attach_todo(inact_app, prefix: str, store: TodoStore) -> None:
                 f"OK\nid  = {toml_str(task_id)}\nurl = {toml_str(prefix + '/' + task_id)}\n"
             )
 
-        status_f   = request.args.get("status", "").strip() or None
+        status_f   = request.args.get("status",   "").strip() or None
         priority_f = request.args.get("priority", "").strip() or None
-        tasks = store.list_tasks(status=status_f, priority=priority_f)
+        assignee_f = request.args.get("assignee", None)
+        if assignee_f is not None:
+            assignee_f = assignee_f.strip()
+        tasks = store.list_tasks(status=status_f, priority=priority_f, assignee=assignee_f)
         td = _today_str()
         n_overdue = sum(1 for t in tasks if t["due"] and t["due"] < td and t["status"] != "done")
         lines = [f"# Tasks\n# {len(tasks)} task(s)"]
         if n_overdue:
             lines.append(f", {n_overdue} overdue")
-        lines.append("\n# tip: ?status=todo|doing|done  ?priority=low|normal|high|urgent\n\n")
+        lines.append(
+            "\n# tip: ?status=todo|done  ?priority=low|normal|high|urgent  ?assignee=name\n\n"
+        )
         for t in tasks:
             total, done = store.child_counts(t["id"])
             lines.append(_task_row_toml(t, prefix, total, done))
@@ -311,8 +347,7 @@ def attach_todo(inact_app, prefix: str, store: TodoStore) -> None:
 
     def _today():
         tasks = store.today()
-        td = _today_str()
-        lines = [f"# Due today or overdue ({td})\n# {len(tasks)} task(s)\n\n"]
+        lines = [f"# Due today or overdue ({_today_str()})\n# {len(tasks)} task(s)\n\n"]
         for t in tasks:
             lines.append(_task_row_toml(t, prefix))
         return text_response("".join(lines))
@@ -320,6 +355,13 @@ def attach_todo(inact_app, prefix: str, store: TodoStore) -> None:
     def _overdue():
         tasks = store.overdue()
         lines = [f"# Overdue tasks\n# {len(tasks)} task(s)\n\n"]
+        for t in tasks:
+            lines.append(_task_row_toml(t, prefix))
+        return text_response("".join(lines))
+
+    def _unassigned():
+        tasks = store.unassigned()
+        lines = [f"# Unassigned tasks\n# {len(tasks)} task(s)\n\n"]
         for t in tasks:
             lines.append(_task_row_toml(t, prefix))
         return text_response("".join(lines))
@@ -361,6 +403,8 @@ def attach_todo(inact_app, prefix: str, store: TodoStore) -> None:
                     except ValueError:
                         return text_response("ERROR 400: 'due' must be YYYY-MM-DD\n", 400)
                 fields["due"] = due
+            if "assignee" in body:
+                fields["assignee"] = (body["assignee"] or "").strip()
             store.update(task_id, fields)
             return text_response("OK\n")
 
@@ -392,6 +436,19 @@ def attach_todo(inact_app, prefix: str, store: TodoStore) -> None:
         store.update(task_id, {"status": "todo"})
         return text_response("OK\n")
 
+    def _assign(task_id: str):
+        if not store.get(task_id):
+            return text_response("ERROR 404: task not found\n", 404)
+        body = request.get_json(force=True, silent=True) or {}
+        assignee = (body.get("assignee") or "").strip()
+        if not assignee:
+            return text_response(
+                "ERROR 400: 'assignee' required\n"
+                f'Body: {{"assignee": "alice"}}\n', 400
+            )
+        store.update(task_id, {"assignee": assignee})
+        return text_response(f"OK\nassignee = {toml_str(assignee)}\n")
+
     flask_app.add_url_rule(
         prefix + "/",
         endpoint=ep + "_root", view_func=_root, methods=["GET", "POST"])
@@ -401,6 +458,9 @@ def attach_todo(inact_app, prefix: str, store: TodoStore) -> None:
     flask_app.add_url_rule(
         prefix + "/.overdue",
         endpoint=ep + "_overdue", view_func=_overdue)
+    flask_app.add_url_rule(
+        prefix + "/.unassigned",
+        endpoint=ep + "_unassigned", view_func=_unassigned)
     flask_app.add_url_rule(
         prefix + "/<task_id>",
         endpoint=ep + "_task", view_func=_task, methods=["GET", "POST", "DELETE"])
@@ -413,3 +473,6 @@ def attach_todo(inact_app, prefix: str, store: TodoStore) -> None:
     flask_app.add_url_rule(
         prefix + "/<task_id>/.reopen",
         endpoint=ep + "_reopen", view_func=_reopen, methods=["POST"])
+    flask_app.add_url_rule(
+        prefix + "/<task_id>/.assign",
+        endpoint=ep + "_assign", view_func=_assign, methods=["POST"])

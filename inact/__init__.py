@@ -1,6 +1,7 @@
 from .apps.a2a import A2AClient, mount_a2a
 from .core import Inact
 from .apps.cron import CronScheduler, mount_cron
+from .apps.auth import mount_auth
 from .apps.files import mount_files
 from .apps.notify import mount_notify, NotifyStore
 from .apps.forms import FormStore, mount_forms
@@ -21,6 +22,7 @@ from .apps.website import WebsiteProxy, mount_website
 
 __all__ = [
     "A2AClient",
+    "mount_auth",
     "CSVHandler",
     "AgentRegistry",
     "CronScheduler",

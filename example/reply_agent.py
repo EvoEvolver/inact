@@ -44,15 +44,60 @@ INTERVAL = 600  # 10 minutes
 # Claude
 # ---------------------------------------------------------------------------
 
-def claude_reply(my_id: str, from_id: str, body: str) -> str:
-    prompt = (
-        f"You are AI agent #{my_id} in an agent communication system. "
-        f"Agent #{from_id} sent you this message:\n\n"
-        f"\"{body}\"\n\n"
-        "Reply naturally in 2-3 sentences. Be helpful, concise, and engaging."
-    )
+def fetch_conversation(with_id: str) -> list[dict]:
+    """
+    Return the full message history between this agent and *with_id*,
+    sorted oldest-first: [{"role": "user"|"assistant", "text": str}, ...]
+    """
+    history = []
+    try:
+        # Messages we received from with_id
+        r = requests.get(f"{SERVER}{MSG}/inbox",
+                         params={"per_page": "50"},
+                         headers={"X-Agent-Id": AGENT_ID}, timeout=10)
+        for block in r.text.split("[[messages]]")[1:]:
+            from_id = (re.search(r'from\s*=\s*"([^"]+)"', block) or ["",""])[1]
+            url     = (re.search(r'url\s*=\s*"([^"]+)"',  block) or ["",""])[1]
+            date    = (re.search(r'date\s*=\s*"([^"]+)"', block) or ["",""])[1]
+            if from_id != str(with_id) or not url:
+                continue
+            body = requests.get(SERVER + url, timeout=5).text
+            text = body.split("\n---\n\n")[1].strip() if "\n---\n\n" in body else ""
+            if text:
+                history.append({"role": "user", "text": text, "date": date})
+    except Exception:
+        pass
+
+    try:
+        # Messages we sent to with_id
+        r = requests.get(f"{SERVER}{MSG}/sent",
+                         headers={"X-Agent-Id": AGENT_ID}, timeout=10)
+        for block in r.text.split("[[messages]]")[1:]:
+            to_id = (re.search(r'to\s*=\s*"([^"]+)"',   block) or ["",""])[1]
+            body  = (re.search(r'body\s*=\s*"([^"]*)"', block) or ["",""])[1]
+            date  = (re.search(r'date\s*=\s*"([^"]+)"', block) or ["",""])[1]
+            if to_id != str(with_id) or not body:
+                continue
+            history.append({"role": "assistant", "text": body, "date": date})
+    except Exception:
+        pass
+
+    history.sort(key=lambda m: m.get("date", ""))
+    return history
+
+
+def claude_reply(my_id: str, from_id: str, history: list[dict]) -> str:
+    lines = [
+        f"You are AI agent #{my_id}. You are having a conversation with agent #{from_id}.",
+        "Conversation history (oldest first):",
+        "",
+    ]
+    for m in history:
+        speaker = f"Agent #{from_id}" if m["role"] == "user" else f"You (agent #{my_id})"
+        lines.append(f"{speaker}: {m['text']}")
+    lines += ["", "Reply to the last message. Be helpful and concise (2-3 sentences)."]
     result = subprocess.run(
-        ["claude", "-p", prompt],
+        ["claude", "-p", "\n".join(lines)],
         capture_output=True, text=True, timeout=60,
     )
     return result.stdout.strip()
@@ -63,7 +108,7 @@ def claude_reply(my_id: str, from_id: str, body: str) -> str:
 # ---------------------------------------------------------------------------
 
 def process_inbox() -> int:
-    """Read all unread messages, reply to each. Returns number of replies sent."""
+    """Read all unread messages, reply with full context. Returns reply count."""
     try:
         r = requests.get(
             f"{SERVER}{MSG}/inbox",
@@ -75,27 +120,27 @@ def process_inbox() -> int:
         print(f"[inbox] error: {exc}", file=sys.stderr)
         return 0
 
-    blocks = r.text.split("[[messages]]")[1:]
-    replied = 0
-
-    for block in blocks:
-        m_id   = (re.search(r'id\s*=\s*"([^"]+)"',   block) or ["", ""])[1]
+    # Group by sender so we fetch history once per conversation, not per message
+    senders: dict[str, list] = {}
+    for block in r.text.split("[[messages]]")[1:]:
+        m_id    = (re.search(r'id\s*=\s*"([^"]+)"',   block) or ["", ""])[1]
         from_id = (re.search(r'from\s*=\s*"([^"]+)"', block) or ["", ""])[1]
         url     = (re.search(r'url\s*=\s*"([^"]+)"',  block) or ["", ""])[1]
-        if not m_id or not from_id:
+        if m_id and from_id:
+            senders.setdefault(from_id, []).append(url)
+
+    replied = 0
+    for from_id, urls in senders.items():
+        # Fetch full conversation context
+        history = fetch_conversation(from_id)
+        if not history:
             continue
 
-        # Fetch the full message body
-        try:
-            detail = requests.get(SERVER + url, timeout=5).text
-        except Exception:
-            continue
-        body = detail.split("\n---\n\n")[1].strip() if "\n---\n\n" in detail else ""
-        if not body:
-            continue
+        last_msg = next((m["text"] for m in reversed(history) if m["role"] == "user"), "")
+        print(f"\n[msg] from agent #{from_id}: {last_msg[:100]}")
+        print(f"[ctx] {len(history)} messages in history")
 
-        print(f"\n[msg] from agent #{from_id}: {body[:120]}")
-        reply = claude_reply(AGENT_ID, from_id, body)
+        reply = claude_reply(AGENT_ID, from_id, history)
         print(f"[reply] {reply}")
 
         try:

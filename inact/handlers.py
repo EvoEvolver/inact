@@ -88,7 +88,7 @@ class PDFHandler(FileHandler):
 
         chunk = text[(page - 1) * self.chars_per_page : page * self.chars_per_page]
 
-        nav = [f"# {os.path.basename(abs_path)}", f"[Page {page} of {total}]"]
+        nav = [f"# {os.path.basename(virtual_path)}", f"[Page {page} of {total}]"]
         if page > 1:
             nav.append(f"prev: {virtual_path}/p/{page - 1}")
         if page < total:
@@ -155,7 +155,7 @@ class CSVHandler(FileHandler):
         keys = [self._safe_key(h) for h in headers]
 
         lines = [
-            f"# {os.path.basename(abs_path)}\n",
+            f"# {os.path.basename(virtual_path)}\n",
             f"# {total_rows} rows  —  page {page} of {total_pages}"
             f"  (rows {start + 1}–{start + len(page_rows)})\n",
         ]

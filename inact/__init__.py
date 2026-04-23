@@ -10,6 +10,7 @@ from .apps.mcp import McpClient, StdioMcpClient, mount_mcp, mount_mcp_npx, mount
 from .apps.message import MessageStore, mount_message
 from .pages import MdContent, TomlContent
 from .apps.register import AgentRegistry, mount_register
+from .apps.s3 import mount_s3, S3Mount
 from .apps.search import mount_search
 from .storage import PostgresStorage, SqliteStorage, Storage, make_storage
 from .utils import text_response, html_response, toml_str, server_base, format_table
@@ -48,7 +49,9 @@ __all__ = [
     "mount_mcp_npx",
     "mount_mcp_uvx",
     "mount_register",
+    "mount_s3",
     "mount_search",
+    "S3Mount",
     "mount_todo",
     "mount_website",
     "server_base",

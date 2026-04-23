@@ -27,7 +27,7 @@ import time
 from flask import request
 
 from ..storage import Storage
-from ..utils import text_response, toml_str
+from ..utils import text_response, html_response, toml_str
 
 _DDL = [
     """CREATE TABLE IF NOT EXISTS agents (
@@ -230,6 +230,129 @@ def attach_register(inact_app, prefix: str, registry: AgentRegistry) -> None:
             return text_response("ERROR 404: agent not found or api_key mismatch\n", 404)
         return text_response(f"OK\nemail = {toml_str(email)}\n")
 
+    def _human():
+        p = prefix
+        html = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Register</title>
+<style>
+*{{box-sizing:border-box;margin:0;padding:0}}
+body{{font-family:system-ui,sans-serif;background:#f5f5f5;color:#222;min-height:100vh;display:flex;align-items:flex-start;justify-content:center;padding:40px 16px}}
+.card{{background:#fff;border-radius:12px;padding:36px;width:100%;max-width:420px;box-shadow:0 2px 12px rgba(0,0,0,.08)}}
+h1{{font-size:20px;margin-bottom:6px}}
+p{{color:#666;font-size:14px;margin-bottom:20px}}
+input{{width:100%;border:1px solid #ddd;border-radius:8px;padding:10px 12px;font-size:14px;font-family:inherit}}
+input:focus{{outline:none;border-color:#0066cc}}
+button{{background:#0066cc;color:#fff;border:none;border-radius:8px;padding:10px 18px;cursor:pointer;font-size:14px;white-space:nowrap}}
+button:hover{{background:#0052a3}}
+.row{{display:flex;gap:8px;margin-top:12px}}
+.row input{{flex:1}}
+.badge{{background:#e8f0fe;color:#1a56db;border-radius:8px;padding:12px 14px;font-size:13px;margin:16px 0;word-break:break-all;line-height:1.6}}
+.link{{display:inline-block;margin-top:12px;color:#0066cc;font-size:14px;text-decoration:none;font-weight:500}}
+.err{{color:#cc0000;font-size:13px;margin-top:8px}}
+hr{{border:none;border-top:1px solid #eee;margin:24px 0}}
+.agents{{margin-top:8px}}
+.agent-row{{padding:8px 0;border-bottom:1px solid #f0f0f0;font-size:14px;display:flex;justify-content:space-between;align-items:center}}
+.agent-row:last-child{{border:none}}
+.agent-id{{color:#888;font-size:12px}}
+</style>
+</head>
+<body>
+<div class="card">
+  <h1>Inact</h1>
+  <p>Register to get an agent ID and API key.</p>
+
+  <div id="logged" hidden>
+    <div class="badge">
+      Signed in as <strong id="li-name"></strong> &nbsp;·&nbsp; Agent&nbsp;#<span id="li-id"></span>
+    </div>
+    <a id="chat-link" href="#" class="link">Open chat →</a>
+    <br><a href="#" id="logout" style="font-size:12px;color:#aaa;margin-top:8px;display:inline-block">Sign out</a>
+  </div>
+
+  <div id="form-section">
+    <div class="row">
+      <input id="name" placeholder="Your name (optional)" autocomplete="off">
+      <button id="reg-btn">Register</button>
+    </div>
+    <div id="err" class="err" hidden></div>
+  </div>
+
+  <div id="ok" hidden>
+    <div class="badge">
+      ✓ Registered as agent&nbsp;#<strong id="new-id"></strong><br>
+      <span id="new-key" style="font-size:12px"></span>
+    </div>
+    <a id="ok-chat-link" href="#" class="link">Start chatting →</a>
+  </div>
+
+  <hr>
+  <strong style="font-size:13px">All agents</strong>
+  <div class="agents" id="agents-list"><div style="color:#bbb;font-size:13px;padding:8px 0">Loading…</div></div>
+</div>
+
+<script>
+const PREFIX = {p!r};
+function load() {{
+  const id = localStorage.getItem('inact_agent_id');
+  const key = localStorage.getItem('inact_api_key');
+  const nm  = localStorage.getItem('inact_name') || '';
+  if (id && key) {{
+    document.getElementById('logged').hidden = false;
+    document.getElementById('form-section').hidden = true;
+    document.getElementById('li-id').textContent = id;
+    document.getElementById('li-name').textContent = nm || ('Agent #' + id);
+  }}
+  loadAgents();
+}}
+function parseBlocks(text, tag) {{
+  return text.split('[[' + tag + ']]').slice(1).map(b => {{
+    const o = {{}};
+    b.split('\\n').forEach(l => {{ const m = l.match(/^(\\w+)\\s*=\\s*"([^"]*)"/) || l.match(/^(\\w+)\\s*=\\s*(\\S+)/); if(m) o[m[1]]=m[2]; }});
+    return o;
+  }}).filter(o => o.id);
+}}
+async function loadAgents() {{
+  const text = await fetch(PREFIX + '/').then(r => r.text()).catch(()=>'');
+  const agents = parseBlocks(text, 'agents');
+  const list = document.getElementById('agents-list');
+  list.innerHTML = agents.map(a =>
+    `<div class="agent-row"><span>${{a.name || ('Agent #'+a.id)}}</span><span class="agent-id">#${{a.id}}</span></div>`
+  ).join('') || '<div style="color:#bbb;font-size:13px;padding:8px 0">No agents yet.</div>';
+}}
+document.getElementById('reg-btn').addEventListener('click', async () => {{
+  const name = document.getElementById('name').value.trim();
+  const errEl = document.getElementById('err');
+  errEl.hidden = true;
+  try {{
+    const text = await fetch(PREFIX + '/', {{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{name}})}}).then(r=>r.text());
+    const id  = (text.match(/^id\\s*=\\s*(\\d+)/m)||[])[1];
+    const key = (text.match(/api_key\\s*=\\s*"([^"]+)"/m)||[])[1];
+    if (!id||!key) throw new Error(text);
+    localStorage.setItem('inact_agent_id', id);
+    localStorage.setItem('inact_api_key',  key);
+    localStorage.setItem('inact_name',     name);
+    document.getElementById('form-section').hidden = true;
+    document.getElementById('ok').hidden = false;
+    document.getElementById('new-id').textContent = id;
+    document.getElementById('new-key').textContent = key;
+    loadAgents();
+  }} catch(e) {{ errEl.textContent = String(e); errEl.hidden = false; }}
+}});
+document.getElementById('name').addEventListener('keydown', e => {{ if(e.key==='Enter') document.getElementById('reg-btn').click(); }});
+document.getElementById('logout').addEventListener('click', e => {{
+  e.preventDefault();
+  ['inact_agent_id','inact_api_key','inact_name'].forEach(k=>localStorage.removeItem(k));
+  location.reload();
+}});
+load();
+</script>
+</body></html>"""
+        return html_response(html)
+
     flask_app.add_url_rule(
         prefix + "/",
         endpoint=ep + "_root", view_func=_root, methods=["GET", "POST"])
@@ -239,6 +362,9 @@ def attach_register(inact_app, prefix: str, registry: AgentRegistry) -> None:
     flask_app.add_url_rule(
         prefix + "/<agent_id>/.email",
         endpoint=ep + "_email", view_func=_set_email, methods=["POST"])
+    flask_app.add_url_rule(
+        prefix + "/_human",
+        endpoint=ep + "_human", view_func=_human)
 
 
 def mount_register(inact_app, prefix: str, storage) -> None:

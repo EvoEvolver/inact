@@ -30,8 +30,8 @@ import uuid
 
 from flask import request
 
-from .storage import Storage
-from .utils import text_response, toml_str
+from ..storage import Storage
+from ..utils import text_response, toml_str
 
 _DDL = [
     """CREATE TABLE IF NOT EXISTS messages (
@@ -284,3 +284,32 @@ def attach_message(inact_app, prefix: str, store: MessageStore) -> None:
     flask_app.add_url_rule(
         prefix + "/agents",
         endpoint=ep + "_agents", view_func=_agents)
+
+
+def mount_message(inact_app, prefix: str, storage) -> None:
+    """
+    Mount an agent messaging service at *prefix*.
+
+    Agents send plain-text messages to each other by ID. Inbox and sent folders
+    are paginated. ``/agents`` lists agents who have sent at least one message.
+
+    *storage* — a database URL/path or a :class:`~inact.storage.Storage` instance.
+
+    Example::
+
+        app.mount_message("/msg", "./data/messages.db")
+    """
+    from ..storage import make_storage
+    p = "/" + prefix.strip("/")
+    backend = make_storage(storage) if isinstance(storage, str) else storage
+    attach_message(inact_app, p, MessageStore(backend))
+    inact_app._app_mounts.append((p, (
+        f"\nAgent messaging: {p}\n"
+        f'  POST   {p}/send          send  body: {{"from":"1","to":"2","body":"..."}}\n'
+        f"  GET    {p}/inbox         received messages  (?agent_id=<id>  ?unread=1  ?page=1)\n"
+        f"  GET    {p}/inbox/{{id}}    read message (marks read)\n"
+        f"  DELETE {p}/inbox/{{id}}    delete message\n"
+        f"  GET    {p}/sent          sent messages  (?agent_id=<id>  ?page=1)\n"
+        f"  GET    {p}/agents        known agents  (?page=1)\n"
+        f"  # identity: X-Agent-Id header or ?agent_id= param\n"
+    )))

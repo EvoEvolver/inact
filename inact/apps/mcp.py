@@ -273,3 +273,162 @@ class StdioMcpClient:
     def read_resource(self, uri: str) -> list[dict]:
         self.ensure_initialized()
         return self._request("resources/read", {"uri": uri}).get("contents", [])
+
+
+# ---------------------------------------------------------------------------
+# Route attachment
+# ---------------------------------------------------------------------------
+
+def attach_mcp(inact_app, prefix: str, client, label: str) -> None:
+    from flask import request
+    from ..utils import text_response, toml_str
+
+    prefix = "/" + prefix.strip("/")
+    ep = "_inact_mcp_" + prefix.replace("/", "__")
+    flask_app = inact_app.app
+
+    def _tools():
+        try:
+            tools = client.list_tools()
+        except Exception as exc:
+            return text_response(f"ERROR 502: {exc}\n", 502)
+        lines = [f"# {len(tools)} tool(s) from {label}\n\n"]
+        for t in tools:
+            lines.append("[[tools]]\n")
+            lines.append(f"name        = {toml_str(t['name'])}\n")
+            lines.append(f"description = {toml_str(t.get('description', ''))}\n")
+            lines.append(f"call        = {toml_str(prefix + '/call/' + t['name'])}\n")
+            schema = t.get("inputSchema")
+            if schema:
+                lines.append(f"inputSchema = {toml_str(json.dumps(schema))}\n")
+            lines.append("\n")
+        return text_response("".join(lines))
+
+    def _call(tool_name: str):
+        try:
+            arguments = request.get_json(force=True, silent=True) or {}
+            content = client.call_tool(tool_name, arguments)
+        except Exception as exc:
+            return text_response(f"ERROR 502: {exc}\n", 502)
+        parts = []
+        for item in content:
+            if item.get("type") == "text":
+                parts.append(item.get("text", ""))
+            elif item.get("type") == "image":
+                parts.append(f"[image/{item.get('mimeType', 'unknown')}]")
+            else:
+                parts.append(json.dumps(item))
+        return text_response("\n".join(parts))
+
+    def _resources():
+        try:
+            resources = client.list_resources()
+        except Exception as exc:
+            return text_response(f"ERROR 502: {exc}\n", 502)
+        lines = [f"# {len(resources)} resource(s) from {label}\n\n"]
+        for r in resources:
+            lines.append("[[resources]]\n")
+            lines.append(f"uri         = {toml_str(r['uri'])}\n")
+            lines.append(f"name        = {toml_str(r.get('name', r['uri']))}\n")
+            if "description" in r:
+                lines.append(f"description = {toml_str(r['description'])}\n")
+            if "mimeType" in r:
+                lines.append(f"mimeType    = {toml_str(r['mimeType'])}\n")
+            lines.append(f"read        = {toml_str(prefix + '/resource?uri=' + r['uri'])}\n")
+            lines.append("\n")
+        return text_response("".join(lines))
+
+    def _resource():
+        uri = request.args.get("uri", "").strip()
+        if not uri:
+            return text_response(
+                f"ERROR 400: ?uri= required\nUsage: GET {prefix}/resource?uri=<uri>\n", 400
+            )
+        try:
+            contents = client.read_resource(uri)
+        except Exception as exc:
+            return text_response(f"ERROR 502: {exc}\n", 502)
+        parts = []
+        for item in contents:
+            if item.get("type") == "text":
+                parts.append(item.get("text", ""))
+            elif item.get("type") == "blob":
+                parts.append(f"[binary/{item.get('mimeType', 'application/octet-stream')}]")
+            else:
+                parts.append(json.dumps(item))
+        return text_response("\n".join(parts))
+
+    flask_app.add_url_rule(
+        prefix + "/.tools", endpoint=ep + "_tools", view_func=_tools)
+    flask_app.add_url_rule(
+        prefix + "/call/<tool_name>", endpoint=ep + "_call",
+        view_func=_call, methods=["POST"])
+    flask_app.add_url_rule(
+        prefix + "/.resources", endpoint=ep + "_resources", view_func=_resources)
+    flask_app.add_url_rule(
+        prefix + "/resource", endpoint=ep + "_resource", view_func=_resource)
+
+
+def _mcp_help(prefix: str, label: str) -> str:
+    p = prefix
+    return (
+        f"\nMCP server: {p}  ({label})\n"
+        f"  GET  {p}/.tools              list tools\n"
+        f"  POST {p}/call/<name>         call a tool  body: JSON args\n"
+        f"  GET  {p}/.resources          list resources\n"
+        f"  GET  {p}/resource?uri=<uri>  read a resource\n"
+    )
+
+
+def mount_mcp(inact_app, prefix: str, url: str) -> None:
+    """Mount a URL-based MCP server (Streamable HTTP transport) at *prefix*."""
+    p = "/" + prefix.strip("/")
+    attach_mcp(inact_app, prefix, McpClient(url), label=url)
+    inact_app._app_mounts.append((p, _mcp_help(p, url)))
+
+
+def mount_mcp_npx(
+    inact_app,
+    prefix: str,
+    package: str,
+    args: list[str] | None = None,
+    env: dict[str, str] | None = None,
+) -> None:
+    """
+    Mount an MCP server launched via ``npx`` at *prefix*.
+
+    The server process is spawned lazily on the first request.
+
+    Example::
+
+        app.mount_mcp_npx("/fs", "@modelcontextprotocol/server-filesystem",
+                          args=["--allowed-paths", "/tmp"])
+    """
+    p = "/" + prefix.strip("/")
+    label = f"npx:{package}"
+    attach_mcp(inact_app, prefix, StdioMcpClient("npx", ["-y", package, *(args or [])], env),
+               label=label)
+    inact_app._app_mounts.append((p, _mcp_help(p, label)))
+
+
+def mount_mcp_uvx(
+    inact_app,
+    prefix: str,
+    package: str,
+    args: list[str] | None = None,
+    env: dict[str, str] | None = None,
+) -> None:
+    """
+    Mount an MCP server launched via ``uvx`` at *prefix*.
+
+    The server process is spawned lazily on the first request.
+
+    Example::
+
+        app.mount_mcp_uvx("/git", "mcp-server-git")
+    """
+    p = "/" + prefix.strip("/")
+    label = f"uvx:{package}"
+    attach_mcp(inact_app, prefix, StdioMcpClient("uvx", [package, *(args or [])], env),
+               label=label)
+    inact_app._app_mounts.append((p, _mcp_help(p, label)))

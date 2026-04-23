@@ -38,8 +38,8 @@ from datetime import datetime, timedelta, timezone
 import httpx
 from flask import request
 
-from .storage import Storage
-from .utils import text_response, toml_str
+from ..storage import Storage
+from ..utils import text_response, toml_str
 
 _DDL = [
     """CREATE TABLE IF NOT EXISTS jobs (
@@ -407,3 +407,32 @@ def attach_cron(inact_app, prefix: str, scheduler: CronScheduler) -> None:
     flask_app.add_url_rule(
         prefix + "/<job_id>/runs",
         endpoint=ep + "_runs", view_func=_runs)
+
+
+def mount_cron(inact_app, prefix: str, storage) -> None:
+    """
+    Mount a cron scheduler at *prefix* and start the background thread.
+
+    Agents register jobs by POSTing a URL and a 5-field cron expression.
+
+    *storage* — a database URL/path or a :class:`~inact.storage.Storage` instance.
+
+    Example::
+
+        app.mount_cron("/cron", "./data/cron.db")
+    """
+    from ..storage import make_storage
+    p = "/" + prefix.strip("/")
+    backend = make_storage(storage) if isinstance(storage, str) else storage
+    scheduler = CronScheduler(backend)
+    scheduler.start()
+    attach_cron(inact_app, p, scheduler)
+    inact_app._app_mounts.append((p, (
+        f"\nCron: {p}\n"
+        f"  GET    {p}/           list jobs\n"
+        f'  POST   {p}/           create job  body: {{"url":"...","schedule":"* * * * *","label":"..."}}\n'
+        f"  GET    {p}/{{id}}       job details\n"
+        f"  DELETE {p}/{{id}}       delete job\n"
+        f"  POST   {p}/{{id}}/.run  fire now\n"
+        f"  GET    {p}/{{id}}/runs  run history\n"
+    )))

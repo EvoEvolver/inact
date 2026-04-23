@@ -16,7 +16,7 @@ import os
 import httpx
 from flask import request
 
-from .utils import text_response, toml_str
+from ..utils import text_response, toml_str
 
 _TAVILY_URL = "https://api.tavily.com/search"
 
@@ -74,3 +74,23 @@ def attach_search(inact_app, prefix: str, api_key: str | None) -> None:
         return text_response("".join(lines))
 
     inact_app.app.add_url_rule(prefix, endpoint=ep, view_func=_search)
+
+
+def mount_search(inact_app, prefix: str, api_key: str | None = None) -> None:
+    """
+    Mount Tavily web search at *prefix*.
+
+    *api_key* — Tavily API key; falls back to the ``TAVILY_API_KEY`` env var.
+
+    Example::
+
+        app.mount_search("/search")
+        app.mount_search("/search", api_key="tvly-...")
+    """
+    p = "/" + prefix.strip("/")
+    attach_search(inact_app, p, api_key)
+    inact_app._app_mounts.append((p, (
+        f"\nSearch: {p}\n"
+        f"  GET  {p}?q=your+query   web search (TOML)\n"
+        f"  GET  {p}?q=...&max=10   limit results (default 5, max 20)\n"
+    )))

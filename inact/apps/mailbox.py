@@ -23,8 +23,8 @@ import uuid
 
 from flask import request
 
-from .storage import Storage
-from .utils import text_response, toml_str
+from ..storage import Storage
+from ..utils import text_response, toml_str
 
 _DDL = [
     """CREATE TABLE IF NOT EXISTS messages (
@@ -234,3 +234,32 @@ def attach_mailbox(inact_app, prefix: str, mailbox: Mailbox) -> None:
     flask_app.add_url_rule(
         prefix + "/thread/<thread_id>",
         endpoint=ep + "_thread", view_func=_thread)
+
+
+def mount_mailbox(inact_app, prefix: str, storage) -> None:
+    """
+    Mount a persistent mailbox at *prefix*.
+
+    Provides inbox, sent folder, threading, compose, and reply.
+    Messages sent to local addresses (no ``://``) are delivered to the inbox.
+
+    *storage* — a database URL/path or a :class:`~inact.storage.Storage` instance.
+
+    Example::
+
+        app.mount_mailbox("/mail", "./data/mail.db")
+    """
+    from ..storage import make_storage
+    p = "/" + prefix.strip("/")
+    backend = make_storage(storage) if isinstance(storage, str) else storage
+    attach_mailbox(inact_app, p, Mailbox(backend))
+    inact_app._app_mounts.append((p, (
+        f"\nMailbox: {p}\n"
+        f"  GET    {p}/inbox             list inbox  (?unread=1)\n"
+        f"  GET    {p}/inbox/{{id}}        read message (marks read)\n"
+        f"  DELETE {p}/inbox/{{id}}        delete message\n"
+        f"  POST   {p}/inbox/{{id}}/.reply reply\n"
+        f"  GET    {p}/sent              list sent\n"
+        f'  POST   {p}/compose           send  body: {{"to":"...","subject":"...","body":"..."}}\n'
+        f"  GET    {p}/thread/{{id}}       full thread\n"
+    )))

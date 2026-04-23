@@ -135,3 +135,77 @@ class WebsiteProxy:
         )
         resp.raise_for_status()
         return resp.headers.get("content-type", "text/plain"), resp.text
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def serve_links(proxy: WebsiteProxy, prefix: str, base_url: str, page_sub: str) -> tuple:
+    from ..utils import text_response, toml_str
+    try:
+        _, _, links = proxy.fetch_text(page_sub)
+    except Exception as exc:
+        return text_response(f"ERROR 502: {exc}\n", 502)
+    page_url = base_url.rstrip("/") + ("/" + page_sub.lstrip("/") if page_sub else "/")
+    lines = [f"# Links on: {page_url}\n", f"# {len(links)} link(s)\n\n"]
+    for href, link_text in links:
+        lines.append("[[links]]\n")
+        lines.append(f"url  = {toml_str(href)}\n")
+        lines.append(f"text = {toml_str(link_text)}\n")
+        lines.append("\n")
+    return text_response("".join(lines))
+
+
+# ---------------------------------------------------------------------------
+# Route attachment
+# ---------------------------------------------------------------------------
+
+def attach_website(inact_app, prefix: str, proxy: WebsiteProxy, base_url: str) -> None:
+    from flask import request
+    from ..utils import text_response
+
+    prefix = "/" + prefix.strip("/")
+    ep = "_inact_web_" + prefix.replace("/", "__")
+    flask_app = inact_app.app
+
+    def _handler(subpath: str = ""):
+        if subpath == ".links" or subpath.endswith("/.links"):
+            page_sub = subpath[:-6].rstrip("/") if subpath.endswith("/.links") else ""
+            return serve_links(proxy, prefix, base_url, page_sub)
+        params = dict(request.args) or None
+        try:
+            title, text, _ = proxy.fetch_text(subpath, params)
+        except Exception as exc:
+            return text_response(f"ERROR 502: {exc}\n", 502)
+        page_url = base_url.rstrip("/") + ("/" + subpath.lstrip("/") if subpath else "/")
+        header = f"# {title}\n# url: {page_url}\n\n" if title else f"# url: {page_url}\n\n"
+        return text_response(header + text)
+
+    flask_app.add_url_rule(
+        prefix + "/", endpoint=ep + "_root",
+        view_func=lambda: _handler(""), defaults={})
+    flask_app.add_url_rule(
+        prefix + "/<path:subpath>", endpoint=ep, view_func=_handler)
+
+
+def mount_website(inact_app, prefix: str, base_url: str) -> None:
+    """
+    Mount a remote website at *prefix*.
+
+    All GET requests are proxied and returned as plain text (HTML stripped).
+    Append ``/.links`` to any path to list hyperlinks on that page.
+    The ``/_human/<prefix>/…`` view returns the original HTML for browsers.
+
+    Example::
+
+        app.mount_website("/docs", "https://docs.example.com")
+    """
+    p = "/" + prefix.strip("/")
+    inact_app._website_mounts[p] = base_url  # kept for _render_human
+    attach_website(inact_app, p, WebsiteProxy(base_url), base_url)
+    inact_app._app_mounts.append((p, (
+        f"\nWebsite: {p}  ({base_url})\n"
+        f"  GET  {p}/<path>         fetch page as plain text\n"
+        f"  GET  {p}/<path>/.links  list hyperlinks on page (TOML)\n"
+    )))

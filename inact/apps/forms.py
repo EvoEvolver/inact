@@ -25,8 +25,8 @@ import uuid
 
 from flask import request
 
-from .storage import Storage
-from .utils import text_response, toml_str
+from ..storage import Storage
+from ..utils import text_response, toml_str
 
 _BARE_KEY_RE = re.compile(r"^[a-zA-Z0-9_-]+$")
 
@@ -249,3 +249,30 @@ def attach_forms(inact_app, prefix: str, store: FormStore) -> None:
     flask_app.add_url_rule(
         prefix + "/<form_id>/responses",
         endpoint=ep + "_responses", view_func=_responses)
+
+
+def mount_forms(inact_app, prefix: str, storage) -> None:
+    """
+    Mount a form builder at *prefix*.
+
+    Agents create forms with typed fields, share the submit URL, and read responses.
+
+    *storage* — a database URL/path or a :class:`~inact.storage.Storage` instance.
+
+    Example::
+
+        app.mount_forms("/forms", "./data/forms.db")
+    """
+    from ..storage import make_storage
+    p = "/" + prefix.strip("/")
+    backend = make_storage(storage) if isinstance(storage, str) else storage
+    attach_forms(inact_app, p, FormStore(backend))
+    inact_app._app_mounts.append((p, (
+        f"\nForms: {p}\n"
+        f"  GET    {p}/           list forms\n"
+        f"  POST   {p}/           create form\n"
+        f"  GET    {p}/{{id}}       form definition\n"
+        f"  DELETE {p}/{{id}}       delete form\n"
+        f"  POST   {p}/{{id}}/submit   submit response\n"
+        f"  GET    {p}/{{id}}/responses list responses\n"
+    )))

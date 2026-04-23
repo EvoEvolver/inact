@@ -39,8 +39,8 @@ from datetime import datetime, timezone
 
 from flask import request
 
-from .storage import Storage
-from .utils import text_response, toml_str
+from ..storage import Storage
+from ..utils import text_response, toml_str
 
 _DDL = [
     """CREATE TABLE IF NOT EXISTS tasks (
@@ -476,3 +476,35 @@ def attach_todo(inact_app, prefix: str, store: TodoStore) -> None:
     flask_app.add_url_rule(
         prefix + "/<task_id>/.assign",
         endpoint=ep + "_assign", view_func=_assign, methods=["POST"])
+
+
+def mount_todo(inact_app, prefix: str, storage) -> None:
+    """
+    Mount a todo list at *prefix*.
+
+    Agents create tasks and subtasks with priorities, due dates, and assignees.
+
+    *storage* — a database URL/path or a :class:`~inact.storage.Storage` instance.
+
+    Example::
+
+        app.mount_todo("/tasks", "./data/tasks.db")
+    """
+    from ..storage import make_storage
+    p = "/" + prefix.strip("/")
+    backend = make_storage(storage) if isinstance(storage, str) else storage
+    attach_todo(inact_app, p, TodoStore(backend))
+    inact_app._app_mounts.append((p, (
+        f"\nTodo: {p}\n"
+        f"  GET    {p}/             list tasks  (?status=todo|done  ?priority=high  ?assignee=name)\n"
+        f"  POST   {p}/             create task\n"
+        f"  GET    {p}/.today       due today or overdue\n"
+        f"  GET    {p}/.overdue     past due, not done\n"
+        f"  GET    {p}/.unassigned  no assignee, not done\n"
+        f"  GET    {p}/{{id}}         task detail + children\n"
+        f"  POST   {p}/{{id}}         update fields\n"
+        f"  DELETE {p}/{{id}}         delete\n"
+        f"  POST   {p}/{{id}}/.done   mark done\n"
+        f"  POST   {p}/{{id}}/.reopen reopen\n"
+        f"  POST   {p}/{{id}}/.assign set assignee\n"
+    )))

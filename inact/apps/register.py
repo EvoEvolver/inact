@@ -23,8 +23,8 @@ import time
 
 from flask import request
 
-from .storage import Storage
-from .utils import text_response, toml_str
+from ..storage import Storage
+from ..utils import text_response, toml_str
 
 _DDL = [
     """CREATE TABLE IF NOT EXISTS agents (
@@ -170,3 +170,29 @@ def attach_register(inact_app, prefix: str, registry: AgentRegistry) -> None:
     flask_app.add_url_rule(
         prefix + "/<agent_id>",
         endpoint=ep + "_agent", view_func=_agent, methods=["GET", "DELETE"])
+
+
+def mount_register(inact_app, prefix: str, storage) -> None:
+    """
+    Mount an agent registry at *prefix*.
+
+    Agents POST to register and receive an auto-incrementing integer ID and API key.
+    The registry is publicly listable for agent discovery.
+
+    *storage* — a database URL/path or a :class:`~inact.storage.Storage` instance.
+
+    Example::
+
+        app.mount_register("/agents", "./data/agents.db")
+    """
+    from ..storage import make_storage
+    p = "/" + prefix.strip("/")
+    backend = make_storage(storage) if isinstance(storage, str) else storage
+    attach_register(inact_app, p, AgentRegistry(backend))
+    inact_app._app_mounts.append((p, (
+        f"\nAgent registry: {p}\n"
+        f'  POST   {p}/      register  body: {{"name":"optional"}}  → id, api_key\n'
+        f"  GET    {p}/      list agents  (?page=1&per_page=20)\n"
+        f"  GET    {p}/{{id}}  agent profile\n"
+        f"  DELETE {p}/{{id}}  deregister  (X-Api-Key header required)\n"
+    )))

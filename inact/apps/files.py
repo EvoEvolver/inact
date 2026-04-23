@@ -1,63 +1,210 @@
 """
-File system mount for inact — serve a local folder over HTTP.
+File system mount for inact.
 
-mount_files(inact_app, prefix, folder, handlers=None, editable=False) registers:
+mount_files(inact_app, prefix, folder_or_fs, handlers=None, editable=False)
 
-  GET  {prefix}/                    list root directory (TOML)
-  GET  {prefix}/<path>/.ls          list subdirectory
-  GET  {prefix}/.grep?q=<term>      search content in root
-  GET  {prefix}/<path>/.grep?q=…    search in subdirectory
-  GET  {prefix}/<file>              serve file (plain text / handler output)
-  GET  {prefix}/<file>/.info        file metadata + page count
-  GET  {prefix}/<file>/.download    download raw file
-  GET  {prefix}/<file>/p/<N>        paginated file (handler required)
-  GET  {prefix}/<file>/.replace     show replace info (editable only)
-  POST {prefix}/<file>/.replace     overwrite file content (editable only)
+  folder_or_fs — a local path string OR any :class:`FileSystem` instance
+                 (e.g. :class:`~inact.apps.s3.S3FS` for S3-backed storage).
 
-*handlers* — list of :class:`~inact.handlers.FileHandler` instances.
-*editable* — ``True`` makes all files writable; a list of glob patterns
-(e.g. ``["*.md", "notes/"]``) restricts editability to matching paths.
+Registers:
+  GET  {prefix}/                    list root (TOML)
+  GET  {prefix}/<path>/.ls          list sub-directory
+  GET  {prefix}/.grep?q=<term>      search content
+  GET  {prefix}/<file>              serve file (plain text / handler)
+  GET  {prefix}/<file>/.info        metadata + page count
+  GET  {prefix}/<file>/.download    raw download
+  GET  {prefix}/<file>/p/<N>        paginated (handler required)
+  POST {prefix}/<file>/.append      append line/row
+  GET  {prefix}/<file>/.replace     replace info  (editable only)
+  POST {prefix}/<file>/.replace     overwrite file (editable only)
 """
 
 from __future__ import annotations
 
+import csv
 import fnmatch
+import io
 import os
 import re
+import tempfile
 
 from flask import request, send_file
 
 from ..utils import text_response, toml_str
 
-# Matches pagination suffix: <file_subpath>/p/<page_number>
 PAGE_RE = re.compile(r"^(.+)/p/(\d+)$")
 
 
 # ---------------------------------------------------------------------------
-# Helpers
+# FileSystem abstraction
 # ---------------------------------------------------------------------------
 
-def _list_dir(folder: str, dir_path: str, prefix: str, subpath: str) -> list[dict]:
-    entries = []
-    try:
-        names = sorted(os.listdir(dir_path))
-    except OSError:
-        return entries
-    for name in names:
-        if name.startswith("."):
-            continue
-        full = os.path.join(dir_path, name)
-        rel = os.path.relpath(full, folder)
-        url_path = prefix + "/" + rel
-        stat = os.stat(full)
-        entries.append({
-            "name": name,
-            "type": "dir" if os.path.isdir(full) else "file",
-            "size": stat.st_size if os.path.isfile(full) else None,
-            "path": url_path,
-        })
-    return entries
+class FileSystem:
+    """
+    Storage backend abstraction used by :func:`mount_files`.
 
+    Implement :meth:`list`, :meth:`get_bytes`, :meth:`put`, :meth:`head`,
+    and :meth:`exists`.  Everything else has default implementations.
+    """
+
+    def list(self, subpath: str = "") -> tuple[list[str], list[dict]]:
+        """
+        Return ``(subdirs, files)`` at *subpath*.
+        Each file dict must have ``"name"`` and ``"size"``; extra keys are
+        shown as-is in the listing.
+        """
+        raise NotImplementedError
+
+    def get_bytes(self, subpath: str) -> bytes:
+        raise NotImplementedError
+
+    def put(self, subpath: str, data: bytes) -> None:
+        raise NotImplementedError
+
+    def head(self, subpath: str) -> dict:
+        """Return at minimum ``{"size": int}``."""
+        raise NotImplementedError
+
+    def exists(self, subpath: str) -> bool:
+        raise NotImplementedError
+
+    def grep(self, subpath: str, query: str,
+             max_results: int = 200) -> list[tuple[str, int, str]]:
+        """Return list of ``(relative_path, lineno, line_text)`` matches."""
+        _, files = self.list(subpath)
+        q = query.lower()
+        matches: list[tuple[str, int, str]] = []
+        for f in files:
+            key = (subpath + "/" + f["name"]).lstrip("/")
+            try:
+                text = self.get_text(key)
+            except Exception:
+                continue
+            for lineno, line in enumerate(text.splitlines(), 1):
+                if q in line.lower():
+                    matches.append((key, lineno, line))
+                    if len(matches) >= max_results:
+                        return matches
+        return matches
+
+    # ------------------------------------------------------------------
+    # Helpers with defaults
+
+    def get_text(self, subpath: str) -> str:
+        return self.get_bytes(subpath).decode("utf-8", errors="replace")
+
+    def append(self, subpath: str, data: bytes) -> None:
+        self.put(subpath, self.get_bytes(subpath) + data)
+
+    def download_to_temp(self, subpath: str) -> tuple[str, bool]:
+        """
+        Return ``(local_path, should_unlink)`` for handler use.
+        If ``should_unlink`` is True the caller must ``os.unlink`` the path
+        when done; if False the path is the original file and must not be deleted.
+        """
+        content = self.get_bytes(subpath)
+        suffix = os.path.splitext(subpath)[1]
+        f = tempfile.NamedTemporaryFile(suffix=suffix, delete=False)
+        f.write(content)
+        f.close()
+        return f.name, True
+
+    def label(self) -> str:
+        """Short label shown in help text."""
+        return ""
+
+
+# ---------------------------------------------------------------------------
+# Local filesystem backend
+# ---------------------------------------------------------------------------
+
+class LocalFS(FileSystem):
+    """Local directory backed :class:`FileSystem`."""
+
+    def __init__(self, folder: str):
+        self.folder = os.path.abspath(folder)
+
+    def _safe(self, subpath: str) -> str:
+        path = os.path.normpath(os.path.join(self.folder, subpath.lstrip("/"))) \
+               if subpath else self.folder
+        if not path.startswith(self.folder):
+            raise PermissionError("Path traversal denied")
+        return path
+
+    def list(self, subpath: str = "") -> tuple[list[str], list[dict]]:
+        dir_path = self._safe(subpath)
+        if not os.path.isdir(dir_path):
+            raise FileNotFoundError(subpath or self.folder)
+        subdirs, files = [], []
+        for name in sorted(os.listdir(dir_path)):
+            if name.startswith("."):
+                continue
+            full = os.path.join(dir_path, name)
+            if os.path.isdir(full):
+                subdirs.append(name)
+            else:
+                files.append({"name": name, "size": os.stat(full).st_size})
+        return subdirs, files
+
+    def get_bytes(self, subpath: str) -> bytes:
+        with open(self._safe(subpath), "rb") as f:
+            return f.read()
+
+    def get_text(self, subpath: str) -> str:
+        with open(self._safe(subpath), encoding="utf-8", errors="replace") as f:
+            return f.read()
+
+    def put(self, subpath: str, data: bytes) -> None:
+        with open(self._safe(subpath), "wb") as f:
+            f.write(data)
+
+    def append(self, subpath: str, data: bytes) -> None:
+        with open(self._safe(subpath), "ab") as f:
+            f.write(data)
+
+    def head(self, subpath: str) -> dict:
+        stat = os.stat(self._safe(subpath))
+        return {"size": stat.st_size}
+
+    def exists(self, subpath: str) -> bool:
+        try:
+            return os.path.isfile(self._safe(subpath))
+        except PermissionError:
+            return False
+
+    def download_to_temp(self, subpath: str) -> tuple[str, bool]:
+        return self._safe(subpath), False  # already local — never delete
+
+    def grep(self, subpath: str, query: str,
+             max_results: int = 200) -> list[tuple[str, int, str]]:
+        search_dir = self._safe(subpath) if subpath else self.folder
+        q = query.lower()
+        matches: list[tuple[str, int, str]] = []
+        for root, dirs, files in os.walk(search_dir):
+            dirs[:] = [d for d in sorted(dirs) if not d.startswith(".")]
+            for fname in sorted(files):
+                if fname.startswith("."):
+                    continue
+                fpath = os.path.join(root, fname)
+                try:
+                    with open(fpath, encoding="utf-8", errors="replace") as f:
+                        for lineno, line in enumerate(f, 1):
+                            if q in line.lower():
+                                rel = os.path.relpath(fpath, self.folder)
+                                matches.append((rel, lineno, line.rstrip()))
+                                if len(matches) >= max_results:
+                                    return matches
+                except OSError:
+                    pass
+        return matches
+
+    def label(self) -> str:
+        return self.folder
+
+
+# ---------------------------------------------------------------------------
+# Editable helper
+# ---------------------------------------------------------------------------
 
 def _is_editable(spec, subpath: str) -> bool:
     if spec is False:
@@ -74,268 +221,264 @@ def _is_editable(spec, subpath: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Request handlers
+# Route handlers  (all take a FileSystem instance)
 # ---------------------------------------------------------------------------
 
-def serve_ls(inact_app, prefix: str, folder: str, subpath: str) -> tuple:
-    dir_path = os.path.normpath(os.path.join(folder, subpath)) if subpath else folder
-    if not dir_path.startswith(folder):
-        return text_response("ERROR 403: Forbidden\n", 403)
-    if not os.path.isdir(dir_path):
-        return text_response(f"ERROR 404: Not a directory: {subpath}\n", 404)
-
-    entries = _list_dir(folder, dir_path, prefix, subpath)
-    handlers = inact_app._mount_handlers.get(prefix, {})
-    editable_spec = inact_app._mount_editable.get(prefix, False)
+def serve_ls(fs: FileSystem, prefix: str, subpath: str,
+             handlers: dict, editable_spec=False) -> tuple:
     url_base = prefix + ("/" + subpath if subpath else "")
+    try:
+        subdirs, files = fs.list(subpath)
+    except PermissionError:
+        return text_response("ERROR 403: Forbidden\n", 403)
+    except FileNotFoundError:
+        return text_response(f"ERROR 404: Not a directory: {subpath}\n", 404)
+    except Exception as exc:
+        return text_response(f"ERROR 502: {exc}\n", 502)
+
+    total = len(subdirs) + len(files)
     lines = [
         f"# Directory listing: {url_base}\n",
-        f"# {len(entries)} entries\n",
+        f"# {total} entries\n",
         "# tip: append /.download to any file path to get the raw file\n\n",
     ]
-    for e in entries:
+    for name in subdirs:
+        path = (prefix + "/" + subpath + "/" + name).replace("//", "/")
+        lines += ["[[entries]]\n", f'name = {toml_str(name + "/")}\n',
+                  'type = "dir"\n', f'path = {toml_str(path + "/")}\n', "\n"]
+    for f in files:
+        path = (prefix + "/" + subpath + "/" + f["name"]).replace("//", "/")
+        _, ext = os.path.splitext(f["name"].lower())
         lines.append("[[entries]]\n")
-        lines.append(f'name = {toml_str(e["name"])}\n')
-        lines.append(f'type = {toml_str(e["type"])}\n')
-        lines.append(f'path = {toml_str(e["path"])}\n')
-        if e.get("size") is not None:
-            lines.append(f'size = {e["size"]}\n')
-        if e["type"] == "file":
-            _, ext = os.path.splitext(e["name"].lower())
-            if ext in handlers:
-                lines.append(f'handler = {toml_str(type(handlers[ext]).__name__)}\n')
-                lines.append(f'info = {toml_str(e["path"] + "/.info")}\n')
-            rel_file = os.path.relpath(os.path.join(dir_path, e["name"]), folder)
-            if _is_editable(editable_spec, rel_file):
-                lines.append("editable = true\n")
-                lines.append(f'replace = {toml_str(e["path"] + "/.replace")}\n')
+        lines.append(f'name = {toml_str(f["name"])}\n')
+        lines.append('type = "file"\n')
+        lines.append(f'path = {toml_str(path)}\n')
+        if f.get("size") is not None:
+            lines.append(f'size = {f["size"]}\n')
+        for k, v in f.items():
+            if k not in ("name", "size"):
+                lines.append(f'{k} = {toml_str(str(v))}\n')
+        if ext in handlers:
+            lines.append(f'handler = {toml_str(type(handlers[ext]).__name__)}\n')
+            lines.append(f'info   = {toml_str(path + "/.info")}\n')
+            lines.append(f'append = {toml_str(path + "/.append")}\n')
+        if _is_editable(editable_spec, f["name"]):
+            lines.append("editable = true\n")
+            lines.append(f'replace  = {toml_str(path + "/.replace")}\n')
         lines.append("\n")
     return text_response("".join(lines))
 
 
-def serve_grep(prefix: str, folder: str, subpath: str, query: str) -> tuple:
+def serve_grep(fs: FileSystem, prefix: str, subpath: str, query: str) -> tuple:
     if not query:
-        base = prefix + ("/" + subpath if subpath else "")
+        url_base = prefix + ("/" + subpath if subpath else "")
         return text_response(
-            f"ERROR 400: Missing query parameter.\n\nUsage: GET {base}/.grep?q=keyword\n", 400
+            f"ERROR 400: Missing query.\n\nUsage: GET {url_base}/.grep?q=keyword\n", 400
         )
-    search_dir = os.path.normpath(os.path.join(folder, subpath)) if subpath else folder
-    if not search_dir.startswith(folder):
-        return text_response("ERROR 403: Forbidden\n", 403)
-
-    matches = []
-    q_lower = query.lower()
-    for root, dirs, files in os.walk(search_dir):
-        dirs[:] = [d for d in sorted(dirs) if not d.startswith(".")]
-        for fname in sorted(files):
-            if fname.startswith("."):
-                continue
-            fpath = os.path.join(root, fname)
-            try:
-                with open(fpath, encoding="utf-8", errors="replace") as f:
-                    for lineno, line in enumerate(f, 1):
-                        if q_lower in line.lower():
-                            rel = os.path.relpath(fpath, folder)
-                            matches.append((rel, lineno, line.rstrip()))
-                            if len(matches) >= 200:
-                                break
-            except OSError:
-                pass
-            if len(matches) >= 200:
-                break
-        if len(matches) >= 200:
-            break
+    try:
+        matches = fs.grep(subpath, query)
+    except Exception as exc:
+        return text_response(f"ERROR 502: {exc}\n", 502)
 
     url_base = prefix + ("/" + subpath if subpath else "")
-    lines = [f"# Grep: {toml_str(query)} in {url_base}\n", f"# {len(matches)} match(es)\n\n"]
-    for rel_path, lineno, line_text in matches:
-        lines.append("[[matches]]\n")
-        lines.append(f'file = {toml_str(prefix + "/" + rel_path)}\n')
-        lines.append(f"line = {lineno}\n")
-        lines.append(f"text = {toml_str(line_text)}\n")
-        lines.append("\n")
+    lines = [f"# Grep: {toml_str(query)} in {url_base}\n",
+             f"# {len(matches)} match(es)\n\n"]
+    for rel, lineno, line_text in matches:
+        lines += ["[[matches]]\n", f'file = {toml_str(prefix + "/" + rel)}\n',
+                  f"line = {lineno}\n", f"text = {toml_str(line_text)}\n", "\n"]
     return text_response("".join(lines))
 
 
-def serve_file(inact_app, prefix: str, folder: str, subpath: str, page: int = 1) -> tuple:
-    safe = os.path.normpath(os.path.join(folder, subpath))
-    if not safe.startswith(folder):
-        return text_response("ERROR 403: Path traversal denied\n", 403)
-    if not os.path.isfile(safe):
-        return text_response(f"ERROR 404: File not found: {subpath}\n", 404)
-
+def serve_file(fs: FileSystem, prefix: str, subpath: str,
+               handlers: dict, page: int = 1) -> tuple:
     _, ext = os.path.splitext(subpath.lower())
-    handler = inact_app._mount_handlers.get(prefix, {}).get(ext)
+    handler = handlers.get(ext)
+    virtual_path = prefix + "/" + subpath
+
     if handler is not None:
-        content, status = handler.serve(safe, prefix + "/" + subpath, page)
+        tmp, owned = fs.download_to_temp(subpath)
+        try:
+            content, status = handler.serve(tmp, virtual_path, page)
+        finally:
+            if owned:
+                try:
+                    os.unlink(tmp)
+                except OSError:
+                    pass
         return text_response(content, status)
 
     try:
-        content = open(safe, encoding="utf-8").read()
-    except Exception as e:
-        return text_response(f"ERROR 500: {e}\n", 500)
-    return text_response(content)
+        text = fs.get_text(subpath)
+    except PermissionError:
+        return text_response("ERROR 403: Forbidden\n", 403)
+    except Exception as exc:
+        return text_response(f"ERROR 404: {exc}\n", 404)
+    return text_response(text)
 
 
-def serve_info(inact_app, prefix: str, folder: str, subpath: str) -> tuple:
+def serve_info(fs: FileSystem, prefix: str, subpath: str,
+               handlers: dict, editable_spec=False) -> tuple:
     if not subpath:
-        return text_response("ERROR 400: .info requires a file path\n", 400)
-    safe = os.path.normpath(os.path.join(folder, subpath))
-    if not safe.startswith(folder):
-        return text_response("ERROR 403: Path traversal denied\n", 403)
-    if not os.path.isfile(safe):
-        return text_response(f"ERROR 404: File not found: {subpath}\n", 404)
+        return text_response("ERROR 400: /.info requires a file path\n", 400)
+    try:
+        meta = fs.head(subpath)
+    except Exception as exc:
+        return text_response(f"ERROR 404: {exc}\n", 404)
 
     virtual_path = prefix + "/" + subpath
-    stat = os.stat(safe)
     _, ext = os.path.splitext(subpath.lower())
-    handler = inact_app._mount_handlers.get(prefix, {}).get(ext)
-    editable_spec = inact_app._mount_editable.get(prefix, False)
+    handler = handlers.get(ext)
 
-    lines = [
-        f"# File info: {virtual_path}\n\n",
-        f"path     = {toml_str(virtual_path)}\n",
-        f"size     = {stat.st_size}\n",
-        f"download = {toml_str(virtual_path + '/.download')}\n",
-    ]
+    lines = [f"# File info: {virtual_path}\n\n",
+             f"path     = {toml_str(virtual_path)}\n",
+             f"size     = {meta['size']}\n",
+             f"download = {toml_str(virtual_path + '/.download')}\n"]
+    for k, v in meta.items():
+        if k != "size":
+            lines.append(f"{k} = {toml_str(str(v))}\n")
+
     if handler is not None:
         lines.append(f"handler = {toml_str(type(handler).__name__)}\n")
+        tmp, owned = fs.download_to_temp(subpath)
         try:
-            pages = handler.page_count(safe)
+            pages = handler.page_count(tmp)
             if pages is not None:
-                lines.append(f"pages           = {pages}\n")
-                lines.append(f"page_url_pattern = {toml_str(virtual_path + '/p/{{N}}')}\n")
-                lines.append(f"first_page      = {toml_str(virtual_path + '/p/1')}\n")
+                lines.append(f"pages            = {pages}\n")
+                lines.append(f"page_url_pattern = {toml_str(virtual_path + '/p/{N}')}\n")
+                lines.append(f"first_page       = {toml_str(virtual_path + '/p/1')}\n")
+                lines.append(f"append           = {toml_str(virtual_path + '/.append')}\n")
         except Exception:
             pass
+        finally:
+            if owned:
+                try:
+                    os.unlink(tmp)
+                except OSError:
+                    pass
+
     if _is_editable(editable_spec, subpath):
-        lines.append(f"editable = true\n")
+        lines.append("editable = true\n")
         lines.append(f"replace  = {toml_str(virtual_path + '/.replace')}\n")
     return text_response("".join(lines))
 
 
-def serve_download(prefix: str, folder: str, subpath: str):
+def serve_download(fs: FileSystem, prefix: str, subpath: str):
     if not subpath:
         return text_response("ERROR 400: /.download requires a file path\n", 400)
-    safe = os.path.normpath(os.path.join(folder, subpath))
-    if not safe.startswith(folder):
-        return text_response("ERROR 403: Path traversal denied\n", 403)
-    if not os.path.isfile(safe):
-        return text_response(f"ERROR 404: File not found: {subpath}\n", 404)
-    return send_file(safe, as_attachment=True, download_name=os.path.basename(safe))
+    try:
+        content = fs.get_bytes(subpath)
+    except PermissionError:
+        return text_response("ERROR 403: Forbidden\n", 403)
+    except Exception as exc:
+        return text_response(f"ERROR 404: {exc}\n", 404)
+    fname = os.path.basename(subpath)
+    # If it's a local path, use send_file for efficiency
+    if isinstance(fs, LocalFS):
+        return send_file(fs._safe(subpath), as_attachment=True, download_name=fname)
+    from flask import Response
+    return Response(content,
+                    headers={"Content-Disposition": f'attachment; filename="{fname}"'},
+                    content_type="application/octet-stream")
 
 
-def serve_replace_info(inact_app, prefix: str, folder: str, subpath: str) -> tuple:
-    if not subpath:
-        return text_response("ERROR 400: /.replace requires a file path\n", 400)
-    safe = os.path.normpath(os.path.join(folder, subpath))
-    if not safe.startswith(folder):
-        return text_response("ERROR 403: Path traversal denied\n", 403)
-    if not os.path.isfile(safe):
-        return text_response(f"ERROR 404: File not found: {subpath}\n", 404)
-
-    virtual_path = prefix + "/" + subpath
-    editable_spec = inact_app._mount_editable.get(prefix, False)
-    editable = _is_editable(editable_spec, subpath)
-    stat = os.stat(safe)
-
-    lines = [
-        f"# /.replace — {virtual_path}\n\n",
-        f"path     = {toml_str(virtual_path)}\n",
-        f"size     = {stat.st_size}\n",
-        f"editable = {str(editable).lower()}\n",
-    ]
-    if editable:
-        lines += [
-            f"\n# POST the new file content to this URL to overwrite the file.\n",
-            f"#   curl -X POST {virtual_path}/.replace \\\n",
-            f"#        -H 'Content-Type: text/plain' \\\n",
-            f"#        --data-binary @local_file.txt\n",
-        ]
-    else:
-        lines.append("\n# This file is not marked as editable in the mount configuration.\n")
-    return text_response("".join(lines))
-
-
-def serve_append(inact_app, prefix: str, folder: str, subpath: str) -> tuple:
+def serve_append(fs: FileSystem, prefix: str, subpath: str, handlers: dict) -> tuple:
     if not subpath:
         return text_response("ERROR 400: /.append requires a file path\n", 400)
-    safe = os.path.normpath(os.path.join(folder, subpath))
-    if not safe.startswith(folder):
-        return text_response("ERROR 403: Path traversal denied\n", 403)
-    if not os.path.isfile(safe):
-        return text_response(f"ERROR 404: File not found: {subpath}\n", 404)
+    if not fs.exists(subpath):
+        return text_response(f"ERROR 404: not found: {subpath}\n", 404)
 
     _, ext = os.path.splitext(subpath.lower())
-    handler = inact_app._mount_handlers.get(prefix, {}).get(ext)
+    handler = handlers.get(ext)
 
     body = request.get_json(force=True, silent=True)
     if body is not None:
-        # JSON array → row values; JSON object → order by CSV header
         if isinstance(body, list):
             values = [str(v) for v in body]
         elif isinstance(body, dict):
             if hasattr(handler, "header"):
-                hdr = handler.header(safe)
-                values = [str(body.get(h, "")) for h in hdr] if hdr else [str(v) for v in body.values()]
+                tmp, owned = fs.download_to_temp(subpath)
+                try:
+                    hdr = handler.header(tmp)
+                finally:
+                    if owned:
+                        try:
+                            os.unlink(tmp)
+                        except OSError:
+                            pass
+                values = [str(body.get(h, "")) for h in hdr] if hdr \
+                         else [str(v) for v in body.values()]
             else:
                 values = [str(v) for v in body.values()]
         else:
             return text_response("ERROR 400: body must be a JSON array or object\n", 400)
-
-        if hasattr(handler, "append_row"):
-            handler.append_row(safe, values)
-        else:
-            import csv, io
-            buf = io.StringIO()
-            csv.writer(buf).writerow(values)
-            with open(safe, "a", encoding="utf-8", newline="") as f:
-                f.write(buf.getvalue())
+        buf = io.StringIO()
+        csv.writer(buf).writerow(values)
+        extra = buf.getvalue().encode("utf-8")
         appended = ",".join(values)
     else:
-        # plain text — append line as-is
         line = request.get_data(as_text=True)
         if not line.endswith("\n"):
             line += "\n"
-        try:
-            with open(safe, "a", encoding="utf-8") as f:
-                f.write(line)
-        except OSError as e:
-            return text_response(f"ERROR 500: {e}\n", 500)
+        extra = line.encode("utf-8")
         appended = line.rstrip("\n")
 
+    try:
+        fs.append(subpath, extra)
+    except Exception as exc:
+        return text_response(f"ERROR 500: {exc}\n", 500)
+
     virtual_path = prefix + "/" + subpath
-    return text_response(f"OK\npath   = {toml_str(virtual_path)}\nrow    = {toml_str(appended)}\n")
+    return text_response(f"OK\npath = {toml_str(virtual_path)}\nrow  = {toml_str(appended)}\n")
 
 
-def serve_replace(inact_app, prefix: str, folder: str, subpath: str) -> tuple:
+def serve_replace_info(fs: FileSystem, prefix: str, subpath: str,
+                       editable_spec=False) -> tuple:
     if not subpath:
         return text_response("ERROR 400: /.replace requires a file path\n", 400)
-    editable_spec = inact_app._mount_editable.get(prefix, False)
-    if not _is_editable(editable_spec, subpath):
-        return text_response(f"ERROR 403: {prefix}/{subpath} is not marked as editable\n", 403)
-    safe = os.path.normpath(os.path.join(folder, subpath))
-    if not safe.startswith(folder):
-        return text_response("ERROR 403: Path traversal denied\n", 403)
-    if not os.path.isfile(safe):
-        return text_response(f"ERROR 404: File not found: {subpath}\n", 404)
-
-    data = request.get_data()
     try:
-        with open(safe, "wb") as f:
-            f.write(data)
-    except OSError as e:
-        return text_response(f"ERROR 500: {e}\n", 500)
+        meta = fs.head(subpath)
+    except Exception as exc:
+        return text_response(f"ERROR 404: {exc}\n", 404)
 
     virtual_path = prefix + "/" + subpath
-    return text_response(f"OK\npath = {toml_str(virtual_path)}\nbytes_written = {len(data)}\n")
+    editable = _is_editable(editable_spec, subpath)
+    lines = [f"# /.replace — {virtual_path}\n\n",
+             f"path     = {toml_str(virtual_path)}\n",
+             f"size     = {meta['size']}\n",
+             f"editable = {str(editable).lower()}\n"]
+    if editable:
+        lines += [f"\n# POST the new file content to overwrite:\n",
+                  f"#   curl -X POST {virtual_path}/.replace \\\n",
+                  f"#        -H 'Content-Type: text/plain' \\\n",
+                  f"#        --data-binary @local_file.txt\n"]
+    else:
+        lines.append("\n# This file is not marked as editable.\n")
+    return text_response("".join(lines))
+
+
+def serve_replace(fs: FileSystem, prefix: str, subpath: str,
+                  editable_spec=False) -> tuple:
+    if not subpath:
+        return text_response("ERROR 400: /.replace requires a file path\n", 400)
+    if not _is_editable(editable_spec, subpath):
+        return text_response(f"ERROR 403: {subpath} is not editable\n", 403)
+    data = request.get_data()
+    try:
+        fs.put(subpath, data)
+    except Exception as exc:
+        return text_response(f"ERROR 500: {exc}\n", 500)
+    virtual_path = prefix + "/" + subpath
+    return text_response(
+        f"OK\npath = {toml_str(virtual_path)}\nbytes_written = {len(data)}\n"
+    )
 
 
 # ---------------------------------------------------------------------------
 # Mount dispatcher
 # ---------------------------------------------------------------------------
 
-def handle_mount(inact_app, prefix: str, folder: str, subpath: str) -> tuple:
+def handle_mount(fs: FileSystem, inact_app, prefix: str, subpath: str,
+                 handlers: dict, editable_spec=False) -> tuple:
     if subpath == ".help" or subpath.endswith("/.help"):
         file_part = subpath[:-5].rstrip("/") if subpath.endswith("/.help") else ""
         return inact_app._serve_help(prefix + ("/" + file_part if file_part else ""))
@@ -344,36 +487,36 @@ def handle_mount(inact_app, prefix: str, folder: str, subpath: str) -> tuple:
         dir_sub = subpath[:-3].rstrip("/") if subpath.endswith("/.ls") else (
             "" if subpath in ("", ".ls") else subpath
         )
-        return serve_ls(inact_app, prefix, folder, dir_sub)
+        return serve_ls(fs, prefix, dir_sub, handlers, editable_spec)
 
     if subpath == ".grep" or subpath.endswith("/.grep"):
         q = request.args.get("q", "").strip()
         dir_sub = subpath[:-6].rstrip("/") if subpath.endswith("/.grep") else ""
-        return serve_grep(prefix, folder, dir_sub, q)
+        return serve_grep(fs, prefix, dir_sub, q)
 
     if subpath.endswith("/.info"):
-        return serve_info(inact_app, prefix, folder, subpath[:-6].rstrip("/"))
+        return serve_info(fs, prefix, subpath[:-6].rstrip("/"), handlers, editable_spec)
 
     if subpath.endswith("/.download"):
-        return serve_download(prefix, folder, subpath[:-10].rstrip("/"))
+        return serve_download(fs, prefix, subpath[:-10].rstrip("/"))
 
     if subpath.endswith("/.append"):
-        return serve_append(inact_app, prefix, folder, subpath[:-8].rstrip("/"))
+        return serve_append(fs, prefix, subpath[:-8].rstrip("/"), handlers)
 
     if subpath.endswith("/.replace"):
         file_sub = subpath[:-9].rstrip("/")
         if request.method == "POST":
-            return serve_replace(inact_app, prefix, folder, file_sub)
-        return serve_replace_info(inact_app, prefix, folder, file_sub)
+            return serve_replace(fs, prefix, file_sub, editable_spec)
+        return serve_replace_info(fs, prefix, file_sub, editable_spec)
 
     m = PAGE_RE.match(subpath)
     if m:
         file_sub, page = m.group(1), int(m.group(2))
         _, ext = os.path.splitext(file_sub.lower())
-        if ext in inact_app._mount_handlers.get(prefix, {}):
-            return serve_file(inact_app, prefix, folder, file_sub, page)
+        if ext in handlers:
+            return serve_file(fs, prefix, file_sub, handlers, page)
 
-    return serve_file(inact_app, prefix, folder, subpath)
+    return serve_file(fs, prefix, subpath, handlers)
 
 
 # ---------------------------------------------------------------------------
@@ -383,62 +526,72 @@ def handle_mount(inact_app, prefix: str, folder: str, subpath: str) -> tuple:
 def mount_files(
     inact_app,
     prefix: str,
-    folder: str,
+    folder_or_fs,
     handlers=None,
     editable=False,
 ) -> None:
     """
-    Mount *folder* under *prefix*.
+    Mount a directory (or any :class:`FileSystem` backend) at *prefix*.
 
-    Provides directory listing (/.ls), content search (/.grep), file serving,
-    metadata (/.info), raw download (/.download), pagination (/p/<N>),
-    and optional file editing (/.replace).
+    *folder_or_fs* — a local path string **or** a :class:`FileSystem` instance
+    such as :class:`~inact.apps.s3.S3FS`.
 
     *handlers* — list of :class:`~inact.handlers.FileHandler` instances.
-    *editable* — ``True`` or list of glob patterns for editable paths.
+    *editable* — ``True`` or list of glob patterns (local only).
 
     Example::
 
         mount_files(app, "/docs", "./docs")
-        mount_files(app, "/notes", "./notes", editable=["*.md"])
+        mount_files(app, "/docs", "./docs", handlers=[CSVHandler()], editable=["*.csv"])
+
+        # S3-backed (via S3FS)
+        from inact.apps.s3 import S3FS
+        mount_files(app, "/data", S3FS("my-bucket", "prefix/", client))
     """
-    from ..handlers import FileHandler
+    if isinstance(folder_or_fs, str):
+        fs: FileSystem = LocalFS(folder_or_fs)
+    else:
+        fs = folder_or_fs
 
-    prefix = prefix.rstrip("/")
-    abs_folder = os.path.abspath(folder)
-
-    inact_app._mounts[prefix] = abs_folder
-
+    h_dict: dict = {}
     if handlers:
-        h_dict: dict[str, FileHandler] = {}
         for handler in handlers:
             for ext in handler.extensions:
-                h_dict[ext.lower() if ext.startswith(".") else "." + ext.lower()] = handler
-        inact_app._mount_handlers[prefix] = h_dict
+                key = ext.lower() if ext.startswith(".") else "." + ext.lower()
+                h_dict[key] = handler
 
-    if editable is not False:
-        inact_app._mount_editable[prefix] = editable
+    editable_spec = editable
+    if isinstance(fs, LocalFS):
+        inact_app._mounts[prefix.rstrip("/")] = fs.folder
+        if h_dict:
+            inact_app._mount_handlers[prefix.rstrip("/")] = h_dict
+        if editable is not False:
+            inact_app._mount_editable[prefix.rstrip("/")] = editable
 
+    prefix = prefix.rstrip("/")
     ep = "_inact_mount_" + prefix.replace("/", "__")
 
-    @inact_app.app.route(prefix + "/", defaults={"subpath": ""}, endpoint=ep + "_root", methods=["GET", "POST"])
+    @inact_app.app.route(prefix + "/", defaults={"subpath": ""}, endpoint=ep + "_root",
+                         methods=["GET", "POST"])
     @inact_app.app.route(prefix + "/<path:subpath>", endpoint=ep, methods=["GET", "POST"])
-    def _handler(subpath: str, _prefix=prefix, _folder=abs_folder):
-        return handle_mount(inact_app, _prefix, _folder, subpath)
+    def _handler(subpath: str, _fs=fs, _prefix=prefix,
+                 _handlers=h_dict, _editable=editable_spec):
+        return handle_mount(_fs, inact_app, _prefix, subpath, _handlers, _editable)
 
     p = prefix or "/"
+    label = fs.label()
     help_text = (
-        f"\nFiles: {p}\n"
+        f"\nFiles: {p}" + (f"  ({label})" if label else "") + "\n"
         f"  GET  {p}/           list root\n"
         f"  GET  {p}/<path>/.ls list directory\n"
-        f"  GET  {p}/.grep?q=… search content\n"
-        f"  GET  {p}/<file>    serve file\n"
+        f"  GET  {p}/.grep?q=…  search content\n"
+        f"  GET  {p}/<file>     serve file\n"
         f"  GET  {p}/<file>/.info      metadata\n"
         f"  GET  {p}/<file>/.download  raw download\n"
     )
-    if handlers:
-        help_text += f"  GET  {p}/<file>/p/<N>       paginated file\n"
-        help_text += f"  POST {p}/<file>/.append     append row  body: JSON array or object\n"
+    if h_dict:
+        help_text += f"  GET  {p}/<file>/p/<N>      paginated\n"
+        help_text += f"  POST {p}/<file>/.append    append row\n"
     if editable is not False:
-        help_text += f"  POST {p}/<file>/.replace    overwrite file\n"
+        help_text += f"  POST {p}/<file>/.replace   overwrite file\n"
     inact_app._app_mounts.append((prefix, help_text))

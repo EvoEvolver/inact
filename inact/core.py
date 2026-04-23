@@ -15,7 +15,7 @@ from typing import Callable
 
 from flask import Flask, request
 
-from .apps.files import PAGE_RE, _list_dir
+from .apps.files import PAGE_RE
 from .pages import normalize_md, normalize_toml
 from .render import render_markdown, render_toml, render_plain, render_ls
 from .utils import text_response, toml_str
@@ -222,7 +222,7 @@ class Inact:
                     return text_response("ERROR 403: Forbidden\n", 403)
 
                 if os.path.isdir(full):
-                    entries = _list_dir(folder, full, prefix, display_subpath)
+                    entries = _list_dir_local(folder, full, prefix, display_subpath)
                     return render_ls(entries, path, prefix + ("/" + display_subpath if display_subpath else ""))
 
                 if os.path.isfile(full):
@@ -313,3 +313,25 @@ class Inact:
         if not any([children, app_found]):
             lines.append("No help registered for this path.\n")
         return "".join(lines)
+
+
+def _list_dir_local(folder: str, dir_path: str, prefix: str, subpath: str) -> list[dict]:
+    """Build entry list for _render_human's file-mount HTML view."""
+    entries = []
+    try:
+        names = sorted(os.listdir(dir_path))
+    except OSError:
+        return entries
+    for name in names:
+        if name.startswith("."):
+            continue
+        full = os.path.join(dir_path, name)
+        rel = os.path.relpath(full, folder)
+        stat = os.stat(full)
+        entries.append({
+            "name": name,
+            "type": "dir" if os.path.isdir(full) else "file",
+            "size": stat.st_size if os.path.isfile(full) else None,
+            "path": prefix + "/" + rel,
+        })
+    return entries

@@ -150,7 +150,8 @@ class MessageStore:
 # ---------------------------------------------------------------------------
 
 def attach_message(inact_app, prefix: str, store: MessageStore,
-                   agents_prefix: str = "/agents") -> None:
+                   agents_prefix: str = "/agents",
+                   notify_fn=None) -> None:
     prefix = "/" + prefix.strip("/")
     ep = "_inact_msg_" + prefix.replace("/", "__")
     flask_app = inact_app.app
@@ -198,6 +199,8 @@ def attach_message(inact_app, prefix: str, store: MessageStore,
         if not text:
             return text_response("ERROR 400: 'body' required\n", 400)
         msg_id = store.send(from_id, to_id, text)
+        if notify_fn:
+            notify_fn(to_id, from_id, text)
         return text_response(f"OK\nid = {toml_str(msg_id)}\n")
 
     def _inbox():
@@ -324,27 +327,40 @@ def attach_message(inact_app, prefix: str, store: MessageStore,
 
 
 def mount_message(inact_app, prefix: str, storage,
-                  agents_prefix: str = "/agents") -> None:
+                  agents_prefix: str = "/agents",
+                  notify_storage=None) -> None:
     """
     Mount an agent messaging service at *prefix*.
 
-    Agents send plain-text messages to each other by ID. Inbox and sent folders
-    are paginated. ``/agents`` lists agents who have sent at least one message.
-
-    *storage*       — a database URL/path or a :class:`~inact.storage.Storage` instance.
-    *agents_prefix* — prefix of the register app; used by the ``/_human`` chat
-                      page to list all registered agents (default ``"/agents"``).
+    *storage*        — database URL/path or Storage instance.
+    *agents_prefix*  — register app prefix for agent listing in the chat UI.
+    *notify_storage* — if provided (same URL/Storage as :func:`mount_notify`),
+                       every sent message fires a notification to the recipient
+                       so registered callbacks are woken immediately.
 
     Example::
 
-        mount_message(app, "/msg", "./data/messages.db")
-        mount_message(app, "/msg", "./data/messages.db", agents_prefix="/agents")
+        mount_message(app, "/msg", "./msg.db")
+        mount_message(app, "/msg", "./msg.db",
+                      notify_storage="./notify.db")   # wake agents on send
     """
     from ..storage import make_storage
     p = "/" + prefix.strip("/")
     backend = make_storage(storage) if isinstance(storage, str) else storage
+
+    notify_fn = None
+    if notify_storage is not None:
+        from .notify import NotifyStore, _push
+        ns = make_storage(notify_storage) if isinstance(notify_storage, str) else notify_storage
+        nstore = NotifyStore(ns)
+
+        def notify_fn(to_id: str, from_id: str, message: str) -> None:
+            notif_id = nstore.send(to_id, message, from_id)
+            _push(nstore, to_id, notif_id, message, from_id)
+
     attach_message(inact_app, p, MessageStore(backend),
-                   agents_prefix="/" + agents_prefix.strip("/"))
+                   agents_prefix="/" + agents_prefix.strip("/"),
+                   notify_fn=notify_fn)
     inact_app._app_mounts.append((p, (
         f"\nAgent messaging: {p}\n"
         f'  POST   {p}/send          send  body: {{"from":"1","to":"2","body":"..."}}\n'

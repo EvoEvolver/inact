@@ -47,8 +47,8 @@ from email.mime.text import MIMEText
 
 from flask import request
 
-from ..storage import Storage
-from ..utils import text_response, toml_str
+from ...storage import Storage
+from ...utils import text_response, toml_str
 
 log = logging.getLogger(__name__)
 
@@ -507,7 +507,7 @@ def mount_mailbox(
                       relay_password=os.environ["SENDGRID_KEY"])
     """
     from .register import AgentRegistry
-    from ..storage import make_storage
+    from ...storage import make_storage
 
     # Resolve registry
     reg = None

@@ -2,16 +2,17 @@ from .apps.a2a import A2AClient, mount_a2a
 from .core import Inact
 from .apps.cron import CronScheduler, mount_cron
 from .apps.auth import mount_auth
+from .apps.workspace import mount_workspace
 from .apps.files import mount_files
 from .apps.notify import mount_notify, NotifyStore
 from .apps.forms import FormStore, mount_forms
-from .apps.todo import TodoStore, mount_todo
+from .apps.workspace.todo import TodoStore, mount_todo
 from .handlers import FileHandler, PDFHandler, CSVHandler
-from .apps.mailbox import MailStore, mount_mailbox
+from .apps.workspace.mailbox import MailStore, mount_mailbox
 from .apps.mcp import McpClient, StdioMcpClient, mount_mcp, mount_mcp_npx, mount_mcp_uvx
-from .apps.message import MessageStore, mount_message
+from .apps.workspace.message import MessageStore, mount_message
 from .pages import MdContent, TomlContent
-from .apps.register import AgentRegistry, mount_register
+from .apps.workspace.register import AgentRegistry, mount_register
 from .apps.s3 import mount_s3, S3FS
 from .apps.sql import mount_sql, SQLConnector
 from .apps.files import FileSystem, LocalFS
@@ -23,6 +24,7 @@ from .apps.website import WebsiteProxy, mount_website
 __all__ = [
     "A2AClient",
     "mount_auth",
+    "mount_workspace",
     "CSVHandler",
     "AgentRegistry",
     "CronScheduler",

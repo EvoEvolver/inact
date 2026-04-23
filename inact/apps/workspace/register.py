@@ -26,8 +26,8 @@ import time
 
 from flask import request
 
-from ..storage import Storage
-from ..utils import text_response, html_response, toml_str
+from ...storage import Storage
+from ...utils import text_response, html_response, toml_str
 
 _DDL = [
     """CREATE TABLE IF NOT EXISTS agents (
@@ -231,8 +231,8 @@ def attach_register(inact_app, prefix: str, registry: AgentRegistry) -> None:
         return text_response(f"OK\nemail = {toml_str(email)}\n")
 
     def _human():
-        from ..render import render_template
-        from ..utils import html_response
+        from ...render import render_template
+        from ...utils import html_response
         html = render_template(
             "register_human.html",
             title="Register",
@@ -268,7 +268,7 @@ def mount_register(inact_app, prefix: str, storage) -> None:
 
         app.mount_register("/agents", "./data/agents.db")
     """
-    from ..storage import make_storage
+    from ...storage import make_storage
     p = "/" + prefix.strip("/")
     backend = make_storage(storage) if isinstance(storage, str) else storage
     attach_register(inact_app, p, AgentRegistry(backend))

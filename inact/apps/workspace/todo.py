@@ -39,8 +39,8 @@ from datetime import datetime, timezone
 
 from flask import request
 
-from ..storage import Storage
-from ..utils import text_response, toml_str
+from ...storage import Storage
+from ...utils import text_response, toml_str
 
 _DDL = [
     """CREATE TABLE IF NOT EXISTS tasks (
@@ -490,7 +490,7 @@ def mount_todo(inact_app, prefix: str, storage) -> None:
 
         app.mount_todo("/tasks", "./data/tasks.db")
     """
-    from ..storage import make_storage
+    from ...storage import make_storage
     p = "/" + prefix.strip("/")
     backend = make_storage(storage) if isinstance(storage, str) else storage
     attach_todo(inact_app, p, TodoStore(backend))

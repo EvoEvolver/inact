@@ -271,9 +271,24 @@ def attach_message(inact_app, prefix: str, store: MessageStore,
             lines.append(f"id   = {toml_str(m['id'])}\n")
             lines.append(f"to   = {toml_str(m['to_id'])}\n")
             lines.append(f"date = {toml_str(_fmt_ts(m['created_at']))}\n")
-            lines.append(f"url  = {toml_str(prefix + '/inbox/' + m['id'])}\n")
+            lines.append(f"body = {toml_str(m['body'])}\n")
+            lines.append(f"url  = {toml_str(prefix + '/sent/' + m['id'])}\n")
             lines.append("\n")
         return text_response("".join(lines))
+
+    def _sent_msg(msg_id: str):
+        """Read a sent message by ID — does NOT mark it as read (sender's view)."""
+        m = store._s.fetchone("SELECT * FROM messages WHERE id = ?", (msg_id,))
+        if not m:
+            return text_response("ERROR 404: message not found\n", 404)
+        return text_response(
+            f"id   = {toml_str(m['id'])}\n"
+            f"from = {toml_str(m['from_id'])}\n"
+            f"to   = {toml_str(m['to_id'])}\n"
+            f"date = {toml_str(_fmt_ts(m['created_at']))}\n"
+            "\n---\n\n"
+            + m["body"] + "\n"
+        )
 
     def _agents():
         page, per_page = _parse_page_params()
@@ -320,6 +335,9 @@ def attach_message(inact_app, prefix: str, store: MessageStore,
     flask_app.add_url_rule(
         prefix + "/sent",
         endpoint=ep + "_sent", view_func=_sent)
+    flask_app.add_url_rule(
+        prefix + "/sent/<msg_id>",
+        endpoint=ep + "_sent_msg", view_func=_sent_msg)
     flask_app.add_url_rule(
         prefix + "/agents",
         endpoint=ep + "_agents", view_func=_agents)

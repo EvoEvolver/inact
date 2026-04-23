@@ -45,6 +45,7 @@ if (!myId) { location.href = '/_human' + AP; }
 document.getElementById('my-id').textContent = myId;
 
 let selId = null, selName = '', timer = null, shownIds = new Set();
+const sentBodies = {};   // id -> body text, cached at send time
 
 function parseBlocks(text, tag) {
   return text.split('[[' + tag + ']]').slice(1).map(b => {
@@ -109,7 +110,8 @@ async function poll() {
     fetch(P + '/sent',  {headers: {'X-Agent-Id': myId}}).then(r => r.text()).catch(() => ''),
   ]);
   const recv = parseBlocks(inbTxt, 'messages').filter(m => m.from === String(selId)).map(m => ({...m, _dir: 'recv'}));
-  const sent = parseBlocks(sntTxt, 'messages').filter(m => m.to   === String(selId)).map(m => ({...m, _dir: 'sent'}));
+  // sent listing now includes body= field directly — no extra fetch needed
+  const sent = parseBlocks(sntTxt, 'messages').filter(m => m.to === String(selId)).map(m => ({...m, _dir: 'sent'}));
   const all  = [...recv, ...sent]
     .filter(m => m.id && !shownIds.has(m.id))
     .sort((a, b) => a.date > b.date ? 1 : -1);
@@ -118,11 +120,19 @@ async function poll() {
   let added = 0;
   for (const m of all) {
     shownIds.add(m.id);
-    const body = await fetch(P + '/inbox/' + m.id)
-      .then(r => r.text())
-      .then(t => (t.split('\n---\n\n')[1] || '').trim())
-      .catch(() => '');
-    const wrap   = document.createElement('div');
+    let body = '';
+    if (m._dir === 'sent') {
+      // Use body from listing or cached value — never fetch /inbox/ for sent messages
+      // (fetching inbox marks the recipient's message as read before they can process it)
+      body = sentBodies[m.id] || m.body || '';
+    } else {
+      // Received: fetch full message to get body (marks as read on our side — correct)
+      body = await fetch(P + '/inbox/' + m.id)
+        .then(r => r.text())
+        .then(t => (t.split('\n---\n\n')[1] || '').trim())
+        .catch(() => '');
+    }
+    const wrap = document.createElement('div');
     wrap.className = 'wrap-msg ' + m._dir;
     const ts = m.date ? new Date(m.date).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'}) : '';
     wrap.innerHTML =
@@ -141,11 +151,15 @@ async function send() {
   inp.value = '';
   inp.disabled = true;
   document.getElementById('send-btn').disabled = true;
-  await fetch(P + '/send', {
+  const res = await fetch(P + '/send', {
     method: 'POST',
     headers: {'Content-Type': 'application/json', 'X-Agent-Id': myId},
     body: JSON.stringify({from: myId, to: selId, body})
-  }).catch(() => {});
+  }).then(r => r.text()).catch(() => '');
+  // Cache the body so poll() can display it without fetching /inbox/<id>
+  // (fetching /inbox/ would mark the recipient's message as read prematurely)
+  const idMatch = res.match(/^id\s*=\s*"([^"]+)"/m);
+  if (idMatch) sentBodies[idMatch[1]] = body;
   await poll();
   inp.disabled = false;
   document.getElementById('send-btn').disabled = false;

@@ -149,7 +149,8 @@ class MessageStore:
 # Route attachment
 # ---------------------------------------------------------------------------
 
-def attach_message(inact_app, prefix: str, store: MessageStore) -> None:
+def attach_message(inact_app, prefix: str, store: MessageStore,
+                   agents_prefix: str = "/agents") -> None:
     prefix = "/" + prefix.strip("/")
     ep = "_inact_msg_" + prefix.replace("/", "__")
     flask_app = inact_app.app
@@ -271,6 +272,7 @@ def attach_message(inact_app, prefix: str, store: MessageStore) -> None:
 
     def _human():
         p = prefix
+        ap = agents_prefix
         html = f"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -332,10 +334,11 @@ button.send:disabled{{background:#aaa;cursor:default}}
   </main>
 </div>
 <script>
-const P = {p!r};
+const P  = {p!r};
+const AP = {ap!r};
 let myId = localStorage.getItem('inact_agent_id');
 let myName = localStorage.getItem('inact_name') || ('Agent #'+myId);
-if (!myId) {{ location.href = P+'/_human'; }}
+if (!myId) {{ location.href = '/_human' + AP; }}
 document.getElementById('my-id').textContent = myId;
 
 let selId=null, selName='', timer=null, shownIds=new Set();
@@ -349,16 +352,28 @@ function parseBlocks(text,tag){{
 }}
 
 async function loadAgents(){{
-  const text=await fetch(P+'/agents').then(r=>r.text()).catch(()=>'');
-  const agents=parseBlocks(text,'agents');
+  // Load from register app (all agents), fall back to message app (active senders)
+  let agents = [];
+  try {{
+    const text = await fetch(AP+'/').then(r=>r.text());
+    agents = parseBlocks(text,'agents');
+  }} catch(_) {{}}
+  if (!agents.length) {{
+    try {{
+      const text = await fetch(P+'/agents').then(r=>r.text());
+      agents = parseBlocks(text,'agents');
+    }} catch(_) {{}}
+  }}
   const list=document.getElementById('agent-list');
-  if(!agents.length){{list.innerHTML='<div style="padding:12px 14px;font-size:13px;color:#bbb">No agents yet.</div>';return;}}
+  const others = agents.filter(a => String(a.id) !== String(myId));
+  if(!others.length){{list.innerHTML='<div style="padding:12px 14px;font-size:13px;color:#bbb">No other agents yet.</div>';return;}}
   list.innerHTML='';
-  agents.forEach(a=>{{
+  others.forEach(a=>{{
+    const label = a.name || ('Agent #'+a.id);
     const btn=document.createElement('button');
-    btn.className='agent-btn'; btn.dataset.id=a.id; btn.dataset.name=a.id;
-    btn.textContent='Agent #'+a.id+(a.id==myId?' (you)':'');
-    btn.addEventListener('click',()=>select(a.id,'Agent #'+a.id));
+    btn.className='agent-btn'; btn.dataset.id=a.id;
+    btn.textContent = label;
+    btn.addEventListener('click',()=>select(a.id, label));
     list.appendChild(btn);
   }});
 }}
@@ -437,23 +452,28 @@ loadAgents();
     inact_app._human_views[prefix] = lambda path: _human()
 
 
-def mount_message(inact_app, prefix: str, storage) -> None:
+def mount_message(inact_app, prefix: str, storage,
+                  agents_prefix: str = "/agents") -> None:
     """
     Mount an agent messaging service at *prefix*.
 
     Agents send plain-text messages to each other by ID. Inbox and sent folders
     are paginated. ``/agents`` lists agents who have sent at least one message.
 
-    *storage* — a database URL/path or a :class:`~inact.storage.Storage` instance.
+    *storage*       — a database URL/path or a :class:`~inact.storage.Storage` instance.
+    *agents_prefix* — prefix of the register app; used by the ``/_human`` chat
+                      page to list all registered agents (default ``"/agents"``).
 
     Example::
 
-        app.mount_message("/msg", "./data/messages.db")
+        mount_message(app, "/msg", "./data/messages.db")
+        mount_message(app, "/msg", "./data/messages.db", agents_prefix="/agents")
     """
     from ..storage import make_storage
     p = "/" + prefix.strip("/")
     backend = make_storage(storage) if isinstance(storage, str) else storage
-    attach_message(inact_app, p, MessageStore(backend))
+    attach_message(inact_app, p, MessageStore(backend),
+                   agents_prefix="/" + agents_prefix.strip("/"))
     inact_app._app_mounts.append((p, (
         f"\nAgent messaging: {p}\n"
         f'  POST   {p}/send          send  body: {{"from":"1","to":"2","body":"..."}}\n'

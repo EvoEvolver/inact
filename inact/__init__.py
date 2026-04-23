@@ -6,13 +6,16 @@ from .todo import TodoStore
 from .handlers import FileHandler, PDFHandler
 from .mailbox import Mailbox
 from .mcp import McpClient, StdioMcpClient
+from .message import MessageStore
 from .pages import MdContent, TomlContent
+from .register import AgentRegistry
 from .storage import PostgresStorage, SqliteStorage, Storage, make_storage
 from .utils import text_response, html_response, toml_str, server_base, format_table
 from .website import WebsiteProxy
 
 __all__ = [
     "A2AClient",
+    "AgentRegistry",
     "CronScheduler",
     "FileHandler",
     "FormStore",
@@ -20,6 +23,7 @@ __all__ = [
     "Mailbox",
     "McpClient",
     "MdContent",
+    "MessageStore",
     "PDFHandler",
     "PostgresStorage",
     "SqliteStorage",

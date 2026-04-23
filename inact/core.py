@@ -55,6 +55,8 @@ class Inact:
         self._search_mounts: dict[str, str] = {}   # prefix -> label
         self._cron_mounts: dict[str, str] = {}     # prefix -> label
         self._todo_mounts: dict[str, str] = {}     # prefix -> label
+        self._register_mounts: dict[str, str] = {}  # prefix -> label
+        self._message_mounts: dict[str, str] = {}   # prefix -> label
 
         self._register_builtins()
 
@@ -387,6 +389,55 @@ class Inact:
         self._todo_mounts[prefix_norm] = storage if isinstance(storage, str) else type(backend).__name__
         attach_todo(self, prefix_norm, TodoStore(backend))
 
+    def mount_register(self, prefix: str, storage) -> None:
+        """
+        Mount an agent registry at *prefix*.
+
+        Agents POST to register and receive an auto-incrementing integer ID
+        and a secret API key.  The registry is publicly listable so agents
+        can discover each other.
+
+        *storage* — a database URL/path or a
+        :class:`~inact.storage.Storage` instance.
+
+        Example::
+
+            app.mount_register("/agents", "./data/agents.db")
+        """
+        from .register import AgentRegistry, attach_register
+        from .storage import make_storage
+        prefix_norm = "/" + prefix.strip("/")
+        backend = make_storage(storage) if isinstance(storage, str) else storage
+        self._register_mounts[prefix_norm] = storage if isinstance(storage, str) else type(backend).__name__
+        attach_register(self, prefix_norm, AgentRegistry(backend))
+
+    def mount_message(self, prefix: str, storage) -> None:
+        """
+        Mount an agent messaging service at *prefix*.
+
+        Agents send plain-text messages to each other by ID.  Inbox and sent
+        folders are paginated.  The ``/agents`` endpoint lists all agents that
+        have sent at least one message (useful for discovery).
+
+        *storage* — a database URL/path or a
+        :class:`~inact.storage.Storage` instance.
+
+        Example::
+
+            app.mount_message("/msg", "./data/messages.db")
+
+        Send a message::
+
+            POST /msg/send
+            {"from": "1", "to": "2", "body": "hello"}
+        """
+        from .message import MessageStore, attach_message
+        from .storage import make_storage
+        prefix_norm = "/" + prefix.strip("/")
+        backend = make_storage(storage) if isinstance(storage, str) else storage
+        self._message_mounts[prefix_norm] = storage if isinstance(storage, str) else type(backend).__name__
+        attach_message(self, prefix_norm, MessageStore(backend))
+
     def route(self, path: str, **kwargs):
         """Pass-through to Flask's @app.route."""
         return self.app.route(path, **kwargs)
@@ -517,6 +568,26 @@ class Inact:
                 lines.append(f"    GET  {prefix}/.overdue        past due, not done\n")
                 lines.append(f"    POST {prefix}/<id>/.done      mark done\n")
                 lines.append(f"    POST {prefix}/<id>/subtasks   add subtask\n")
+            lines.append("\n")
+
+        if self._register_mounts:
+            lines.append("## Agent registries\n\n")
+            for prefix in sorted(self._register_mounts):
+                lines.append(f"  {prefix}/\n")
+                lines.append(f"    POST {prefix}/                register (get id + api_key)\n")
+                lines.append(f"    GET  {prefix}/                list agents\n")
+                lines.append(f"    GET  {prefix}/<id>            agent public profile\n")
+                lines.append(f"    DELETE {prefix}/<id>          deregister (X-Api-Key header)\n")
+            lines.append("\n")
+
+        if self._message_mounts:
+            lines.append("## Agent messaging\n\n")
+            for prefix in sorted(self._message_mounts):
+                lines.append(f"  {prefix}/\n")
+                lines.append(f"    POST {prefix}/send            send message\n")
+                lines.append(f"    GET  {prefix}/inbox           received messages\n")
+                lines.append(f"    GET  {prefix}/sent            sent messages\n")
+                lines.append(f"    GET  {prefix}/agents          known agents\n")
             lines.append("\n")
 
         if self._routes or self._mounts:
@@ -802,9 +873,35 @@ class Inact:
                 lines.append(f"    POST   {p}/{{id}}/subtasks        add subtask\n")
                 lines.append(f"    POST   {p}/{{id}}/.done           mark done\n")
                 lines.append(f"    POST   {p}/{{id}}/.reopen         reopen\n")
+        register_children = sorted(
+            p for p in self._register_mounts if p.startswith(prefix + "/") or p == prefix
+        )
+        if register_children:
+            lines.append("\nAgent registries:\n")
+            for p in register_children:
+                lines.append(f"  {p}/\n")
+                lines.append(f"    POST   {p}/              register (returns id + api_key)\n")
+                lines.append(f"    GET    {p}/              list agents  ?page=1&per_page=20\n")
+                lines.append(f"    GET    {p}/{{id}}          agent public profile\n")
+                lines.append(f"    DELETE {p}/{{id}}          deregister (X-Api-Key header required)\n")
+        message_children = sorted(
+            p for p in self._message_mounts if p.startswith(prefix + "/") or p == prefix
+        )
+        if message_children:
+            lines.append("\nAgent messaging:\n")
+            for p in message_children:
+                lines.append(f"  {p}/\n")
+                lines.append(f"    POST   {p}/send           send message\n")
+                lines.append(f"                               Body: {{\"from\":\"1\",\"to\":\"2\",\"body\":\"...\"}}\n")
+                lines.append(f"    GET    {p}/inbox          received messages  ?agent_id=<id>  ?unread=1\n")
+                lines.append(f"    GET    {p}/inbox/{{id}}     read message (marks as read)\n")
+                lines.append(f"    DELETE {p}/inbox/{{id}}     delete message\n")
+                lines.append(f"    GET    {p}/sent           sent messages  ?agent_id=<id>\n")
+                lines.append(f"    GET    {p}/agents         find other agents\n")
+                lines.append(f"    # Use X-Agent-Id header or ?agent_id= for inbox/sent\n")
         if not any([children, mount_children, mcp_children, a2a_children,
                     web_children, mail_children, forms_children, search_children,
-                    cron_children, todo_children]):
+                    cron_children, todo_children, register_children, message_children]):
             lines.append("No help registered for this path.\n")
         return "".join(lines)
 

@@ -257,6 +257,57 @@ def serve_replace_info(inact_app, prefix: str, folder: str, subpath: str) -> tup
     return text_response("".join(lines))
 
 
+def serve_append(inact_app, prefix: str, folder: str, subpath: str) -> tuple:
+    if not subpath:
+        return text_response("ERROR 400: /.append requires a file path\n", 400)
+    safe = os.path.normpath(os.path.join(folder, subpath))
+    if not safe.startswith(folder):
+        return text_response("ERROR 403: Path traversal denied\n", 403)
+    if not os.path.isfile(safe):
+        return text_response(f"ERROR 404: File not found: {subpath}\n", 404)
+
+    _, ext = os.path.splitext(subpath.lower())
+    handler = inact_app._mount_handlers.get(prefix, {}).get(ext)
+
+    body = request.get_json(force=True, silent=True)
+    if body is not None:
+        # JSON array → row values; JSON object → order by CSV header
+        if isinstance(body, list):
+            values = [str(v) for v in body]
+        elif isinstance(body, dict):
+            if hasattr(handler, "header"):
+                hdr = handler.header(safe)
+                values = [str(body.get(h, "")) for h in hdr] if hdr else [str(v) for v in body.values()]
+            else:
+                values = [str(v) for v in body.values()]
+        else:
+            return text_response("ERROR 400: body must be a JSON array or object\n", 400)
+
+        if hasattr(handler, "append_row"):
+            handler.append_row(safe, values)
+        else:
+            import csv, io
+            buf = io.StringIO()
+            csv.writer(buf).writerow(values)
+            with open(safe, "a", encoding="utf-8", newline="") as f:
+                f.write(buf.getvalue())
+        appended = ",".join(values)
+    else:
+        # plain text — append line as-is
+        line = request.get_data(as_text=True)
+        if not line.endswith("\n"):
+            line += "\n"
+        try:
+            with open(safe, "a", encoding="utf-8") as f:
+                f.write(line)
+        except OSError as e:
+            return text_response(f"ERROR 500: {e}\n", 500)
+        appended = line.rstrip("\n")
+
+    virtual_path = prefix + "/" + subpath
+    return text_response(f"OK\npath   = {toml_str(virtual_path)}\nrow    = {toml_str(appended)}\n")
+
+
 def serve_replace(inact_app, prefix: str, folder: str, subpath: str) -> tuple:
     if not subpath:
         return text_response("ERROR 400: /.replace requires a file path\n", 400)
@@ -305,6 +356,9 @@ def handle_mount(inact_app, prefix: str, folder: str, subpath: str) -> tuple:
 
     if subpath.endswith("/.download"):
         return serve_download(prefix, folder, subpath[:-10].rstrip("/"))
+
+    if subpath.endswith("/.append"):
+        return serve_append(inact_app, prefix, folder, subpath[:-8].rstrip("/"))
 
     if subpath.endswith("/.replace"):
         file_sub = subpath[:-9].rstrip("/")
@@ -383,7 +437,8 @@ def mount_files(
         f"  GET  {p}/<file>/.download  raw download\n"
     )
     if handlers:
-        help_text += f"  GET  {p}/<file>/p/<N>  paginated file\n"
+        help_text += f"  GET  {p}/<file>/p/<N>       paginated file\n"
+        help_text += f"  POST {p}/<file>/.append     append row  body: JSON array or object\n"
     if editable is not False:
-        help_text += f"  POST {p}/<file>/.replace  overwrite file\n"
+        help_text += f"  POST {p}/<file>/.replace    overwrite file\n"
     inact_app._app_mounts.append((prefix, help_text))

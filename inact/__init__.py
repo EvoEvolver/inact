@@ -4,7 +4,7 @@ from .apps.cron import CronScheduler, mount_cron
 from .apps.files import mount_files
 from .apps.forms import FormStore, mount_forms
 from .apps.todo import TodoStore, mount_todo
-from .handlers import FileHandler, PDFHandler
+from .handlers import FileHandler, PDFHandler, CSVHandler
 from .apps.mailbox import Mailbox, mount_mailbox
 from .apps.mcp import McpClient, StdioMcpClient, mount_mcp, mount_mcp_npx, mount_mcp_uvx
 from .apps.message import MessageStore, mount_message
@@ -17,6 +17,7 @@ from .apps.website import WebsiteProxy, mount_website
 
 __all__ = [
     "A2AClient",
+    "CSVHandler",
     "AgentRegistry",
     "CronScheduler",
     "FileHandler",

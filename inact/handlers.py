@@ -8,7 +8,10 @@ virtual pagination so agents browse large files one chunk at a time via
 
 from __future__ import annotations
 
+import csv
+import io
 import os
+import re
 from abc import ABC, abstractmethod
 
 
@@ -93,3 +96,95 @@ class PDFHandler(FileHandler):
         nav.append("")
 
         return "\n".join(nav) + "\n" + chunk, 200
+
+
+class CSVHandler(FileHandler):
+    """
+    Serve CSV files as paginated TOML for AI agents.
+
+    Each page shows ``rows_per_page`` data rows as ``[[rows]]`` TOML entries
+    keyed by the header row.  The file is also writable via ``/.append``
+    (registered automatically by :func:`~inact.apps.files.mount_files`).
+
+    No extra dependencies — uses the stdlib ``csv`` module.
+
+    Example::
+
+        from inact.handlers import CSVHandler
+        mount_files(app, "/data", "./data", handlers=[CSVHandler()])
+        mount_files(app, "/data", "./data", handlers=[CSVHandler(rows_per_page=100)])
+    """
+
+    extensions = [".csv"]
+
+    def __init__(self, rows_per_page: int = 50):
+        self.rows_per_page = rows_per_page
+
+    def _read(self, abs_path: str) -> tuple[list[str], list[list[str]]]:
+        with open(abs_path, encoding="utf-8", newline="") as f:
+            rows = list(csv.reader(f))
+        if not rows:
+            return [], []
+        return rows[0], rows[1:]
+
+    def _safe_key(self, name: str) -> str:
+        key = re.sub(r"[^a-zA-Z0-9_-]", "_", name).strip("_") or "col"
+        return key
+
+    def page_count(self, abs_path: str) -> int | None:
+        try:
+            _, data = self._read(abs_path)
+        except Exception:
+            return None
+        return max(1, (len(data) + self.rows_per_page - 1) // self.rows_per_page)
+
+    def serve(self, abs_path: str, virtual_path: str, page: int = 1) -> tuple[str, int]:
+        try:
+            headers, data = self._read(abs_path)
+        except Exception as e:
+            return f"ERROR reading CSV: {e}", 500
+
+        total_rows = len(data)
+        total_pages = max(1, (total_rows + self.rows_per_page - 1) // self.rows_per_page)
+
+        if page < 1 or page > total_pages:
+            return f"Page {page} out of range (1–{total_pages}).", 404
+
+        start = (page - 1) * self.rows_per_page
+        page_rows = data[start : start + self.rows_per_page]
+        keys = [self._safe_key(h) for h in headers]
+
+        lines = [
+            f"# {os.path.basename(abs_path)}\n",
+            f"# {total_rows} rows  —  page {page} of {total_pages}"
+            f"  (rows {start + 1}–{start + len(page_rows)})\n",
+        ]
+        if page > 1:
+            lines.append(f"# prev: {virtual_path}/p/{page - 1}\n")
+        if page < total_pages:
+            lines.append(f"# next: {virtual_path}/p/{page + 1}\n")
+        lines.append(f"# append: POST {virtual_path}/.append\n\n")
+
+        for row in page_rows:
+            lines.append("[[rows]]\n")
+            for i, key in enumerate(keys):
+                val = row[i] if i < len(row) else ""
+                lines.append(f'{key} = "{val}"\n')
+            lines.append("\n")
+
+        return "".join(lines), 200
+
+    def append_row(self, abs_path: str, values: list[str]) -> None:
+        """Append one row to the CSV file."""
+        buf = io.StringIO()
+        csv.writer(buf).writerow(values)
+        with open(abs_path, "a", encoding="utf-8", newline="") as f:
+            f.write(buf.getvalue())
+
+    def header(self, abs_path: str) -> list[str]:
+        """Return the header row (empty list if file is empty)."""
+        try:
+            h, _ = self._read(abs_path)
+            return h
+        except Exception:
+            return []

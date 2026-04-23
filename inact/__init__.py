@@ -2,6 +2,7 @@ from .apps.a2a import A2AClient, mount_a2a
 from .core import Inact
 from .apps.cron import CronScheduler, mount_cron
 from .apps.files import mount_files
+from .apps.notify import mount_notify, NotifyStore
 from .apps.forms import FormStore, mount_forms
 from .apps.todo import TodoStore, mount_todo
 from .handlers import FileHandler, PDFHandler, CSVHandler

@@ -47,6 +47,14 @@ document.getElementById('my-id').textContent = myId;
 let selId = null, selName = '', timer = null, shownIds = new Set();
 const sentBodies = {};   // id -> body text, cached at send time
 
+function apiKey() { return localStorage.getItem('inact_api_key') || ''; }
+function authHeaders(extra) {
+  const h = {'X-Agent-Id': myId};
+  const k = apiKey();
+  if (k) h['X-Api-Key'] = k;
+  return Object.assign(h, extra || {});
+}
+
 function parseBlocks(text, tag) {
   return text.split('[[' + tag + ']]').slice(1).map(b => {
     const o = {};
@@ -61,12 +69,12 @@ function parseBlocks(text, tag) {
 async function loadAgents() {
   let agents = [];
   try {
-    const text = await fetch(AP + '/').then(r => r.text());
+    const text = await fetch(AP + '/', {headers: authHeaders()}).then(r => r.text());
     agents = parseBlocks(text, 'agents');
   } catch (_) {}
   if (!agents.length) {
     try {
-      const text = await fetch(P + '/agents').then(r => r.text());
+      const text = await fetch(P + '/agents', {headers: authHeaders()}).then(r => r.text());
       agents = parseBlocks(text, 'agents');
     } catch (_) {}
   }
@@ -105,10 +113,20 @@ function select(id, name) {
 
 async function poll() {
   if (!selId) return;
-  const [inbTxt, sntTxt] = await Promise.all([
-    fetch(P + '/inbox', {headers: {'X-Agent-Id': myId}}).then(r => r.text()).catch(() => ''),
-    fetch(P + '/sent',  {headers: {'X-Agent-Id': myId}}).then(r => r.text()).catch(() => ''),
+  const [inbRes, sntRes] = await Promise.all([
+    fetch(P + '/inbox', {headers: authHeaders()}).catch(() => null),
+    fetch(P + '/sent',  {headers: authHeaders()}).catch(() => null),
   ]);
+  if (inbRes && (inbRes.status === 401 || inbRes.status === 403)) {
+    document.getElementById('messages').innerHTML =
+      '<div class="placeholder" style="color:#cc0000">⚠ API key rejected (' + inbRes.status + '). '
+      + '<a href="/_human' + AP + '" style="color:#cc0000">Re-register</a> to get a new key.</div>';
+    return;
+  }
+  const [inbTxt, sntTxt] = [
+    inbRes  ? await inbRes.text()  : '',
+    sntRes  ? await sntRes.text()  : '',
+  ];
   const recv = parseBlocks(inbTxt, 'messages').filter(m => m.from === String(selId)).map(m => ({...m, _dir: 'recv'}));
   // sent listing now includes body= field directly — no extra fetch needed
   const sent = parseBlocks(sntTxt, 'messages').filter(m => m.to === String(selId)).map(m => ({...m, _dir: 'sent'}));
@@ -127,7 +145,7 @@ async function poll() {
       body = sentBodies[m.id] || m.body || '';
     } else {
       // Received: fetch full message to get body (marks as read on our side — correct)
-      body = await fetch(P + '/inbox/' + m.id)
+      body = await fetch(P + '/inbox/' + m.id, {headers: authHeaders()})
         .then(r => r.text())
         .then(t => (t.split('\n---\n\n')[1] || '').trim())
         .catch(() => '');
@@ -153,7 +171,7 @@ async function send() {
   document.getElementById('send-btn').disabled = true;
   const res = await fetch(P + '/send', {
     method: 'POST',
-    headers: {'Content-Type': 'application/json', 'X-Agent-Id': myId},
+    headers: authHeaders({'Content-Type': 'application/json'}),
     body: JSON.stringify({from: myId, to: selId, body})
   }).then(r => r.text()).catch(() => '');
   // Cache the body so poll() can display it without fetching /inbox/<id>

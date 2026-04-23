@@ -79,7 +79,9 @@ function load() {
 }
 
 async function loadAgents() {
-  const text = await fetch(AGENTS_API + '/').then(r => r.text()).catch(() => '');
+  const key = localStorage.getItem('inact_api_key') || '';
+  const headers = key ? {'X-Api-Key': key} : {};
+  const text = await fetch(AGENTS_API + '/', {headers}).then(r => r.text()).catch(() => '');
   const agents = parseBlocks(text, 'agents');
   const list = document.getElementById('agents-list');
   list.innerHTML = agents.map(a =>

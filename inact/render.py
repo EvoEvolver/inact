@@ -27,6 +27,7 @@ _WORKSPACE_PAGES = [
     ("chat",    "/_human/msg/"),
     ("tasks",   "/_human/tasks/"),
     ("mail",    "/_human/mail/"),
+    ("files",   "/_human/files/"),
     ("data",    "/_human/data/"),
     ("search",  "/_human/search/"),
     ("admin",   "/_human/agents/.admin"),
@@ -62,11 +63,15 @@ def _pills(path: str, extra: list[tuple[str, str]] | None = None) -> list[tuple[
 
 
 def _page(template: str, title: str, path: str,
-          extra_pills: list[tuple[str, str]] | None = None, **ctx) -> tuple:
+          extra_pills: list[tuple[str, str]] | None = None,
+          workspace_links=None, show_identity: bool = False,
+          **ctx) -> tuple:
     html = render_template(template,
         title=title,
         nav=_nav(path),
         pills=_pills(path, extra_pills),
+        workspace_links=workspace_links,
+        show_identity=show_identity,
         **ctx,
     )
     return html_response(html)
@@ -180,7 +185,10 @@ def render_markdown(value, path: str) -> tuple:
         body, extensions=["fenced_code", "tables", "toc", "attr_list"]
     )
     meta_items = [(k, str(v)) for k, v in metadata.items() if k not in {"title", "help"}]
+    # Show workspace nav on the home page
+    wl = workspace_nav("/") if path in ("/", "") else None
     return _page("markdown.html", str(title), path,
+                 workspace_links=wl, show_identity=(wl is not None),
                  content=content_html, meta_items=meta_items)
 
 

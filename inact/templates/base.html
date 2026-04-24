@@ -229,7 +229,7 @@ button.send:disabled { background: #aaa; cursor: default; }
 {% block nav %}
 <nav>
   {# Workspace top-level links — highlight the current section #}
-  {% if workspace_links is defined %}
+  {% if workspace_links is defined and workspace_links %}
     {% for label, href, active in workspace_links %}
     <a href="{{ href }}"
        style="{% if active %}font-weight:700;color:#0066cc{% else %}color:#555{% endif %}">

@@ -1,0 +1,153 @@
+{% extends "base.html" %}
+{% block content %}
+<div style="display:flex;align-items:baseline;gap:10px;margin-bottom:16px">
+  <h1 class="page-title" style="margin:0" id="dir-title">Files</h1>
+  <span id="breadcrumb" style="font-size:13px;color:#aaa"></span>
+</div>
+
+{# ── Upload bar ── #}
+<div style="display:flex;gap:8px;margin-bottom:16px;align-items:center">
+  <input type="file" id="upload-file" style="flex:1;border:1px dashed #ddd;border-radius:8px;padding:8px 12px;font-size:13px;cursor:pointer">
+  <input id="upload-name" placeholder="Filename (optional)" style="max-width:180px">
+  <button class="primary" id="upload-btn">Upload</button>
+  <span id="upload-status" style="font-size:13px;color:#22863a"></span>
+</div>
+
+{# ── Directory listing ── #}
+<div id="listing">
+  <p style="color:#aaa;font-size:14px">Loading…</p>
+</div>
+
+{# ── File viewer ── #}
+<div id="viewer" hidden style="margin-top:20px">
+  <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px">
+    <button onclick="closeViewer()" style="background:none;border:none;cursor:pointer;font-size:20px;color:#888;line-height:1">←</button>
+    <strong id="viewer-name" style="font-size:15px"></strong>
+    <a id="viewer-download" href="#" style="margin-left:auto;font-size:12px;color:#0066cc">download</a>
+    <a id="viewer-raw" href="#" style="font-size:12px;color:#aaa">raw</a>
+  </div>
+  <div class="toml-raw" id="viewer-body" style="max-height:60vh;overflow-y:auto;font-size:13px"></div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const P   = {{ prefix | tojson }};
+const KEY = localStorage.getItem('inact_api_key') || '';
+function H(extra) { return Object.assign({'X-Api-Key': KEY}, extra || {}); }
+function esc(s) { return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+
+let currentPath = '';  // sub-path within the mount ('' = root)
+
+function parseBlocks(text, tag) {
+  return text.split('[[' + tag + ']]').slice(1).map(b => {
+    const o = {};
+    b.split('\n').forEach(l => {
+      const m = l.match(/^(\w+)\s*=\s*"([^"]*)"/) || l.match(/^(\w+)\s*=\s*(\S+)/);
+      if (m) o[m[1]] = m[2];
+    });
+    return o;
+  }).filter(o => Object.keys(o).length > 0);
+}
+
+/* ── Load directory ── */
+async function loadDir(subpath) {
+  currentPath = subpath;
+  const url = P + (subpath ? '/' + subpath.replace(/^\//, '') : '') + '/';
+  document.getElementById('viewer').hidden = true;
+
+  // Breadcrumb
+  const parts  = subpath ? subpath.split('/').filter(Boolean) : [];
+  const crumbs = ['<a href="#" onclick="loadDir(\'\')">root</a>'];
+  parts.forEach((p, i) => {
+    const path = parts.slice(0, i + 1).join('/');
+    crumbs.push(`<a href="#" onclick="loadDir(${JSON.stringify(path)})">${esc(p)}</a>`);
+  });
+  document.getElementById('breadcrumb').innerHTML = crumbs.join(' / ');
+  document.getElementById('dir-title').textContent = parts.length ? parts[parts.length - 1] : 'Files';
+
+  const text  = await fetch(url, {headers: H()}).then(r => r.text()).catch(() => '');
+  const entries = parseBlocks(text, 'entries');
+
+  const listing = document.getElementById('listing');
+  if (!entries.length) {
+    listing.innerHTML = '<p style="color:#aaa;font-size:14px">Empty directory.</p>';
+    return;
+  }
+
+  listing.innerHTML = `
+    <div class="toml-array">
+      <table>
+        <thead><tr><th></th><th>Name</th><th>Size</th><th></th></tr></thead>
+        <tbody>
+          ${entries.map(e => {
+            const isDir   = e.type === 'dir';
+            const name    = e.name || '';
+            const rawName = name.replace(/\/$/, '');
+            const size    = e.size ? Number(e.size).toLocaleString() + ' B' : '—';
+            const icon    = isDir ? '▶' : '·';
+            const action  = isDir
+              ? `onclick="loadDir('${esc(currentPath ? currentPath + '/' + rawName : rawName)}')" style="cursor:pointer"`
+              : `onclick="viewFile('${esc(e.path || '')}','${esc(rawName)}')" style="cursor:pointer"`;
+            const dlLink  = isDir ? '' : `<a href="${esc(e.path || '')}/.download" style="font-size:12px;color:#aaa" download>dl</a>`;
+            return `<tr ${action}>
+              <td style="color:#aaa;font-family:monospace;width:20px">${icon}</td>
+              <td><span style="color:#0066cc">${esc(name)}</span></td>
+              <td class="ls-size">${size}</td>
+              <td>${dlLink}</td>
+            </tr>`;
+          }).join('')}
+        </tbody>
+      </table>
+    </div>`;
+}
+
+/* ── View file ── */
+async function viewFile(rawPath, name) {
+  document.getElementById('viewer-name').textContent = name;
+  document.getElementById('viewer-download').href = rawPath + '/.download';
+  document.getElementById('viewer-raw').href = rawPath;
+  document.getElementById('viewer').hidden = false;
+  document.getElementById('listing').hidden = true;
+
+  const body = document.getElementById('viewer-body');
+  body.textContent = 'Loading…';
+  const text = await fetch(rawPath, {headers: H()}).then(r => r.text()).catch(e => String(e));
+  body.textContent = text;
+}
+
+function closeViewer() {
+  document.getElementById('viewer').hidden = true;
+  document.getElementById('listing').hidden = false;
+}
+
+/* ── Upload ── */
+document.getElementById('upload-btn').addEventListener('click', async () => {
+  const fileInput = document.getElementById('upload-file');
+  const file      = fileInput.files[0];
+  const status    = document.getElementById('upload-status');
+  if (!file) { status.textContent = 'Choose a file first.'; status.style.color='#cc0000'; return; }
+
+  const name    = document.getElementById('upload-name').value.trim() || file.name;
+  const subPath = currentPath ? currentPath + '/' + name : name;
+  const url     = P + '/' + subPath + '/.replace';
+
+  status.textContent = 'Uploading…'; status.style.color = '#888';
+  const r = await fetch(url, {
+    method: 'POST',
+    headers: H({'Content-Type': file.type || 'application/octet-stream'}),
+    body: file,
+  });
+  const txt = await r.text();
+  if (txt.startsWith('OK')) {
+    status.textContent = `✓ ${name} uploaded`; status.style.color = '#22863a';
+    fileInput.value = ''; document.getElementById('upload-name').value = '';
+    await loadDir(currentPath);
+  } else {
+    status.textContent = txt.split('\n')[0]; status.style.color = '#cc0000';
+  }
+});
+
+loadDir('');
+</script>
+{% endblock %}

@@ -192,6 +192,11 @@ class Inact:
     # -----------------------------------------------------------------------
 
     def _render_human(self, path: str) -> tuple:
+        # App human views (checked first — they override the generic file/route rendering)
+        for prefix, view_fn in self._human_views.items():
+            if path == prefix or path.startswith(prefix + "/"):
+                return view_fn(path)
+
         # Registered md / toml routes
         if path in self._routes:
             kind, fn = self._routes[path]
@@ -243,11 +248,6 @@ class Inact:
                     if full.endswith(".toml"):
                         return render_toml(content, path)
                     return render_plain(content, path)
-
-        # App human views registered via _human_views
-        for prefix, view_fn in self._human_views.items():
-            if path == prefix or path.startswith(prefix + "/"):
-                return view_fn(path)
 
         # Proxied website — return the raw HTML so the browser renders it natively
         for prefix, base_url in self._website_mounts.items():

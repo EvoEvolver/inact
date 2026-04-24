@@ -595,3 +595,13 @@ def mount_files(
     if editable is not False:
         help_text += f"  POST {p}/<file>/.replace   overwrite file\n"
     inact_app._app_mounts.append((prefix, help_text))
+
+    def _human(path: str):
+        from inact.render import render_template, workspace_nav
+        from inact.utils import html_response
+        return html_response(render_template("files_human.html",
+            title="Files", prefix=prefix, nav="", pills=[],
+            workspace_links=workspace_nav("/_human/files/"),
+            show_identity=True))
+
+    inact_app._human_views[prefix] = _human

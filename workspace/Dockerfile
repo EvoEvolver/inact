@@ -17,9 +17,8 @@ RUN uv pip install --system --no-cache ./inact/.. --no-deps
 # Copy workspace server
 COPY workspace/server.py .
 
-# Data volume — mount a host directory here for persistence
+# Data directory — set DATA_DIR env var and attach a Railway volume at that path
 ENV DATA_DIR=/data
-VOLUME /data
 
 # HTTP server port (default 5050, override with -e PORT=...)
 EXPOSE 5050

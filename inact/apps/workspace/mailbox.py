@@ -133,11 +133,14 @@ class _InboundHandler:
         try:
             raw = envelope.content
             msg = _email_module.message_from_bytes(raw)
-            subject = _decode_str(msg.get("Subject", "(no subject)"))
+            subject   = _decode_str(msg.get("Subject", "(no subject)"))
             from_addr = _decode_str(msg.get("From", envelope.mail_from or ""))
-            body = _extract_body(msg)
+            body      = _extract_body(msg)
             for to_addr in envelope.rcpt_tos:
-                self._store.save("inbox", from_addr, to_addr, subject, body)
+                # Strip plus-tag so to_addr matches the agent's registered email.
+                # e.g. bot+1@domain.com → bot@domain.com
+                canonical = _strip_plus(to_addr)
+                self._store.save("inbox", from_addr, canonical, subject, body)
         except Exception as exc:
             log.warning("mailbox: failed to store incoming message: %s", exc)
         return "250 Message accepted"
@@ -166,8 +169,34 @@ _smtp_controllers: list = []  # prevent GC
 # Outbound sending
 # ---------------------------------------------------------------------------
 
+def _plus_reply_to(from_addr: str, agent_id: str) -> str:
+    """
+    Build a plus-addressed Reply-To so replies route back to the right agent.
+
+    agent@domain.com  →  agent+<agent_id>@domain.com
+
+    The inbound SMTP handler strips the +tag and matches against the base
+    address to find the owning agent.
+    """
+    if "@" not in from_addr or not agent_id:
+        return from_addr
+    local, domain = from_addr.rsplit("@", 1)
+    # Strip any existing + tag before adding ours
+    local = local.split("+")[0]
+    return f"{local}+{agent_id}@{domain}"
+
+
+def _strip_plus(addr: str) -> str:
+    """agent+tag@domain.com → agent@domain.com"""
+    if "@" not in addr:
+        return addr
+    local, domain = addr.rsplit("@", 1)
+    return f"{local.split('+')[0]}@{domain}"
+
+
 def _send_email(from_addr: str, to: str, subject: str, body: str,
                 cc: str = "",
+                agent_id: str = "",
                 relay_host: str = "", relay_port: int = 587,
                 relay_user: str = "", relay_password: str = "",
                 smtp_host: str = "localhost", smtp_port: int = 2525) -> None:
@@ -177,6 +206,9 @@ def _send_email(from_addr: str, to: str, subject: str, body: str,
     msg["To"] = to
     if cc:
         msg["Cc"] = cc
+    # Set Reply-To with agent ID encoded in plus address so replies route back
+    if agent_id:
+        msg["Reply-To"] = _plus_reply_to(from_addr, agent_id)
     msg.attach(MIMEText(body, "plain", "utf-8"))
     recipients = [a.strip() for a in (to + ("," + cc if cc else "")).split(",") if a.strip()]
 
@@ -319,11 +351,13 @@ def attach_mailbox(inact_app, prefix: str, store: MailStore,
 
     def _send():
         agent_email = None
+        agent_id_str = ""
         if registry is not None:
             agent, err = _agent_email()
             if err:
                 return err
-            agent_email = agent["email"]
+            agent_email   = agent["email"]
+            agent_id_str  = str(agent["id"])
 
         body_data = request.get_json(force=True, silent=True) or {}
         to      = (body_data.get("to")      or "").strip()
@@ -348,6 +382,7 @@ def attach_mailbox(inact_app, prefix: str, store: MailStore,
             )
         try:
             _send_email(from_, to, subject, body, cc=cc,
+                        agent_id=agent_id_str,
                         relay_host=relay_host, relay_port=relay_port,
                         relay_user=relay_user, relay_password=relay_password,
                         smtp_host=smtp_host, smtp_port=smtp_port)

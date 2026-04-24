@@ -98,7 +98,10 @@ def mount_workspace(
                   agents_prefix=agents_prefix,
                   notify_storage=notify_storage)
 
-    mount_todo(inact_app, tasks_prefix, storage)
+    mount_todo(inact_app, tasks_prefix, storage,
+               agents_prefix=agents_prefix,
+               agents_storage=storage,
+               notify_storage=notify_storage)
     mount_db(inact_app, f"{p}/data", storage)
 
     # Email: always mount routes (for human UI); SMTP server only if configured

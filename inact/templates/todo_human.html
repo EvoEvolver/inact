@@ -20,14 +20,17 @@
     <option value="low">Low</option>
   </select>
 
-  <input id="filter-assignee" placeholder="Assignee…"
-         style="width:130px;border:1px solid #ddd;border-radius:8px;padding:7px 10px;font-size:13px">
+  <select id="filter-assignee" style="border:1px solid #ddd;border-radius:8px;padding:7px 10px;font-size:13px">
+    <option value="">All assignees</option>
+  </select>
 
   <div style="margin-left:auto;display:flex;gap:6px">
     <a href="{{ prefix }}/.today" target="_blank"
        style="font-size:12px;color:#0066cc;padding:6px 10px;background:#e8f0fe;border-radius:6px;text-decoration:none">Due today</a>
     <a href="{{ prefix }}/.overdue" target="_blank"
        style="font-size:12px;color:#cc0000;padding:6px 10px;background:#fde8e8;border-radius:6px;text-decoration:none">Overdue</a>
+    <a href="{{ prefix }}/.unassigned" target="_blank"
+       style="font-size:12px;color:#555;padding:6px 10px;background:#f0f0f0;border-radius:6px;text-decoration:none">Unassigned</a>
   </div>
 </div>
 
@@ -37,7 +40,9 @@
   <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px">
     <input id="f-title"    placeholder="Title *" style="grid-column:1/-1">
     <input id="f-desc"     placeholder="Description">
-    <input id="f-assignee" placeholder="Assignee">
+    <select id="f-assignee" style="border:1px solid #ddd;border-radius:8px;padding:9px 10px;font-size:14px;color:#222">
+      <option value="">Unassigned</option>
+    </select>
     <input id="f-due"      type="date">
     <select id="f-priority" style="border:1px solid #ddd;border-radius:8px;padding:9px 10px;font-size:14px">
       <option value="normal">Normal</option>
@@ -60,13 +65,16 @@
 
 {% block scripts %}
 <script>
-const P   = {{ prefix | tojson }};
+const P   = {{ prefix        | tojson }};
+const AP  = {{ agents_prefix | tojson }};
 const KEY = localStorage.getItem('inact_api_key') || '';
 function H(extra) { return Object.assign({'X-Api-Key': KEY}, extra || {}); }
 function esc(s) { return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 
 const PRIORITY_COLOR = {urgent:'#cc0000', high:'#e07000', normal:'#0066cc', low:'#888'};
 const PRIORITY_BG    = {urgent:'#fde8e8', high:'#fff3e0', normal:'#e8f0fe', low:'#f0f0f0'};
+
+let allAgents = [];
 
 function parseBlocks(text, tag) {
   return text.split('[[' + tag + ']]').slice(1).map(b => {
@@ -79,11 +87,28 @@ function parseBlocks(text, tag) {
   }).filter(o => Object.keys(o).length > 0);
 }
 
+/* ── Load agents and populate assignee dropdowns ── */
+async function loadAgents() {
+  try {
+    const text = await fetch(AP + '/', {headers: H()}).then(r => r.text());
+    allAgents = parseBlocks(text, 'agents');
+  } catch(_) {}
+
+  const opts = allAgents.map(a =>
+    `<option value="${esc(a.id)}">${esc(a.name || 'Agent #' + a.id)}</option>`
+  ).join('');
+
+  document.getElementById('filter-assignee').innerHTML =
+    '<option value="">All assignees</option>' + opts;
+  document.getElementById('f-assignee').innerHTML =
+    '<option value="">Unassigned</option>' + opts;
+}
+
 /* ── Load tasks ── */
 async function load() {
   const status   = document.getElementById('filter-status').value;
   const priority = document.getElementById('filter-priority').value;
-  const assignee = document.getElementById('filter-assignee').value.trim();
+  const assignee = document.getElementById('filter-assignee').value;
   const params   = new URLSearchParams();
   if (status)   params.set('status',   status);
   if (priority) params.set('priority', priority);
@@ -106,6 +131,8 @@ async function load() {
     const priBg    = PRIORITY_BG[pri]    || '#f0f0f0';
     const childInfo = t.children && t.children !== '0'
       ? `<span style="font-size:11px;color:#aaa">${t.done||0}/${t.children} subtasks</span>` : '';
+    // Show resolved name if available, else raw assignee value
+    const assigneeDisplay = t.assignee_name || t.assignee;
 
     return `
     <div class="toml-scalars" style="margin-bottom:8px;opacity:${done?0.5:1}">
@@ -118,7 +145,7 @@ async function load() {
         <td style="vertical-align:middle;padding:10px 0">
           <span style="${done?'text-decoration:line-through;color:#aaa':''}">${esc(t.title)}</span>
           ${childInfo}
-          ${t.assignee ? `<span style="margin-left:8px;font-size:12px;color:#888">@${esc(t.assignee)}</span>` : ''}
+          ${assigneeDisplay ? `<span style="margin-left:8px;font-size:12px;color:#888" title="agent id: ${esc(t.assignee)}">@${esc(assigneeDisplay)}</span>` : ''}
           ${t.due ? `<span style="margin-left:8px;font-size:12px;color:${overdue?'#cc0000':'#888'}">${overdue?'⚠ ':''}${esc(t.due)}</span>` : ''}
         </td>
         <td style="vertical-align:middle;padding:10px 8px;white-space:nowrap">
@@ -144,6 +171,7 @@ async function toggleDone(id, checked) {
 
 /* ── Delete ── */
 async function deleteTask(id) {
+  if (!confirm('Delete this task and all its subtasks?')) return;
   await fetch(`${P}/${id}`, {method: 'DELETE', headers: H()});
   await load();
 }
@@ -155,28 +183,33 @@ document.getElementById('new-task-btn').addEventListener('click', () => {
 });
 
 document.getElementById('save-btn').addEventListener('click', async () => {
-  const title    = document.getElementById('f-title').value.trim();
-  const errEl    = document.getElementById('form-err');
+  const title = document.getElementById('f-title').value.trim();
+  const errEl = document.getElementById('form-err');
   if (!title) { errEl.textContent = 'Title required'; return; }
   errEl.textContent = '';
+
   const body = {
     title,
     description: document.getElementById('f-desc').value.trim(),
-    assignee:    document.getElementById('f-assignee').value.trim(),
+    assignee:    document.getElementById('f-assignee').value,
     priority:    document.getElementById('f-priority').value,
   };
   const due = document.getElementById('f-due').value;
   if (due) body.due = due;
 
-  const r = await fetch(`${P}/`, {
+  const r    = await fetch(`${P}/`, {
     method: 'POST',
     headers: H({'Content-Type': 'application/json'}),
     body: JSON.stringify(body),
   });
   const text = await r.text();
   if (!text.startsWith('OK')) { errEl.textContent = text.split('\n')[0]; return; }
+
   document.getElementById('new-form').hidden = true;
-  ['f-title','f-desc','f-assignee','f-due'].forEach(id => document.getElementById(id).value = '');
+  document.getElementById('f-title').value    = '';
+  document.getElementById('f-desc').value     = '';
+  document.getElementById('f-assignee').value = '';
+  document.getElementById('f-due').value      = '';
   document.getElementById('f-priority').value = 'normal';
   await load();
 });
@@ -186,14 +219,10 @@ document.getElementById('f-title').addEventListener('keydown', e => {
 });
 
 /* ── Filters ── */
-['filter-status','filter-priority'].forEach(id =>
+['filter-status', 'filter-priority', 'filter-assignee'].forEach(id =>
   document.getElementById(id).addEventListener('change', load));
-let _debounce;
-document.getElementById('filter-assignee').addEventListener('input', () => {
-  clearTimeout(_debounce);
-  _debounce = setTimeout(load, 300);
-});
 
-load();
+/* ── Init ── */
+loadAgents().then(load);
 </script>
 {% endblock %}

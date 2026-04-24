@@ -458,7 +458,8 @@ def _task_toml_brief(task: dict) -> str:
 
 
 def _task_row_toml(task: dict, prefix: str,
-                   total_children: int = 0, done_children: int = 0) -> str:
+                   total_children: int = 0, done_children: int = 0,
+                   assignee_name: str = "") -> str:
     lines = [
         "[[tasks]]\n",
         f"id       = {toml_str(task['id'])}\n",
@@ -467,7 +468,9 @@ def _task_row_toml(task: dict, prefix: str,
         f"priority = {toml_str(task['priority'])}\n",
     ]
     if task.get("assignee"):
-        lines.append(f"assignee = {toml_str(task['assignee'])}\n")
+        lines.append(f"assignee      = {toml_str(task['assignee'])}\n")
+        if assignee_name:
+            lines.append(f"assignee_name = {toml_str(assignee_name)}\n")
     if task["due"]:
         lines.append(f"due      = {toml_str(task['due'])}\n")
         if _is_overdue(task):
@@ -483,7 +486,7 @@ def _task_row_toml(task: dict, prefix: str,
 
 
 def _task_detail(task: dict, children: list[dict], prefix: str,
-                 reminders: list[dict]) -> str:
+                 reminders: list[dict], assignee_name: str = "") -> str:
     lines = [f"# {task['title']}{'  [OVERDUE]' if _is_overdue(task) else ''}\n\n"]
     lines.append(f"id          = {toml_str(task['id'])}\n")
     lines.append(f"title       = {toml_str(task['title'])}\n")
@@ -492,6 +495,8 @@ def _task_detail(task: dict, children: list[dict], prefix: str,
     lines.append(f"status      = {toml_str(task['status'])}\n")
     lines.append(f"priority    = {toml_str(task['priority'])}\n")
     lines.append(f"assignee    = {toml_str(task.get('assignee') or '')}\n")
+    if task.get("assignee") and assignee_name:
+        lines.append(f"assignee_name = {toml_str(assignee_name)}\n")
     if task["due"]:
         lines.append(f"due         = {toml_str(task['due'])}\n")
     if task["parent_id"]:
@@ -569,7 +574,8 @@ def _run_toml(run: dict) -> str:
     )
 
 
-def _parse_create_body(body: dict) -> tuple[str, dict] | tuple[None, str]:
+def _parse_create_body(body: dict,
+                       lookup_agent=None) -> tuple[str, dict] | tuple[None, str]:
     title = (body.get("title") or "").strip()
     if not title:
         return None, "'title' required"
@@ -582,11 +588,15 @@ def _parse_create_body(body: dict) -> tuple[str, dict] | tuple[None, str]:
             datetime.strptime(due, "%Y-%m-%d")
         except ValueError:
             return None, "'due' must be YYYY-MM-DD"
+    assignee = (body.get("assignee") or "").strip()
+    if assignee and lookup_agent is not None:
+        if lookup_agent(assignee) is None:
+            return None, f"'assignee' {assignee!r} is not a registered agent id"
     return title, {
         "description": (body.get("description") or "").strip(),
         "priority": priority,
         "due": due,
-        "assignee": (body.get("assignee") or "").strip(),
+        "assignee": assignee,
     }
 
 
@@ -595,28 +605,45 @@ def _parse_create_body(body: dict) -> tuple[str, dict] | tuple[None, str]:
 # ---------------------------------------------------------------------------
 
 def attach_todo(inact_app, prefix: str, store: TodoStore,
-                scheduler: ReminderScheduler) -> None:
+                scheduler: ReminderScheduler,
+                agents_prefix: str = "/agents",
+                lookup_agent=None,
+                notify_fn=None) -> None:
     prefix = "/" + prefix.strip("/")
     ep = "_inact_todo_" + prefix.replace("/", "__")
     flask_app = inact_app.app
 
+    def _name(agent_id: str) -> str:
+        """Resolve agent ID → display name, empty string if unknown."""
+        if not agent_id or lookup_agent is None:
+            return ""
+        agent = lookup_agent(agent_id)
+        return (agent.get("name") or f"Agent #{agent_id}") if agent else ""
+
+    def _notify_assign(assignee_id: str, task_id: str, task_title: str) -> None:
+        if notify_fn and assignee_id:
+            notify_fn(assignee_id, "tasks",
+                      f"[task:{task_id}] Assigned to you: {task_title}")
+
     def _root():
         if request.method == "POST":
             body = request.get_json(force=True, silent=True) or {}
-            title, result = _parse_create_body(body)
+            title, result = _parse_create_body(body, lookup_agent=lookup_agent)
             if title is None:
                 return text_response(
                     f"ERROR 400: {result}\n"
                     f"POST {prefix}/\n"
                     '  Body: {"title":"...","description":"...","priority":"normal",\n'
-                    '         "due":"YYYY-MM-DD","assignee":"...","parent_id":"optional-uuid"}\n'
-                    f"\nPriority: low | normal | high | urgent\n",
+                    '         "due":"YYYY-MM-DD","assignee":"<agent_id>","parent_id":"optional-uuid"}\n'
+                    f"\nPriority: low | normal | high | urgent\n"
+                    f"assignee: integer agent id from {agents_prefix}/\n",
                     400,
                 )
             parent_id = (body.get("parent_id") or "").strip() or None
             if parent_id and not store.get(parent_id):
                 return text_response(f"ERROR 404: parent task {parent_id!r} not found\n", 404)
             task_id = store.create(title, parent_id=parent_id, **result)
+            _notify_assign(result["assignee"], task_id, title)
             return text_response(
                 f"OK\nid  = {toml_str(task_id)}\nurl = {toml_str(prefix + '/' + task_id)}\n"
             )
@@ -633,11 +660,12 @@ def attach_todo(inact_app, prefix: str, store: TodoStore,
         if n_overdue:
             lines.append(f", {n_overdue} overdue")
         lines.append(
-            "\n# tip: ?status=todo|done  ?priority=low|normal|high|urgent  ?assignee=name\n\n"
+            "\n# tip: ?status=todo|done  ?priority=low|normal|high|urgent  ?assignee=<agent_id>\n\n"
         )
         for t in tasks:
             total, done = store.child_counts(t["id"])
-            lines.append(_task_row_toml(t, prefix, total, done))
+            lines.append(_task_row_toml(t, prefix, total, done,
+                                        assignee_name=_name(t.get("assignee", ""))))
         return text_response("".join(lines))
 
     def _today():
@@ -699,15 +727,29 @@ def attach_todo(inact_app, prefix: str, store: TodoStore,
                         return text_response("ERROR 400: 'due' must be YYYY-MM-DD\n", 400)
                 fields["due"] = due
             if "assignee" in body:
-                fields["assignee"] = (body["assignee"] or "").strip()
+                new_assignee = (body["assignee"] or "").strip()
+                if new_assignee and lookup_agent is not None:
+                    if lookup_agent(new_assignee) is None:
+                        return text_response(
+                            f"ERROR 400: 'assignee' {new_assignee!r} is not a registered agent id\n",
+                            400,
+                        )
+                fields["assignee"] = new_assignee
+            old_assignee = task.get("assignee", "")
             store.update(task_id, fields)
+            new_assignee = fields.get("assignee", "")
+            if new_assignee and new_assignee != old_assignee:
+                _notify_assign(new_assignee, task_id, task["title"])
             return text_response("OK\n")
 
         task = store.get(task_id)
         if not task:
             return text_response("ERROR 404: task not found\n", 404)
         reminders = store.list_reminders(task_id)
-        return text_response(_task_detail(task, store.children(task_id), prefix, reminders))
+        aname = _name(task.get("assignee", ""))
+        return text_response(
+            _task_detail(task, store.children(task_id), prefix, reminders, assignee_name=aname)
+        )
 
     def _list_children(task_id: str):
         task = store.get(task_id)
@@ -733,17 +775,35 @@ def attach_todo(inact_app, prefix: str, store: TodoStore,
         return text_response("OK\n")
 
     def _assign(task_id: str):
-        if not store.get(task_id):
+        task = store.get(task_id)
+        if not task:
             return text_response("ERROR 404: task not found\n", 404)
         body = request.get_json(force=True, silent=True) or {}
         assignee = (body.get("assignee") or "").strip()
         if not assignee:
             return text_response(
                 "ERROR 400: 'assignee' required\n"
-                f'Body: {{"assignee": "alice"}}\n', 400
+                f'Body: {{"assignee": "<agent_id>"}}\n'
+                f"Agent ids: GET {agents_prefix}/\n", 400
             )
+        if lookup_agent is not None:
+            agent = lookup_agent(assignee)
+            if agent is None:
+                return text_response(
+                    f"ERROR 400: {assignee!r} is not a registered agent id\n"
+                    f"Agent ids: GET {agents_prefix}/\n", 400
+                )
+            aname = agent.get("name") or f"Agent #{assignee}"
+        else:
+            aname = assignee
+        old_assignee = task.get("assignee", "")
         store.update(task_id, {"assignee": assignee})
-        return text_response(f"OK\nassignee = {toml_str(assignee)}\n")
+        if assignee != old_assignee:
+            _notify_assign(assignee, task_id, task["title"])
+        return text_response(
+            f"OK\nassignee      = {toml_str(assignee)}\n"
+            f"assignee_name = {toml_str(aname)}\n"
+        )
 
     def _reminders(task_id: str):
         task = store.get(task_id)
@@ -867,25 +927,31 @@ def attach_todo(inact_app, prefix: str, store: TodoStore,
         from inact.utils import html_response
         from inact.render import workspace_nav
         return html_response(render_template("todo_human.html",
-            title="Todo", prefix=prefix, nav="", pills=[],
+            title="Tasks", prefix=prefix, agents_prefix=agents_prefix,
+            nav="", pills=[],
             workspace_links=workspace_nav("/_human/tasks/"),
             show_identity=True))
 
     inact_app._human_views[prefix] = _human
 
 
-def mount_todo(inact_app, prefix: str, storage) -> None:
+def mount_todo(inact_app, prefix: str, storage,
+               agents_prefix: str = "/agents",
+               agents_storage=None,
+               notify_storage=None) -> None:
     """
     Mount a todo list at *prefix* with cron-based per-task reminders.
 
-    Agents create tasks and subtasks with priorities, due dates, and assignees.
-    Each task can have cron-scheduled reminders that HTTP-POST to a callback URL.
-
-    *storage* — a database URL/path or a :class:`~inact.storage.Storage` instance.
+    *storage*        — database URL/path or Storage instance for tasks.
+    *agents_prefix*  — prefix where the agent registry is mounted (for assignee validation).
+    *agents_storage* — if provided, assignee is validated as a registered agent id.
+    *notify_storage* — if provided, agents receive a notification when assigned.
 
     Example::
 
-        app.mount_todo("/tasks", "./data/tasks.db")
+        mount_todo(app, "/tasks", "./tasks.db",
+                   agents_storage="./agents.db",
+                   notify_storage="./notify.db")
     """
     from ...storage import make_storage
     p = "/" + prefix.strip("/")
@@ -893,7 +959,31 @@ def mount_todo(inact_app, prefix: str, storage) -> None:
     store = TodoStore(backend)
     scheduler = ReminderScheduler(store)
     scheduler.start()
-    attach_todo(inact_app, p, store, scheduler)
+
+    lookup_agent = None
+    if agents_storage is not None:
+        from .register import AgentRegistry
+        ag_back = make_storage(agents_storage) if isinstance(agents_storage, str) else agents_storage
+        ag_reg = AgentRegistry(ag_back)
+        def lookup_agent(agent_id: str) -> dict | None:
+            try:
+                return ag_reg.get(int(agent_id))
+            except (ValueError, TypeError):
+                return None
+
+    notify_fn = None
+    if notify_storage is not None:
+        from ..notify import NotifyStore, _push
+        ns_back = make_storage(notify_storage) if isinstance(notify_storage, str) else notify_storage
+        nstore = NotifyStore(ns_back)
+        def notify_fn(to_id: str, from_id: str, message: str) -> None:
+            notif_id = nstore.send(to_id, message, from_id)
+            _push(nstore, to_id, notif_id, message, from_id)
+
+    attach_todo(inact_app, p, store, scheduler,
+                agents_prefix="/" + agents_prefix.strip("/"),
+                lookup_agent=lookup_agent,
+                notify_fn=notify_fn)
     inact_app._app_mounts.append((p, (
         f"\nTodo: {p}\n"
         f"  GET    {p}/                           list tasks  (?status=todo|done  ?priority=high  ?assignee=name)\n"

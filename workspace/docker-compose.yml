@@ -1,0 +1,16 @@
+services:
+  workspace:
+    build:
+      context: ..          # repo root (Dockerfile needs inact/ package)
+      dockerfile: workspace/Dockerfile
+    ports:
+      - "${PORT:-5050}:5050"   # HTTP API + human UI
+      - "2525:2525"             # inbound SMTP (port-forward 25 → 2525 on the host)
+    volumes:
+      - workspace_data:/data
+    env_file:
+      - .env
+    restart: unless-stopped
+
+volumes:
+  workspace_data:

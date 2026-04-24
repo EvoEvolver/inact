@@ -226,3 +226,6 @@ if __name__ == "__main__":
   data: {DATA_DIR}/
 """)
     app.run(host="0.0.0.0", port=PORT, debug=False)
+
+# gunicorn entry point: gunicorn "server:wsgi"
+wsgi = app.app

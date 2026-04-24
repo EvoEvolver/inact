@@ -45,13 +45,12 @@ Environment variables:
 
 import os
 
-from inact import Inact
-from inact.apps.auth   import mount_auth
-from inact import CSVHandler
-from inact.apps.files  import mount_files
-from inact.apps.notify import mount_notify
-from inact.apps.search import mount_search
-from inact.apps.sql    import mount_sql
+from inact import Inact, CSVHandler
+from inact.apps.auth      import mount_auth
+from inact.apps.files     import mount_files
+from inact.apps.notify    import mount_notify
+from inact.apps.search    import mount_search
+from inact.apps.sql       import mount_sql
 from inact.apps.workspace import mount_workspace
 
 # ---------------------------------------------------------------------------
@@ -69,12 +68,13 @@ NOTIFY_DB    = f"{DATA_DIR}/notify.db"
 SHARED_DB    = f"sqlite:///{DATA_DIR}/shared.db"
 FILES_DIR    = f"{DATA_DIR}/files"
 
-SMTP_PORT    = int(os.environ.get("SMTP_PORT", "0"))  # 0 = auto-pick or disable
+SMTP_PORT    = int(os.environ.get("SMTP_PORT", "0"))  # 0 = disable inbound SMTP
 RELAY_HOST   = os.environ.get("SMTP_RELAY_HOST",   "")
 RELAY_PORT   = int(os.environ.get("SMTP_RELAY_PORT", "587"))
 RELAY_USER   = os.environ.get("SMTP_RELAY_USER",   "")
 RELAY_PASS   = os.environ.get("SMTP_RELAY_PASSWORD", "")
 TAVILY_KEY   = os.environ.get("TAVILY_API_KEY", "")
+DOMAIN       = os.environ.get("DOMAIN", "")  # e.g. agents.example.com  (no http://)
 
 # ---------------------------------------------------------------------------
 # App
@@ -140,6 +140,8 @@ Open in your browser:
 | `GET  /db/`           | shared SQL database |
 | `GET  /files/`        | shared files |
 | `GET  /search?q=...`  | web search |
+| `POST /data/`         | create typed table |
+| `GET  /data/{{table}}` | query rows with filter/sort |
 | `POST /mail/send`     | send email to humans |
 | `GET  /mail/inbox`    | received emails |
 
@@ -174,6 +176,7 @@ mount_workspace(app,
 )
 
 # Shared SQL database (agents can run arbitrary SQL, create tables, etc.)
+# /data (typed tables) is already mounted by mount_workspace
 mount_sql(app, "/db", SHARED_DB)
 
 # Shared file storage (read + write for all file types, CSV paginated)
@@ -215,9 +218,10 @@ if __name__ == "__main__":
   /mail/     email (SMTP)     /db/      shared SQL
   /files/    file storage     /search/  web search
 
-  SMTP server: {f'localhost:{_smtp_port}  (inbound email)' if _smtp_port else 'disabled — set SMTP_RELAY_HOST to enable email'}
+  SMTP server: {f'0.0.0.0:{_smtp_port}  (inbound, port-forward 25→{_smtp_port})' if _smtp_port else 'disabled — set SMTP_RELAY_HOST to enable email'}
 {email_line}
 {search_line}
+  domain:  {DOMAIN or 'not set (set DOMAIN=agents.example.com for correct Reply-To headers)'}
 
   data: {DATA_DIR}/
 """)

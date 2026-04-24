@@ -35,15 +35,16 @@ from .register import AgentRegistry, attach_register, mount_register
 from .message  import MessageStore,  attach_message,  mount_message
 from .mailbox  import MailStore,     attach_mailbox,  mount_mailbox
 from .todo     import TodoStore,     attach_todo,     mount_todo
+from .database import DbStore,       attach_db,       mount_db
 
 
 __all__ = [
     # stores
-    "AgentRegistry", "MessageStore", "MailStore", "TodoStore",
+    "AgentRegistry", "MessageStore", "MailStore", "TodoStore", "DbStore",
     # attach functions
-    "attach_register", "attach_message", "attach_mailbox", "attach_todo",
+    "attach_register", "attach_message", "attach_mailbox", "attach_todo", "attach_db",
     # mount functions
-    "mount_register", "mount_message", "mount_mailbox", "mount_todo",
+    "mount_register", "mount_message", "mount_mailbox", "mount_todo", "mount_db",
     # unified
     "mount_workspace",
 ]
@@ -97,6 +98,7 @@ def mount_workspace(
                   notify_storage=notify_storage)
 
     mount_todo(inact_app, tasks_prefix, storage)
+    mount_db(inact_app, f"{p}/data", storage)
 
     # Email: mount if SMTP is configured
     smtp_host_env = os.environ.get("SMTP_HOST", "")

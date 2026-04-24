@@ -234,8 +234,8 @@ def _send_email(from_addr: str, to: str, subject: str, body: str,
                     s.login(relay_user, relay_password)
                 s.sendmail(from_addr, recipients, msg.as_string())
     else:
-        # Deliver locally via our own SMTP server
-        with smtplib.SMTP(smtp_host, smtp_port, timeout=5) as s:
+        # Deliver via local SMTP server (always connect via loopback)
+        with smtplib.SMTP("127.0.0.1", smtp_port, timeout=5) as s:
             s.sendmail(from_addr, recipients, msg.as_string())
 
 
@@ -516,8 +516,9 @@ def mount_mailbox(
     storage,
     registry=None,
     notify_storage=None,
-    smtp_host: str = "localhost",
+    smtp_host: str = "0.0.0.0",   # listen on all interfaces
     smtp_port: int | None = None,
+    smtp_domain: str = "",         # domain for Reply-To plus-addresses (e.g. agents.example.com)
     relay_host: str = "",
     relay_port: int = 587,
     relay_user: str = "",

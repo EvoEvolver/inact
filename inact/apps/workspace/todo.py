@@ -54,7 +54,6 @@ from __future__ import annotations
 
 import threading
 import time
-import uuid
 from datetime import datetime, timedelta, timezone
 
 import httpx
@@ -65,8 +64,8 @@ from ...utils import text_response, toml_str
 
 _DDL = [
     """CREATE TABLE IF NOT EXISTS tasks (
-        id          TEXT    PRIMARY KEY,
-        parent_id   TEXT,
+        id          INTEGER PRIMARY KEY,
+        parent_id   INTEGER,
         title       TEXT    NOT NULL,
         description TEXT    NOT NULL DEFAULT '',
         status      TEXT    NOT NULL DEFAULT 'todo',
@@ -78,8 +77,8 @@ _DDL = [
         done_at     BIGINT
     )""",
     """CREATE TABLE IF NOT EXISTS reminders (
-        id         TEXT    PRIMARY KEY,
-        task_id    TEXT    NOT NULL,
+        id         INTEGER PRIMARY KEY,
+        task_id    INTEGER NOT NULL,
         url        TEXT    NOT NULL,
         schedule   TEXT    NOT NULL,
         label      TEXT    NOT NULL DEFAULT '',
@@ -90,8 +89,8 @@ _DDL = [
         enabled    INTEGER NOT NULL DEFAULT 1
     )""",
     """CREATE TABLE IF NOT EXISTS reminder_runs (
-        id          TEXT    PRIMARY KEY,
-        reminder_id TEXT    NOT NULL,
+        id          INTEGER PRIMARY KEY,
+        reminder_id INTEGER NOT NULL,
         ran_at      BIGINT  NOT NULL,
         status      INTEGER NOT NULL,
         output      TEXT    NOT NULL DEFAULT ''
@@ -203,14 +202,14 @@ class TodoStore:
     def create(self, title: str, description: str = "",
                priority: str = "normal", due: str | None = None,
                assignee: str = "", parent_id: str | None = None) -> str:
-        task_id = str(uuid.uuid4())
         now = int(time.time())
         self._s.execute(
-            "INSERT INTO tasks VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-            (task_id, parent_id, title, description,
-             "todo", priority, due, assignee, now, now, None),
+            "INSERT INTO tasks (parent_id, title, description, status, priority, due, assignee,"
+            " created_at, updated_at, done_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
+            (parent_id, title, description, "todo", priority, due, assignee, now, now, None),
         )
-        return task_id
+        row = self._s.fetchone("SELECT last_insert_rowid() AS id")
+        return str(row["id"])
 
     def list_tasks(self, parent_id: str | None = None,
                    status: str | None = None,
@@ -307,13 +306,14 @@ class TodoStore:
 
     def add_reminder(self, task_id: str, url: str, schedule: str,
                      label: str = "", body: str = "") -> str:
-        rid = str(uuid.uuid4())
         first_next = int(_next_run(schedule, time.time()))
         self._s.execute(
-            "INSERT INTO reminders VALUES (?,?,?,?,?,?,?,?,?,?)",
-            (rid, task_id, url, schedule, label, body, int(time.time()), None, first_next, 1),
+            "INSERT INTO reminders (task_id, url, schedule, label, body, created_at, last_run,"
+            " next_run, enabled) VALUES (?,?,?,?,?,?,?,?,?)",
+            (task_id, url, schedule, label, body, int(time.time()), None, first_next, 1),
         )
-        return rid
+        row = self._s.fetchone("SELECT last_insert_rowid() AS id")
+        return str(row["id"])
 
     def list_reminders(self, task_id: str) -> list[dict]:
         return self._s.fetchall(
@@ -344,8 +344,8 @@ class TodoStore:
                             status: int, output: str) -> None:
         next_t = int(_next_run(schedule, ran_at))
         self._s.batch([
-            ("INSERT INTO reminder_runs VALUES (?,?,?,?,?)",
-             (str(uuid.uuid4()), rid, ran_at, status, output)),
+            ("INSERT INTO reminder_runs (reminder_id, ran_at, status, output) VALUES (?,?,?,?)",
+             (rid, ran_at, status, output)),
             ("UPDATE reminders SET last_run=?, next_run=? WHERE id=?",
              (ran_at, next_t, rid)),
         ])
@@ -445,7 +445,7 @@ def _is_overdue(task: dict) -> bool:
 
 def _task_toml_brief(task: dict) -> str:
     lines = [
-        f"id       = {toml_str(task['id'])}\n",
+        f"id       = {toml_str(str(task['id']))}\n",
         f"title    = {toml_str(task['title'])}\n",
         f"status   = {toml_str(task['status'])}\n",
         f"priority = {toml_str(task['priority'])}\n",
@@ -462,7 +462,7 @@ def _task_row_toml(task: dict, prefix: str,
                    assignee_name: str = "") -> str:
     lines = [
         "[[tasks]]\n",
-        f"id       = {toml_str(task['id'])}\n",
+        f"id       = {toml_str(str(task['id']))}\n",
         f"title    = {toml_str(task['title'])}\n",
         f"status   = {toml_str(task['status'])}\n",
         f"priority = {toml_str(task['priority'])}\n",
@@ -476,19 +476,20 @@ def _task_row_toml(task: dict, prefix: str,
         if _is_overdue(task):
             lines.append("overdue  = true\n")
     if task["parent_id"]:
-        lines.append(f"parent   = {toml_str(prefix + '/' + task['parent_id'])}\n")
+        lines.append(f"parent   = {toml_str(prefix + '/' + str(task['parent_id']))}\n")
     if total_children:
         lines.append(f"children = {total_children}\n")
         lines.append(f"done     = {done_children}\n")
-    lines.append(f"url      = {toml_str(prefix + '/' + task['id'])}\n")
+    lines.append(f"url      = {toml_str(prefix + '/' + str(task['id']))}\n")
     lines.append("\n")
     return "".join(lines)
 
 
 def _task_detail(task: dict, children: list[dict], prefix: str,
                  reminders: list[dict], assignee_name: str = "") -> str:
+    tid = str(task["id"])
     lines = [f"# {task['title']}{'  [OVERDUE]' if _is_overdue(task) else ''}\n\n"]
-    lines.append(f"id          = {toml_str(task['id'])}\n")
+    lines.append(f"id          = {toml_str(tid)}\n")
     lines.append(f"title       = {toml_str(task['title'])}\n")
     if task["description"]:
         lines.append(f"description = {toml_str(task['description'])}\n")
@@ -500,20 +501,21 @@ def _task_detail(task: dict, children: list[dict], prefix: str,
     if task["due"]:
         lines.append(f"due         = {toml_str(task['due'])}\n")
     if task["parent_id"]:
-        lines.append(f"parent      = {toml_str(prefix + '/' + task['parent_id'])}\n")
+        lines.append(f"parent      = {toml_str(prefix + '/' + str(task['parent_id']))}\n")
     lines.append(f"created_at  = {toml_str(_fmt_ts(task['created_at']))}\n")
     lines.append(f"updated_at  = {toml_str(_fmt_ts(task['updated_at']))}\n")
     if task["done_at"]:
         lines.append(f"done_at     = {toml_str(_fmt_ts(task['done_at']))}\n")
-    lines.append(f"children    = {toml_str(prefix + '/' + task['id'] + '/children')}\n")
-    lines.append(f"reminders   = {toml_str(prefix + '/' + task['id'] + '/reminders')}\n")
+    lines.append(f"children    = {toml_str(prefix + '/' + tid + '/children')}\n")
+    lines.append(f"reminders   = {toml_str(prefix + '/' + tid + '/reminders')}\n")
     lines.append("\n")
 
     if children:
         lines.append(f"# Children ({len(children)})\n\n")
         for child in children:
+            cid = str(child["id"])
             lines.append("[[children]]\n")
-            lines.append(f"id       = {toml_str(child['id'])}\n")
+            lines.append(f"id       = {toml_str(cid)}\n")
             lines.append(f"title    = {toml_str(child['title'])}\n")
             lines.append(f"status   = {toml_str(child['status'])}\n")
             lines.append(f"priority = {toml_str(child['priority'])}\n")
@@ -523,22 +525,22 @@ def _task_detail(task: dict, children: list[dict], prefix: str,
                 lines.append(f"due      = {toml_str(child['due'])}\n")
                 if _is_overdue(child):
                     lines.append("overdue  = true\n")
-            lines.append(f"url      = {toml_str(prefix + '/' + child['id'])}\n")
-            lines.append(f"children = {toml_str(prefix + '/' + child['id'] + '/children')}\n")
+            lines.append(f"url      = {toml_str(prefix + '/' + cid)}\n")
+            lines.append(f"children = {toml_str(prefix + '/' + cid + '/children')}\n")
             lines.append("\n")
 
     if reminders:
         lines.append(f"# Reminders ({len(reminders)})\n\n")
         for r in reminders:
-            tid = task["id"]
+            rid_str = str(r["id"])
             lines.append("[[reminders]]\n")
-            lines.append(f"id       = {toml_str(r['id'])}\n")
+            lines.append(f"id       = {toml_str(rid_str)}\n")
             lines.append(f"label    = {toml_str(r['label'])}\n")
             lines.append(f"schedule = {toml_str(r['schedule'])}\n")
             lines.append(f"next_run = {toml_str(_fmt_ts_or_never(r['next_run']))}\n")
             lines.append(f"last_run = {toml_str(_fmt_ts_or_never(r['last_run']))}\n")
             lines.append(f"url      = {toml_str(r['url'])}\n")
-            lines.append(f"fire     = {toml_str(prefix + '/' + tid + '/reminders/' + r['id'] + '/.run')}\n")
+            lines.append(f"fire     = {toml_str(prefix + '/' + tid + '/reminders/' + rid_str + '/.run')}\n")
             lines.append("\n")
 
     return "".join(lines)
@@ -548,7 +550,7 @@ def _reminder_toml(r: dict, prefix: str, task_id: str) -> str:
     base = f"{prefix}/{task_id}/reminders/{r['id']}"
     return (
         "[[reminders]]\n"
-        f"id       = {toml_str(r['id'])}\n"
+        f"id       = {toml_str(str(r['id']))}\n"
         f"label    = {toml_str(r['label'])}\n"
         f"schedule = {toml_str(r['schedule'])}\n"
         f"next_run = {toml_str(_fmt_ts_or_never(r['next_run']))}\n"
@@ -565,7 +567,7 @@ def _run_toml(run: dict) -> str:
     ok = 200 <= run["status"] < 300
     return (
         "[[runs]]\n"
-        f"id     = {toml_str(run['id'])}\n"
+        f"id     = {toml_str(str(run['id']))}\n"
         f"ran_at = {toml_str(_fmt_ts_or_never(run['ran_at']))}\n"
         f"status = {run['status']}\n"
         f"ok     = {str(ok).lower()}\n"

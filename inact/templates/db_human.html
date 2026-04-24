@@ -17,12 +17,25 @@
 
   <div id="tables-list"><p style="color:#aaa;font-size:14px">Loading…</p></div>
 
-  {# Row editor panel (hidden until a table is selected) #}
+  {# Row viewer panel (hidden until a table is selected) #}
   <div id="row-panel" hidden style="margin-top:24px">
     <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px">
+      <button onclick="closeTable()" style="background:none;border:none;cursor:pointer;font-size:18px;color:#888">←</button>
       <h2 id="row-panel-title" class="page-title" style="margin:0;font-size:17px"></h2>
       <button class="primary" id="insert-btn" style="padding:6px 14px;font-size:13px">+ Row</button>
     </div>
+
+    {# Inline insert form ── #}
+    <div id="insert-form" hidden
+         style="background:#fff;border:1px solid #e0e0e0;border-radius:10px;padding:16px;margin-bottom:16px">
+      <div id="insert-fields" style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:10px"></div>
+      <div style="display:flex;gap:8px;align-items:center">
+        <button class="primary" id="do-insert" style="padding:7px 16px;font-size:13px">Insert</button>
+        <button id="cancel-insert" style="background:none;border:none;cursor:pointer;font-size:13px;color:#888">Cancel</button>
+        <span id="insert-err" style="color:#cc0000;font-size:13px"></span>
+      </div>
+    </div>
+
     <div id="rows-list"></div>
   </div>
 </div>
@@ -45,12 +58,9 @@
 
 {% block scripts %}
 <script>
-const P  = {{ prefix | tojson }};
+const P   = {{ prefix | tojson }};
 const KEY = localStorage.getItem('inact_api_key') || '';
-function H(extra) {
-  const h = {'X-Api-Key': KEY};
-  return Object.assign(h, extra || {});
-}
+function H(extra) { return Object.assign({'X-Api-Key': KEY}, extra || {}); }
 function esc(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 
 function parseBlocks(text, tag) {
@@ -103,12 +113,18 @@ async function selectTable(name) {
   currentTable = name;
   document.getElementById('row-panel-title').textContent = name;
   document.getElementById('row-panel').hidden = false;
+  document.getElementById('insert-form').hidden = true;
 
-  // Fetch schema
   const st = await fetch(`${P}/${name}/.schema`, {headers: H()}).then(r => r.text());
   currentSchema = parseBlocks(st, 'columns');
 
   await loadRows();
+}
+
+function closeTable() {
+  currentTable = null;
+  document.getElementById('row-panel').hidden = true;
+  document.getElementById('insert-form').hidden = true;
 }
 
 async function loadRows() {
@@ -117,7 +133,7 @@ async function loadRows() {
   const rows = parseBlocks(text, 'rows');
   const list = document.getElementById('rows-list');
   if (!rows.length) {
-    list.innerHTML = '<p style="color:#aaa;font-size:13px">No rows. Click "+ Row" to add one.</p>';
+    list.innerHTML = '<p style="color:#aaa;font-size:13px">No rows yet.</p>';
     return;
   }
   const cols = currentSchema.map(c => c.name);
@@ -126,28 +142,32 @@ async function loadRows() {
       <thead><tr>${cols.map(c => `<th>${esc(c)}</th>`).join('')}<th></th></tr></thead>
       <tbody>${rows.map(r =>
         `<tr>${cols.map(c => `<td>${esc(r[c] ?? '')}</td>`).join('')}
-         <td><a href="#" style="color:#cc0000;font-size:12px"
-           onclick="event.preventDefault();deleteRow(${JSON.stringify(r.id)})">del</a></td></tr>`
+         <td style="white-space:nowrap">
+           <a href="#" style="font-size:12px;color:#555;margin-right:6px"
+             onclick="event.preventDefault();startEditRow(${JSON.stringify(r)})">edit</a>
+           <a href="#" style="color:#cc0000;font-size:12px"
+             onclick="event.preventDefault();deleteRow(${JSON.stringify(r.id)})">del</a>
+         </td></tr>`
       ).join('')}</tbody>
     </table></div>`;
 }
 
 async function deleteRow(id) {
+  if (!confirm('Delete this row?')) return;
   await fetch(`${P}/${currentTable}/${id}`, {method:'DELETE', headers: H()});
   await loadRows();
 }
 
 async function dropTable(name) {
-  if (!confirm(`Drop table "${name}"?`)) return;
+  if (!confirm(`Drop table "${name}"? All data will be lost.`)) return;
   await fetch(`${P}/${name}`, {method:'DELETE', headers: H()});
-  document.getElementById('row-panel').hidden = true;
-  currentTable = null;
+  closeTable();
   await loadTables();
 }
 
 /* ── New table ── */
 document.getElementById('new-table-btn').addEventListener('click', async () => {
-  const name = document.getElementById('new-table-name').value.trim();
+  const name  = document.getElementById('new-table-name').value.trim();
   const errEl = document.getElementById('create-err');
   if (!name) { errEl.textContent = 'Name required'; return; }
   const r = await fetch(P + '/', {method:'POST', headers: H({'Content-Type':'application/json'}),
@@ -160,17 +180,69 @@ document.getElementById('new-table-btn').addEventListener('click', async () => {
   await selectTable(name);
 });
 
-/* ── Insert row ── */
-document.getElementById('insert-btn').addEventListener('click', async () => {
+/* ── Insert / edit row — inline form ── */
+let editRowId = null;
+
+function buildInsertForm(values) {
+  const container = document.getElementById('insert-fields');
+  container.innerHTML = '';
+  for (const col of currentSchema) {
+    const label = document.createElement('label');
+    label.style.cssText = 'display:flex;flex-direction:column;gap:4px;font-size:12px;color:#666;font-weight:600';
+    label.innerHTML = `<span>${esc(col.name)} <em style="font-weight:400;color:#aaa">(${esc(col.type||'text')})</em></span>`;
+    const inp = document.createElement('input');
+    inp.id    = 'field-' + col.name;
+    inp.value = values ? (values[col.name] ?? '') : '';
+    inp.placeholder = col.type === 'date' ? 'YYYY-MM-DD' : col.name;
+    if (col.type === 'date') inp.type = 'date';
+    label.appendChild(inp);
+    container.appendChild(label);
+  }
+}
+
+document.getElementById('insert-btn').addEventListener('click', () => {
   if (!currentTable || !currentSchema.length) return;
+  editRowId = null;
+  document.getElementById('do-insert').textContent = 'Insert';
+  document.getElementById('insert-err').textContent = '';
+  buildInsertForm(null);
+  document.getElementById('insert-form').hidden = false;
+  document.getElementById('insert-form').scrollIntoView({behavior:'smooth',block:'nearest'});
+  const first = document.querySelector('#insert-fields input');
+  if (first) first.focus();
+});
+
+document.getElementById('cancel-insert').addEventListener('click', () => {
+  document.getElementById('insert-form').hidden = true;
+  editRowId = null;
+});
+
+function startEditRow(row) {
+  editRowId = row.id;
+  document.getElementById('do-insert').textContent = 'Save';
+  document.getElementById('insert-err').textContent = '';
+  buildInsertForm(row);
+  document.getElementById('insert-form').hidden = false;
+  document.getElementById('insert-form').scrollIntoView({behavior:'smooth',block:'nearest'});
+  const first = document.querySelector('#insert-fields input');
+  if (first) first.focus();
+}
+
+document.getElementById('do-insert').addEventListener('click', async () => {
+  const errEl  = document.getElementById('insert-err');
   const values = {};
   for (const col of currentSchema) {
-    const v = prompt(`${col.name} (${col.type}):`);
-    if (v === null) return;
+    const v = (document.getElementById('field-' + col.name)?.value || '').trim();
     if (v) values[col.name] = v;
   }
-  await fetch(`${P}/${currentTable}`, {method:'POST', headers: H({'Content-Type':'application/json'}),
+  let url    = `${P}/${currentTable}`;
+  let method = 'POST';
+  if (editRowId) { url += '/' + editRowId; }
+  const r = await fetch(url, {method, headers: H({'Content-Type':'application/json'}),
     body: JSON.stringify(values)});
+  if (!r.ok) { errEl.textContent = (await r.text()).split('\n')[0]; return; }
+  document.getElementById('insert-form').hidden = true;
+  editRowId = null;
   await loadRows();
 });
 

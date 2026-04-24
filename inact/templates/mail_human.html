@@ -3,9 +3,9 @@
 <h1 class="page-title">Mailbox</h1>
 
 <div class="tabs">
-  <button class="tab-btn active" data-group="mail" data-target="pane-inbox">Inbox</button>
-  <button class="tab-btn"        data-group="mail" data-target="pane-sent">Sent</button>
-  <button class="tab-btn"        data-group="mail" data-target="pane-compose">Compose</button>
+  <button class="tab-btn active" data-group="mail" data-target="pane-inbox" id="tab-inbox">Inbox</button>
+  <button class="tab-btn"        data-group="mail" data-target="pane-sent"  id="tab-sent">Sent</button>
+  <button class="tab-btn"        data-group="mail" data-target="pane-compose" id="tab-compose">Compose</button>
 </div>
 
 {# ── Inbox ── #}
@@ -15,21 +15,36 @@
       <input type="checkbox" id="unread-only"> Unread only
     </label>
     <button class="primary" id="refresh-btn" style="padding:5px 12px;font-size:13px">Refresh</button>
+    <span id="inbox-count" style="font-size:12px;color:#aaa"></span>
   </div>
+
   <div id="inbox-list"><p style="color:#aaa;font-size:14px">Loading…</p></div>
+
+  {# Message read view #}
   <div id="msg-view" hidden style="margin-top:20px">
     <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px">
-      <button onclick="closeMsg()" style="background:none;border:none;cursor:pointer;font-size:18px;color:#888">←</button>
-      <strong id="msg-subject" style="font-size:15px"></strong>
+      <button onclick="closeMsg()" style="background:none;border:none;cursor:pointer;font-size:18px;color:#888;line-height:1">←</button>
+      <strong id="msg-subject" style="font-size:15px;flex:1"></strong>
+      <button id="reply-btn" class="primary" style="padding:6px 14px;font-size:13px">Reply</button>
     </div>
     <div class="meta-box" id="msg-meta"></div>
-    <div class="md" id="msg-body" style="white-space:pre-wrap;font-size:14px;line-height:1.6"></div>
+    <div id="msg-body" style="white-space:pre-wrap;font-size:14px;line-height:1.6;padding:4px 0"></div>
   </div>
 </div>
 
 {# ── Sent ── #}
 <div id="pane-sent" class="tab-pane" data-group="mail" hidden>
   <div id="sent-list"><p style="color:#aaa;font-size:14px">Loading…</p></div>
+
+  {# Sent message read view #}
+  <div id="sent-view" hidden style="margin-top:20px">
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px">
+      <button onclick="closeSent()" style="background:none;border:none;cursor:pointer;font-size:18px;color:#888;line-height:1">←</button>
+      <strong id="sent-subject" style="font-size:15px"></strong>
+    </div>
+    <div class="meta-box" id="sent-meta"></div>
+    <div id="sent-body" style="white-space:pre-wrap;font-size:14px;line-height:1.6;padding:4px 0"></div>
+  </div>
 </div>
 
 {# ── Compose ── #}
@@ -37,7 +52,8 @@
   <div style="display:flex;flex-direction:column;gap:10px;max-width:560px">
     <input id="c-to"      placeholder="To  (email address)">
     <input id="c-subject" placeholder="Subject">
-    <textarea id="c-body" placeholder="Message…" style="height:160px;resize:vertical;border:1px solid #ddd;border-radius:8px;padding:10px 12px;font-size:14px;font-family:inherit"></textarea>
+    <textarea id="c-body" placeholder="Message…"
+              style="height:160px;resize:vertical;border:1px solid #ddd;border-radius:8px;padding:10px 12px;font-size:14px;font-family:inherit"></textarea>
     <div style="display:flex;gap:10px;align-items:center">
       <button class="primary" id="c-send">Send</button>
       <span id="c-status" style="font-size:13px;color:#666"></span>
@@ -50,10 +66,7 @@
 <script>
 const P   = {{ prefix | tojson }};
 const KEY = localStorage.getItem('inact_api_key') || '';
-function H(extra) {
-  const h = {'X-Api-Key': KEY};
-  return Object.assign(h, extra || {});
-}
+function H(extra) { return Object.assign({'X-Api-Key': KEY}, extra || {}); }
 function esc(s) { return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 
 function parseBlocks(text, tag) {
@@ -68,16 +81,17 @@ function parseBlocks(text, tag) {
 }
 
 /* ── Tab switch ── */
-document.querySelectorAll('.tab-btn').forEach(btn => {
-  btn.addEventListener('click', () => {
-    const g = btn.dataset.group;
-    document.querySelectorAll(`.tab-btn[data-group="${g}"]`).forEach(b => b.classList.remove('active'));
-    document.querySelectorAll(`.tab-pane[data-group="${g}"]`).forEach(p => p.hidden = true);
-    btn.classList.add('active');
-    const pane = document.getElementById(btn.dataset.target);
-    pane.hidden = false;
-    if (btn.dataset.target === 'pane-sent') loadSent();
-  });
+function switchTab(targetId) {
+  document.querySelectorAll('.tab-btn[data-group="mail"]').forEach(b => b.classList.remove('active'));
+  document.querySelectorAll('.tab-pane[data-group="mail"]').forEach(p => p.hidden = true);
+  const btn = document.querySelector(`.tab-btn[data-target="${targetId}"]`);
+  if (btn) btn.classList.add('active');
+  const pane = document.getElementById(targetId);
+  if (pane) pane.hidden = false;
+  if (targetId === 'pane-sent') loadSent();
+}
+document.querySelectorAll('.tab-btn[data-group="mail"]').forEach(btn => {
+  btn.addEventListener('click', () => switchTab(btn.dataset.target));
 });
 
 /* ── Inbox ── */
@@ -87,6 +101,8 @@ async function loadInbox() {
   const msgs = parseBlocks(text, 'messages');
   const list = document.getElementById('inbox-list');
   document.getElementById('msg-view').hidden = true;
+  list.hidden = false;
+  document.getElementById('inbox-count').textContent = msgs.length ? `${msgs.length} message${msgs.length===1?'':'s'}` : '';
   if (!msgs.length) {
     list.innerHTML = `<p style="color:#aaa;font-size:14px">${unread ? 'No unread messages.' : 'Inbox empty.'}</p>`;
     return;
@@ -94,37 +110,56 @@ async function loadInbox() {
   list.innerHTML = msgs.map(m => `
     <div class="toml-scalars" style="margin-bottom:8px;cursor:pointer" onclick="openMsg(${JSON.stringify(m.id)})">
       <table><tr>
-        <td class="kkey" style="${m.read==='false'?'font-weight:700':''}">${esc(m.subject)}</td>
+        <td class="kkey" style="${m.read==='false'?'font-weight:700':'color:#888'}">${esc(m.subject||'(no subject)')}</td>
         <td class="kval" style="color:#888;font-size:12px">${esc(m.from)} · ${esc(m.date)}</td>
-        <td class="kval" style="width:40px;text-align:right">
+        <td class="kval" style="width:44px;text-align:right">
           ${m.read==='false' ? '<span style="background:#0066cc;color:#fff;border-radius:9px;padding:1px 7px;font-size:11px">new</span>' : ''}
         </td>
       </tr></table>
     </div>`).join('');
 }
 
+let currentMsg = null;
+
 async function openMsg(id) {
   const text = await fetch(`${P}/inbox/${id}`, {headers: H()}).then(r => r.text());
-  const lines = text.split('\n---\n\n');
-  const body  = (lines[1] || '').trim();
-  const meta  = lines[0] || '';
-  const subject = (meta.match(/^# (.+)/m) || [])[1] || '(no subject)';
+  const parts   = text.split('\n---\n\n');
+  const body    = (parts[1] || '').trim();
+  const meta    = parts[0] || '';
+  const subject = (meta.match(/^# (.+)/m)  || [])[1] || '(no subject)';
   const from    = (meta.match(/from\s*=\s*"([^"]+)"/) || [])[1] || '';
   const date    = (meta.match(/date\s*=\s*"([^"]+)"/) || [])[1] || '';
+
+  currentMsg = {subject, from, body};
 
   document.getElementById('msg-subject').textContent = subject;
   document.getElementById('msg-meta').innerHTML =
     `<dt>From</dt><dd>${esc(from)}</dd><dt>Date</dt><dd>${esc(date)}</dd>`;
   document.getElementById('msg-body').textContent = body;
   document.getElementById('inbox-list').hidden = true;
-  document.getElementById('msg-view').hidden = false;
+  document.getElementById('msg-view').hidden  = false;
 }
 
 function closeMsg() {
   document.getElementById('inbox-list').hidden = false;
-  document.getElementById('msg-view').hidden = true;
+  document.getElementById('msg-view').hidden   = true;
+  currentMsg = null;
   loadInbox();
 }
+
+document.getElementById('reply-btn').addEventListener('click', () => {
+  if (!currentMsg) return;
+  const reSubject = currentMsg.subject.startsWith('Re:')
+    ? currentMsg.subject : 'Re: ' + currentMsg.subject;
+  document.getElementById('c-to').value      = currentMsg.from;
+  document.getElementById('c-subject').value = reSubject;
+  document.getElementById('c-body').value    =
+    '\n\n---\n' + currentMsg.body.split('\n').map(l => '> ' + l).join('\n');
+  document.getElementById('c-status').textContent = '';
+  switchTab('pane-compose');
+  document.getElementById('c-body').setSelectionRange(0, 0);
+  document.getElementById('c-body').focus();
+});
 
 document.getElementById('refresh-btn').addEventListener('click', loadInbox);
 document.getElementById('unread-only').addEventListener('change', loadInbox);
@@ -134,14 +169,39 @@ async function loadSent() {
   const text = await fetch(`${P}/sent?per_page=50`, {headers: H()}).then(r => r.text()).catch(() => '');
   const msgs = parseBlocks(text, 'messages');
   const list = document.getElementById('sent-list');
+  document.getElementById('sent-view').hidden = true;
+  list.hidden = false;
   if (!msgs.length) { list.innerHTML = '<p style="color:#aaa;font-size:14px">No sent mail.</p>'; return; }
   list.innerHTML = msgs.map(m => `
-    <div class="toml-scalars" style="margin-bottom:8px">
+    <div class="toml-scalars" style="margin-bottom:8px;cursor:pointer"
+         onclick="openSentMsg(${JSON.stringify(m.id)})">
       <table><tr>
-        <td class="kkey">${esc(m.subject)}</td>
+        <td class="kkey">${esc(m.subject||'(no subject)')}</td>
         <td class="kval" style="color:#888;font-size:12px">To: ${esc(m.to)} · ${esc(m.date)}</td>
       </tr></table>
     </div>`).join('');
+}
+
+async function openSentMsg(id) {
+  const text    = await fetch(`${P}/sent/${id}`, {headers: H()}).then(r => r.text()).catch(() => '');
+  const parts   = text.split('\n---\n\n');
+  const body    = (parts[1] || '').trim();
+  const meta    = parts[0] || '';
+  const subject = (meta.match(/^# (.+)/m)  || [])[1] || '(no subject)';
+  const to      = (meta.match(/to\s*=\s*"([^"]+)"/)   || [])[1] || '';
+  const date    = (meta.match(/date\s*=\s*"([^"]+)"/) || [])[1] || '';
+
+  document.getElementById('sent-subject').textContent = subject;
+  document.getElementById('sent-meta').innerHTML =
+    `<dt>To</dt><dd>${esc(to)}</dd><dt>Date</dt><dd>${esc(date)}</dd>`;
+  document.getElementById('sent-body').textContent = body;
+  document.getElementById('sent-list').hidden = true;
+  document.getElementById('sent-view').hidden = false;
+}
+
+function closeSent() {
+  document.getElementById('sent-list').hidden = false;
+  document.getElementById('sent-view').hidden = true;
 }
 
 /* ── Compose ── */
@@ -150,19 +210,21 @@ document.getElementById('c-send').addEventListener('click', async () => {
   const subject = document.getElementById('c-subject').value.trim();
   const body    = document.getElementById('c-body').value.trim();
   const status  = document.getElementById('c-status');
-  if (!to || !body) { status.textContent = 'To and body are required.'; return; }
-  status.textContent = 'Sending…';
+  if (!to || !body) { status.textContent = 'To and body are required.'; status.style.color='#cc0000'; return; }
+  status.textContent = 'Sending…'; status.style.color = '#888';
   const r = await fetch(`${P}/send`, {
     method: 'POST',
     headers: H({'Content-Type': 'application/json'}),
     body: JSON.stringify({to, subject: subject || '(no subject)', body}),
   });
   const text = await r.text();
-  status.textContent = text.startsWith('OK') ? '✓ Sent' : text.split('\n')[0];
   if (text.startsWith('OK')) {
+    status.textContent = '✓ Sent'; status.style.color = '#22863a';
     document.getElementById('c-to').value = '';
     document.getElementById('c-subject').value = '';
     document.getElementById('c-body').value = '';
+  } else {
+    status.textContent = text.split('\n')[0]; status.style.color = '#cc0000';
   }
 });
 

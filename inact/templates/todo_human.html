@@ -34,16 +34,17 @@
   </div>
 </div>
 
-{# ── New task form (hidden) ── #}
+{# ── New / sub task form (hidden) ── #}
 <div id="new-form" hidden
      style="background:#fff;border:1px solid #e0e0e0;border-radius:10px;padding:20px;margin-bottom:16px">
+  <div id="new-form-label" style="font-size:12px;color:#888;margin-bottom:10px"></div>
   <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px">
     <input id="f-title"    placeholder="Title *" style="grid-column:1/-1">
-    <input id="f-desc"     placeholder="Description">
+    <input id="f-desc"     placeholder="Description (optional)">
     <select id="f-assignee" style="border:1px solid #ddd;border-radius:8px;padding:9px 10px;font-size:14px;color:#222">
       <option value="">Unassigned</option>
     </select>
-    <input id="f-due"      type="date">
+    <input id="f-due"  type="date">
     <select id="f-priority" style="border:1px solid #ddd;border-radius:8px;padding:9px 10px;font-size:14px">
       <option value="normal">Normal</option>
       <option value="low">Low</option>
@@ -53,14 +54,14 @@
   </div>
   <div style="display:flex;gap:8px;align-items:center">
     <button class="primary" id="save-btn">Create</button>
-    <button onclick="document.getElementById('new-form').hidden=true"
-            style="background:none;border:none;cursor:pointer;font-size:13px;color:#888">Cancel</button>
+    <button id="cancel-form-btn" style="background:none;border:none;cursor:pointer;font-size:13px;color:#888">Cancel</button>
     <span id="form-err" style="color:#cc0000;font-size:13px"></span>
   </div>
 </div>
 
-{# ── Task list ── #}
+{# ── Task list + pagination ── #}
 <div id="task-list"></div>
+<div id="pagination" style="display:flex;align-items:center;justify-content:center;gap:10px;margin-top:16px"></div>
 {% endblock %}
 
 {% block scripts %}
@@ -73,7 +74,12 @@ function esc(s) { return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;'
 
 const PRIORITY_COLOR = {urgent:'#cc0000', high:'#e07000', normal:'#0066cc', low:'#888'};
 const PRIORITY_BG    = {urgent:'#fde8e8', high:'#fff3e0', normal:'#e8f0fe', low:'#f0f0f0'};
+const PAGE_SIZE = 20;
 
+let allTasks  = [];
+let taskPage  = 1;
+let editId    = null;
+let newParent = null;   // set when creating a subtask
 let allAgents = [];
 
 function parseBlocks(text, tag) {
@@ -87,21 +93,22 @@ function parseBlocks(text, tag) {
   }).filter(o => Object.keys(o).length > 0);
 }
 
-/* ── Load agents and populate assignee dropdowns ── */
+/* ── Agents ── */
 async function loadAgents() {
   try {
     const text = await fetch(AP + '/', {headers: H()}).then(r => r.text());
     allAgents = parseBlocks(text, 'agents');
   } catch(_) {}
-
   const opts = allAgents.map(a =>
     `<option value="${esc(a.id)}">${esc(a.name || 'Agent #' + a.id)}</option>`
   ).join('');
-
-  document.getElementById('filter-assignee').innerHTML =
-    '<option value="">All assignees</option>' + opts;
-  document.getElementById('f-assignee').innerHTML =
-    '<option value="">Unassigned</option>' + opts;
+  ['filter-assignee','f-assignee','edit-assignee'].forEach(id => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    const prefix = id === 'filter-assignee' ? '<option value="">All assignees</option>'
+                                             : '<option value="">Unassigned</option>';
+    el.innerHTML = prefix + opts;
+  });
 }
 
 /* ── Load tasks ── */
@@ -114,58 +121,167 @@ async function load() {
   if (priority) params.set('priority', priority);
   if (assignee) params.set('assignee', assignee);
 
-  const text  = await fetch(`${P}/?${params}`, {headers: H()}).then(r => r.text()).catch(() => '');
-  const tasks = parseBlocks(text, 'tasks');
-  const list  = document.getElementById('task-list');
+  const text = await fetch(`${P}/?${params}`, {headers: H()}).then(r => r.text()).catch(() => '');
+  allTasks = parseBlocks(text, 'tasks');
+  taskPage = 1;
+  editId   = null;
+  renderTasks();
+}
 
-  if (!tasks.length) {
+/* ── Render ── */
+function renderTasks() {
+  const total      = allTasks.length;
+  const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+  if (taskPage > totalPages) taskPage = totalPages;
+  const slice = allTasks.slice((taskPage - 1) * PAGE_SIZE, taskPage * PAGE_SIZE);
+
+  const list = document.getElementById('task-list');
+  if (!slice.length) {
     list.innerHTML = '<p style="color:#aaa;font-size:14px;padding:20px 0">No tasks.</p>';
+    renderPagination(1, 1);
     return;
   }
 
-  list.innerHTML = tasks.map(t => {
-    const done     = t.status === 'done';
-    const overdue  = t.overdue === 'true';
-    const pri      = t.priority || 'normal';
-    const priColor = PRIORITY_COLOR[pri] || '#888';
-    const priBg    = PRIORITY_BG[pri]    || '#f0f0f0';
+  list.innerHTML = slice.map(t => {
+    const done      = t.status === 'done';
+    const overdue   = t.overdue === 'true';
+    const pri       = t.priority || 'normal';
+    const priColor  = PRIORITY_COLOR[pri] || '#888';
+    const priBg     = PRIORITY_BG[pri]    || '#f0f0f0';
     const childInfo = t.children && t.children !== '0'
-      ? `<span style="font-size:11px;color:#aaa">${t.done||0}/${t.children} subtasks</span>` : '';
-    // Show resolved name if available, else raw assignee value
+      ? `<span style="font-size:11px;color:#aaa;margin-left:6px">${t.done||0}/${t.children} subtasks</span>` : '';
     const assigneeDisplay = t.assignee_name || t.assignee;
 
+    if (t.id === editId) {
+      return `
+      <div id="row-${esc(t.id)}" class="toml-scalars" style="margin-bottom:8px">
+        <div style="padding:14px 16px">
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:10px">
+            <input id="edit-title" value="${esc(t.title)}" style="grid-column:1/-1">
+            <input id="edit-desc"  value="${esc(t.description||'')}" placeholder="Description">
+            <select id="edit-assignee" style="border:1px solid #ddd;border-radius:8px;padding:8px 10px;font-size:13px">
+              <option value="">Unassigned</option>
+              ${allAgents.map(a => `<option value="${esc(a.id)}"${t.assignee===a.id?' selected':''}>${esc(a.name||'Agent #'+a.id)}</option>`).join('')}
+            </select>
+            <input id="edit-due" type="date" value="${esc(t.due||'')}">
+            <select id="edit-priority" style="border:1px solid #ddd;border-radius:8px;padding:8px 10px;font-size:13px">
+              ${['urgent','high','normal','low'].map(p =>
+                `<option value="${p}"${t.priority===p?' selected':''}>${p}</option>`).join('')}
+            </select>
+          </div>
+          <div style="display:flex;gap:8px;align-items:center">
+            <button class="primary" onclick="saveEdit('${esc(t.id)}')" style="padding:7px 16px;font-size:13px">Save</button>
+            <button onclick="cancelEdit()" style="background:none;border:none;cursor:pointer;font-size:13px;color:#888">Cancel</button>
+            <span id="edit-err" style="color:#cc0000;font-size:12px"></span>
+          </div>
+        </div>
+      </div>`;
+    }
+
     return `
-    <div class="toml-scalars" style="margin-bottom:8px;opacity:${done?0.5:1}">
+    <div id="row-${esc(t.id)}" class="toml-scalars" style="margin-bottom:8px;opacity:${done?0.5:1}">
       <table><tr>
         <td style="width:28px;vertical-align:middle;padding:10px 8px 10px 14px">
-          <input type="checkbox" ${done?'checked':''} title="${done?'reopen':'mark done'}"
-            onchange="toggleDone('${t.id}', this.checked)"
+          <input type="checkbox" ${done?'checked':''} title="${done?'Reopen':'Mark done'}"
+            onchange="toggleDone('${esc(t.id)}', this.checked)"
             style="width:16px;height:16px;cursor:pointer">
         </td>
-        <td style="vertical-align:middle;padding:10px 0">
+        <td style="vertical-align:middle;padding:10px 4px 10px 0;width:99%">
           <span style="${done?'text-decoration:line-through;color:#aaa':''}">${esc(t.title)}</span>
           ${childInfo}
           ${assigneeDisplay ? `<span style="margin-left:8px;font-size:12px;color:#888" title="agent id: ${esc(t.assignee)}">@${esc(assigneeDisplay)}</span>` : ''}
           ${t.due ? `<span style="margin-left:8px;font-size:12px;color:${overdue?'#cc0000':'#888'}">${overdue?'⚠ ':''}${esc(t.due)}</span>` : ''}
         </td>
-        <td style="vertical-align:middle;padding:10px 8px;white-space:nowrap">
-          <span style="background:${priBg};color:${priColor};border-radius:10px;padding:2px 8px;font-size:11px;font-weight:600">
-            ${pri}
-          </span>
+        <td style="vertical-align:middle;padding:10px 4px;white-space:nowrap">
+          <span style="background:${priBg};color:${priColor};border-radius:10px;padding:2px 8px;font-size:11px;font-weight:600">${pri}</span>
         </td>
-        <td style="vertical-align:middle;padding:10px 14px 10px 4px;text-align:right">
-          <a href="#" onclick="event.preventDefault();deleteTask('${t.id}')"
-             style="color:#cc0000;font-size:12px">del</a>
+        <td style="vertical-align:middle;padding:10px 4px;white-space:nowrap">
+          <a href="#" onclick="event.preventDefault();startEdit('${esc(t.id)}')"
+             style="font-size:12px;color:#555">edit</a>
+          <span style="color:#ddd;margin:0 3px">·</span>
+          <a href="#" onclick="event.preventDefault();startSub('${esc(t.id)}','${esc(t.title)}')"
+             style="font-size:12px;color:#555">sub</a>
+          <span style="color:#ddd;margin:0 3px">·</span>
+          <a href="#" onclick="event.preventDefault();deleteTask('${esc(t.id)}')"
+             style="font-size:12px;color:#cc0000">del</a>
         </td>
       </tr></table>
     </div>`;
   }).join('');
+
+  renderPagination(taskPage, totalPages);
 }
 
-/* ── Toggle done / reopen ── */
+function renderPagination(page, totalPages) {
+  const pag = document.getElementById('pagination');
+  if (totalPages <= 1) { pag.innerHTML = ''; return; }
+  pag.innerHTML = `
+    <button class="primary" onclick="goPage(${page-1})" ${page<=1?'disabled':''} style="padding:6px 14px;font-size:13px">← Prev</button>
+    <span style="font-size:13px;color:#888">${page} / ${totalPages} &nbsp;(${allTasks.length} tasks)</span>
+    <button class="primary" onclick="goPage(${page+1})" ${page>=totalPages?'disabled':''} style="padding:6px 14px;font-size:13px">Next →</button>`;
+}
+
+function goPage(p) { taskPage = p; renderTasks(); window.scrollTo(0, 0); }
+
+/* ── Inline edit ── */
+function startEdit(id) {
+  editId = id;
+  renderTasks();
+  setTimeout(() => {
+    const el = document.getElementById('edit-title');
+    if (el) { el.focus(); el.select(); }
+  }, 0);
+}
+
+function cancelEdit() { editId = null; renderTasks(); }
+
+async function saveEdit(id) {
+  const fields = {
+    title:       document.getElementById('edit-title').value.trim(),
+    description: document.getElementById('edit-desc').value.trim(),
+    assignee:    document.getElementById('edit-assignee').value,
+    due:         document.getElementById('edit-due').value || null,
+    priority:    document.getElementById('edit-priority').value,
+  };
+  if (!fields.title) {
+    const el = document.getElementById('edit-err');
+    if (el) el.textContent = 'Title required';
+    return;
+  }
+  const r = await fetch(`${P}/${id}`, {
+    method: 'POST',
+    headers: H({'Content-Type': 'application/json'}),
+    body: JSON.stringify(fields),
+  });
+  const text = await r.text();
+  if (!text.startsWith('OK')) {
+    const el = document.getElementById('edit-err');
+    if (el) el.textContent = text.split('\n')[0];
+    return;
+  }
+  editId = null;
+  await load();
+}
+
+/* ── Sub-task ── */
+function startSub(parentId, parentTitle) {
+  newParent = parentId;
+  document.getElementById('new-form-label').textContent =
+    `Subtask of: ${parentTitle}`;
+  document.getElementById('f-title').value = '';
+  document.getElementById('f-desc').value  = '';
+  document.getElementById('f-due').value   = '';
+  document.getElementById('f-assignee').value  = '';
+  document.getElementById('f-priority').value  = 'normal';
+  document.getElementById('form-err').textContent = '';
+  document.getElementById('new-form').hidden = false;
+  document.getElementById('f-title').focus();
+  document.getElementById('new-form').scrollIntoView({behavior:'smooth', block:'nearest'});
+}
+
+/* ── Toggle done ── */
 async function toggleDone(id, checked) {
-  await fetch(`${P}/${id}/${checked ? '.done' : '.reopen'}`,
-    {method: 'POST', headers: H()});
+  await fetch(`${P}/${id}/${checked ? '.done' : '.reopen'}`, {method: 'POST', headers: H()});
   await load();
 }
 
@@ -176,10 +292,23 @@ async function deleteTask(id) {
   await load();
 }
 
-/* ── New task ── */
+/* ── New task form ── */
 document.getElementById('new-task-btn').addEventListener('click', () => {
+  newParent = null;
+  document.getElementById('new-form-label').textContent = '';
+  document.getElementById('f-title').value     = '';
+  document.getElementById('f-desc').value      = '';
+  document.getElementById('f-due').value       = '';
+  document.getElementById('f-assignee').value  = '';
+  document.getElementById('f-priority').value  = 'normal';
+  document.getElementById('form-err').textContent = '';
   document.getElementById('new-form').hidden = false;
   document.getElementById('f-title').focus();
+});
+
+document.getElementById('cancel-form-btn').addEventListener('click', () => {
+  document.getElementById('new-form').hidden = true;
+  newParent = null;
 });
 
 document.getElementById('save-btn').addEventListener('click', async () => {
@@ -187,7 +316,6 @@ document.getElementById('save-btn').addEventListener('click', async () => {
   const errEl = document.getElementById('form-err');
   if (!title) { errEl.textContent = 'Title required'; return; }
   errEl.textContent = '';
-
   const body = {
     title,
     description: document.getElementById('f-desc').value.trim(),
@@ -195,22 +323,18 @@ document.getElementById('save-btn').addEventListener('click', async () => {
     priority:    document.getElementById('f-priority').value,
   };
   const due = document.getElementById('f-due').value;
-  if (due) body.due = due;
+  if (due)       body.due       = due;
+  if (newParent) body.parent_id = newParent;
 
-  const r    = await fetch(`${P}/`, {
+  const r = await fetch(`${P}/`, {
     method: 'POST',
     headers: H({'Content-Type': 'application/json'}),
     body: JSON.stringify(body),
   });
   const text = await r.text();
   if (!text.startsWith('OK')) { errEl.textContent = text.split('\n')[0]; return; }
-
   document.getElementById('new-form').hidden = true;
-  document.getElementById('f-title').value    = '';
-  document.getElementById('f-desc').value     = '';
-  document.getElementById('f-assignee').value = '';
-  document.getElementById('f-due').value      = '';
-  document.getElementById('f-priority').value = 'normal';
+  newParent = null;
   await load();
 });
 
@@ -219,7 +343,7 @@ document.getElementById('f-title').addEventListener('keydown', e => {
 });
 
 /* ── Filters ── */
-['filter-status', 'filter-priority', 'filter-assignee'].forEach(id =>
+['filter-status','filter-priority','filter-assignee'].forEach(id =>
   document.getElementById(id).addEventListener('change', load));
 
 /* ── Init ── */

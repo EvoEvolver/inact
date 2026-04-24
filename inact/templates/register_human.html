@@ -24,10 +24,31 @@
   </div>
 
   <div id="form-section">
-    <div class="row">
-      <input id="name" placeholder="Your name (optional)" autocomplete="off">
-      <button class="primary" id="reg-btn">Register</button>
+    {# ── Tab switcher ── #}
+    <div style="display:flex;gap:0;margin-bottom:18px;border:1px solid #e0e0e0;border-radius:8px;overflow:hidden">
+      <button id="tab-register" onclick="switchTab('register')"
+        style="flex:1;padding:9px;font-size:13px;border:none;cursor:pointer;background:#0066cc;color:#fff;font-weight:600">
+        Register
+      </button>
+      <button id="tab-login" onclick="switchTab('login')"
+        style="flex:1;padding:9px;font-size:13px;border:none;cursor:pointer;background:#f0f0f0;color:#555">
+        Sign in with key
+      </button>
     </div>
+
+    <div id="pane-register">
+      <div class="row">
+        <input id="name" placeholder="Your name (optional)" autocomplete="off">
+        <button class="primary" id="reg-btn">Register</button>
+      </div>
+    </div>
+
+    <div id="pane-login" hidden>
+      <input id="login-key" type="password" placeholder="Paste your API key"
+             style="margin-bottom:10px" autocomplete="off" spellcheck="false">
+      <button class="primary" id="login-btn" style="width:100%">Sign in</button>
+    </div>
+
     <div id="err" class="err" hidden></div>
   </div>
 
@@ -125,6 +146,64 @@ document.getElementById('reg-btn').addEventListener('click', async () => {
 
 document.getElementById('name').addEventListener('keydown', e => {
   if (e.key === 'Enter') document.getElementById('reg-btn').click();
+});
+
+/* ── Tab switcher ── */
+function switchTab(tab) {
+  const isReg = tab === 'register';
+  document.getElementById('pane-register').hidden = !isReg;
+  document.getElementById('pane-login').hidden    =  isReg;
+  document.getElementById('tab-register').style.cssText =
+    isReg ? 'flex:1;padding:9px;font-size:13px;border:none;cursor:pointer;background:#0066cc;color:#fff;font-weight:600'
+           : 'flex:1;padding:9px;font-size:13px;border:none;cursor:pointer;background:#f0f0f0;color:#555';
+  document.getElementById('tab-login').style.cssText =
+    isReg ? 'flex:1;padding:9px;font-size:13px;border:none;cursor:pointer;background:#f0f0f0;color:#555'
+           : 'flex:1;padding:9px;font-size:13px;border:none;cursor:pointer;background:#0066cc;color:#fff;font-weight:600';
+  document.getElementById('err').hidden = true;
+  if (!isReg) document.getElementById('login-key').focus();
+}
+
+/* ── Sign in with existing key ── */
+async function doLogin() {
+  const key   = document.getElementById('login-key').value.trim();
+  const errEl = document.getElementById('err');
+  errEl.hidden = true;
+  if (!key) { errEl.textContent = 'Paste your API key.'; errEl.hidden = false; return; }
+
+  // Validate the key by calling the agents listing
+  const r = await fetch(AGENTS_API + '/', {
+    headers: {'X-Api-Key': key}
+  });
+  if (!r.ok) {
+    errEl.textContent = 'Invalid API key — not recognised by the server.';
+    errEl.hidden = false;
+    return;
+  }
+
+  // Look up the agent record for this key
+  // We don't have a /agents/me endpoint, but we can find the ID by checking
+  // /.admin/list (if admin) or by trying each ID — instead, ask the user for
+  // their ID too, OR just store the key and let the server figure out identity.
+  // Simpler: POST /agents/ returns id+key; for login we just store the key
+  // and leave id blank (pages that need it will use X-Api-Key directly).
+  // Resolve the caller's own profile
+  const meText = await fetch(AGENTS_API + '/.me', {
+    headers: {'X-Api-Key': key}
+  }).then(r => r.text()).catch(() => '');
+
+  const id   = (meText.match(/^id\s*=\s*(\d+)/m)  || [])[1] || '';
+  const name = (meText.match(/^name\s*=\s*"([^"]*)"/m) || [])[1] || '';
+
+  localStorage.setItem('inact_api_key',  key);
+  localStorage.setItem('inact_agent_id', id);
+  localStorage.setItem('inact_name',     name);
+  document.cookie = '_inact_key=' + key + '; path=/; SameSite=Lax; Max-Age=' + (30 * 24 * 3600);
+  location.reload();
+}
+
+document.getElementById('login-btn').addEventListener('click', doLogin);
+document.getElementById('login-key').addEventListener('keydown', e => {
+  if (e.key === 'Enter') doLogin();
 });
 
 document.getElementById('logout').addEventListener('click', e => {

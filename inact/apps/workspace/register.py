@@ -401,9 +401,37 @@ def attach_register(inact_app, prefix: str, registry: AgentRegistry,
             return text_response("ERROR 404: not found\n", 404)
         return text_response(f"OK\napi_key = {toml_str(new_key)}\n")
 
+    def _me():
+        """Return the caller's own profile, identified by X-Api-Key or cookie."""
+        api_key = (
+            request.headers.get("X-Api-Key", "")
+            or request.cookies.get("_inact_key", "")
+        ).strip()
+        if not api_key:
+            return text_response("ERROR 401: X-Api-Key required\n", 401)
+        agent = registry.get_by_key(api_key)
+        if not agent:
+            return text_response("ERROR 403: invalid api_key\n", 403)
+        kind    = agent.get("kind", "agent")
+        display = agent["name"] or f"{kind} {agent['id']}"
+        lines = [
+            f"# {display}\n\n",
+            f"id         = {agent['id']}\n",
+            f"kind       = {toml_str(kind)}\n",
+        ]
+        if agent["name"]:
+            lines.append(f"name       = {toml_str(agent['name'])}\n")
+        if agent["email"]:
+            lines.append(f"email      = {toml_str(agent['email'])}\n")
+        lines.append(f"url        = {toml_str(prefix + '/' + str(agent['id']))}\n")
+        return text_response("".join(lines))
+
     flask_app.add_url_rule(
         prefix + "/",
         endpoint=ep + "_root", view_func=_root, methods=["GET", "POST"])
+    flask_app.add_url_rule(
+        prefix + "/.me",
+        endpoint=ep + "_me", view_func=_me)
     flask_app.add_url_rule(
         prefix + "/<agent_id>",
         endpoint=ep + "_agent", view_func=_agent, methods=["GET", "DELETE"])

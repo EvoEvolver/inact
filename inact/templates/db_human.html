@@ -1,0 +1,195 @@
+{% extends "base.html" %}
+{% block content %}
+<h1 class="page-title">Database</h1>
+
+<div class="tabs">
+  <button class="tab-btn active" data-group="db" data-target="pane-tables">Tables</button>
+  <button class="tab-btn"        data-group="db" data-target="pane-query">Query</button>
+</div>
+
+{# ── Tables pane ── #}
+<div id="pane-tables" class="tab-pane" data-group="db">
+  <div style="display:flex;gap:10px;margin-bottom:16px;align-items:center">
+    <input id="new-table-name" placeholder="table name" style="max-width:180px">
+    <button class="primary" id="new-table-btn">New table</button>
+    <span id="create-err" style="color:#cc0000;font-size:13px"></span>
+  </div>
+
+  <div id="tables-list"><p style="color:#aaa;font-size:14px">Loading…</p></div>
+
+  {# Row editor panel (hidden until a table is selected) #}
+  <div id="row-panel" hidden style="margin-top:24px">
+    <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px">
+      <h2 id="row-panel-title" class="page-title" style="margin:0;font-size:17px"></h2>
+      <button class="primary" id="insert-btn" style="padding:6px 14px;font-size:13px">+ Row</button>
+    </div>
+    <div id="rows-list"></div>
+  </div>
+</div>
+
+{# ── Query pane ── #}
+<div id="pane-query" class="tab-pane" data-group="db" hidden>
+  <p style="font-size:13px;color:#666;margin-bottom:10px">
+    Filter: <code>?filter=col:op:val</code> — ops: eq ne contains startswith gt gte lt lte<br>
+    Sort: <code>?sort=col&amp;sort_dir=asc|desc</code>
+  </p>
+  <div style="display:flex;gap:8px;margin-bottom:12px">
+    <input id="q-table"  placeholder="table" style="max-width:140px">
+    <input id="q-filter" placeholder="filter  e.g. status:eq:active" style="flex:1">
+    <input id="q-sort"   placeholder="sort col" style="max-width:120px">
+    <button class="primary" id="q-run">Run</button>
+  </div>
+  <div id="q-result" class="toml-raw" style="min-height:120px;font-size:12px"></div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const P  = {{ prefix | tojson }};
+const KEY = localStorage.getItem('inact_api_key') || '';
+function H(extra) {
+  const h = {'X-Api-Key': KEY};
+  return Object.assign(h, extra || {});
+}
+function esc(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+
+function parseBlocks(text, tag) {
+  return text.split('[[' + tag + ']]').slice(1).map(b => {
+    const o = {};
+    b.split('\n').forEach(l => {
+      const m = l.match(/^([\w]+)\s*=\s*"([^"]*)"/) || l.match(/^([\w]+)\s*=\s*(\S+)/);
+      if (m) o[m[1]] = m[2];
+    });
+    return o;
+  }).filter(o => Object.keys(o).length > 0);
+}
+
+/* ── Tab switch ── */
+document.querySelectorAll('.tab-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    const g = btn.dataset.group;
+    document.querySelectorAll(`.tab-btn[data-group="${g}"]`).forEach(b => b.classList.remove('active'));
+    document.querySelectorAll(`.tab-pane[data-group="${g}"]`).forEach(p => p.hidden = true);
+    btn.classList.add('active');
+    document.getElementById(btn.dataset.target).hidden = false;
+  });
+});
+
+/* ── Load tables ── */
+async function loadTables() {
+  const text = await fetch(P + '/', {headers: H()}).then(r => r.text()).catch(() => '');
+  const tables = parseBlocks(text, 'tables');
+  const list = document.getElementById('tables-list');
+  if (!tables.length) {
+    list.innerHTML = '<p style="color:#aaa;font-size:14px">No tables yet. Create one above.</p>';
+    return;
+  }
+  list.innerHTML = tables.map(t => `
+    <div class="toml-scalars" style="margin-bottom:10px;cursor:pointer" onclick="selectTable(${JSON.stringify(t.name)})">
+      <table><tr>
+        <td class="kkey">${esc(t.name)}</td>
+        <td class="kval" style="color:#888">${t.rows || 0} rows · ${t.columns || 0} cols</td>
+        <td class="kval" style="text-align:right">
+          <a href="#" onclick="event.stopPropagation();dropTable(${JSON.stringify(t.name)})"
+             style="color:#cc0000;font-size:12px">drop</a>
+        </td>
+      </tr></table>
+    </div>`).join('');
+}
+
+let currentTable = null, currentSchema = [];
+
+async function selectTable(name) {
+  currentTable = name;
+  document.getElementById('row-panel-title').textContent = name;
+  document.getElementById('row-panel').hidden = false;
+
+  // Fetch schema
+  const st = await fetch(`${P}/${name}/.schema`, {headers: H()}).then(r => r.text());
+  currentSchema = parseBlocks(st, 'columns');
+
+  await loadRows();
+}
+
+async function loadRows() {
+  if (!currentTable) return;
+  const text = await fetch(`${P}/${currentTable}`, {headers: H()}).then(r => r.text());
+  const rows = parseBlocks(text, 'rows');
+  const list = document.getElementById('rows-list');
+  if (!rows.length) {
+    list.innerHTML = '<p style="color:#aaa;font-size:13px">No rows. Click "+ Row" to add one.</p>';
+    return;
+  }
+  const cols = currentSchema.map(c => c.name);
+  list.innerHTML = `
+    <div class="toml-array"><table>
+      <thead><tr>${cols.map(c => `<th>${esc(c)}</th>`).join('')}<th></th></tr></thead>
+      <tbody>${rows.map(r =>
+        `<tr>${cols.map(c => `<td>${esc(r[c] ?? '')}</td>`).join('')}
+         <td><a href="#" style="color:#cc0000;font-size:12px"
+           onclick="event.preventDefault();deleteRow(${JSON.stringify(r.id)})">del</a></td></tr>`
+      ).join('')}</tbody>
+    </table></div>`;
+}
+
+async function deleteRow(id) {
+  await fetch(`${P}/${currentTable}/${id}`, {method:'DELETE', headers: H()});
+  await loadRows();
+}
+
+async function dropTable(name) {
+  if (!confirm(`Drop table "${name}"?`)) return;
+  await fetch(`${P}/${name}`, {method:'DELETE', headers: H()});
+  document.getElementById('row-panel').hidden = true;
+  currentTable = null;
+  await loadTables();
+}
+
+/* ── New table ── */
+document.getElementById('new-table-btn').addEventListener('click', async () => {
+  const name = document.getElementById('new-table-name').value.trim();
+  const errEl = document.getElementById('create-err');
+  if (!name) { errEl.textContent = 'Name required'; return; }
+  const r = await fetch(P + '/', {method:'POST', headers: H({'Content-Type':'application/json'}),
+    body: JSON.stringify({name, columns:[{name:'title',type:'text'}]})
+  });
+  if (!r.ok) { errEl.textContent = await r.text(); return; }
+  errEl.textContent = '';
+  document.getElementById('new-table-name').value = '';
+  await loadTables();
+  await selectTable(name);
+});
+
+/* ── Insert row ── */
+document.getElementById('insert-btn').addEventListener('click', async () => {
+  if (!currentTable || !currentSchema.length) return;
+  const values = {};
+  for (const col of currentSchema) {
+    const v = prompt(`${col.name} (${col.type}):`);
+    if (v === null) return;
+    if (v) values[col.name] = v;
+  }
+  await fetch(`${P}/${currentTable}`, {method:'POST', headers: H({'Content-Type':'application/json'}),
+    body: JSON.stringify(values)});
+  await loadRows();
+});
+
+/* ── Query pane ── */
+document.getElementById('q-run').addEventListener('click', async () => {
+  const table  = document.getElementById('q-table').value.trim();
+  const filter = document.getElementById('q-filter').value.trim();
+  const sort   = document.getElementById('q-sort').value.trim();
+  const result = document.getElementById('q-result');
+  if (!table) { result.textContent = 'Enter a table name.'; return; }
+  let url = `${P}/${table}`;
+  const params = [];
+  if (filter) params.push('filter=' + encodeURIComponent(filter));
+  if (sort)   params.push('sort='   + encodeURIComponent(sort));
+  if (params.length) url += '?' + params.join('&');
+  const text = await fetch(url, {headers: H()}).then(r => r.text()).catch(e => String(e));
+  result.textContent = text;
+});
+
+loadTables();
+</script>
+{% endblock %}

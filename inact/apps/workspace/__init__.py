@@ -100,14 +100,13 @@ def mount_workspace(
     mount_todo(inact_app, tasks_prefix, storage)
     mount_db(inact_app, f"{p}/data", storage)
 
-    # Email: mount if SMTP is configured
+    # Email: always mount routes (for human UI); SMTP server only if configured
     smtp_host_env = os.environ.get("SMTP_HOST", "")
-    if smtp_port or smtp_host_env:
-        mount_mailbox(inact_app, mail_prefix, storage,
-                      registry=storage,
-                      notify_storage=notify_storage,
-                      smtp_port=smtp_port or 2525,
-                      relay_host=relay_host,
-                      relay_port=relay_port,
-                      relay_user=relay_user,
-                      relay_password=relay_password)
+    mount_mailbox(inact_app, mail_prefix, storage,
+                  registry=storage,
+                  notify_storage=notify_storage,
+                  smtp_port=smtp_port or (2525 if smtp_host_env else None),
+                  relay_host=relay_host,
+                  relay_port=relay_port,
+                  relay_user=relay_user,
+                  relay_password=relay_password)

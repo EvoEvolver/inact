@@ -499,6 +499,14 @@ def attach_db(inact_app, prefix: str, store: DbStore) -> None:
         prefix + "/<table>/<row_id>",
         endpoint=ep + "_row", view_func=_row, methods=["GET", "POST", "DELETE"])
 
+    def _human(path: str):
+        from inact.render import render_template
+        from inact.utils import html_response
+        return html_response(render_template("db_human.html",
+            title="Database", prefix=prefix, nav="", pills=[]))
+
+    inact_app._human_views[prefix] = _human
+
 
 # ---------------------------------------------------------------------------
 # Mount function

@@ -1,0 +1,81 @@
+{% extends "base.html" %}
+{% block content %}
+<h1 class="page-title">Web Search</h1>
+
+<div style="display:flex;gap:8px;margin-bottom:20px">
+  <input id="q-input" placeholder="Search the web…" autocomplete="off"
+         style="flex:1" autofocus>
+  <select id="max-select" style="width:80px;border:1px solid #ddd;border-radius:8px;padding:8px;font-size:14px">
+    <option value="5">5</option>
+    <option value="10">10</option>
+    <option value="20">20</option>
+  </select>
+  <button class="primary" id="search-btn">Search</button>
+</div>
+
+<div id="answer-box" hidden
+     style="background:#e8f0fe;border:1px solid #c5d8ff;border-radius:8px;padding:14px 18px;margin-bottom:16px;font-size:14px;line-height:1.6">
+</div>
+
+<div id="results"></div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const P   = {{ prefix | tojson }};
+const KEY = localStorage.getItem('inact_api_key') || '';
+function H() { return {'X-Api-Key': KEY}; }
+function esc(s) { return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+
+async function search() {
+  const q   = document.getElementById('q-input').value.trim();
+  const max = document.getElementById('max-select').value;
+  if (!q) return;
+  const results = document.getElementById('results');
+  const ansBox  = document.getElementById('answer-box');
+  results.innerHTML = '<p style="color:#aaa;font-size:14px">Searching…</p>';
+  ansBox.hidden = true;
+
+  const text = await fetch(`${P}?q=${encodeURIComponent(q)}&max=${max}`, {headers: H()})
+    .then(r => r.text()).catch(e => 'ERROR: ' + e);
+
+  // Extract answer
+  const answerM = text.match(/^answer\s*=\s*"([^"]*)"/m);
+  if (answerM && answerM[1]) {
+    ansBox.textContent = answerM[1];
+    ansBox.hidden = false;
+  }
+
+  // Extract result blocks
+  const blocks = text.split('[[results]]').slice(1);
+  if (!blocks.length) {
+    results.innerHTML = '<p style="color:#aaa;font-size:14px">No results.</p>';
+    return;
+  }
+
+  results.innerHTML = blocks.map(b => {
+    const get = key => (b.match(new RegExp(key + '\\s*=\\s*"([^"]*)"')) || [])[1] || '';
+    const scoreRaw = (b.match(/score\s*=\s*([\d.]+)/) || [])[1];
+    const score = scoreRaw ? Math.round(parseFloat(scoreRaw) * 100) : null;
+    const title   = get('title');
+    const url     = get('url');
+    const snippet = get('snippet');
+    return `
+      <div style="background:#fff;border:1px solid #e0e0e0;border-radius:8px;padding:16px 18px;margin-bottom:10px">
+        <div style="display:flex;align-items:baseline;gap:10px;margin-bottom:4px">
+          <a href="${esc(url)}" target="_blank" rel="noopener"
+             style="font-size:15px;font-weight:600;color:#0066cc;text-decoration:none">${esc(title) || esc(url)}</a>
+          ${score !== null ? `<span style="font-size:11px;color:#aaa">${score}%</span>` : ''}
+        </div>
+        <div style="font-size:12px;color:#aaa;margin-bottom:6px">${esc(url)}</div>
+        ${snippet ? `<p style="font-size:14px;color:#444;margin:0;line-height:1.5">${esc(snippet)}</p>` : ''}
+      </div>`;
+  }).join('');
+}
+
+document.getElementById('search-btn').addEventListener('click', search);
+document.getElementById('q-input').addEventListener('keydown', e => {
+  if (e.key === 'Enter') search();
+});
+</script>
+{% endblock %}

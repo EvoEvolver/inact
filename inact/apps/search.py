@@ -75,6 +75,14 @@ def attach_search(inact_app, prefix: str, api_key: str | None) -> None:
 
     inact_app.app.add_url_rule(prefix, endpoint=ep, view_func=_search)
 
+    def _human(path: str):
+        from inact.render import render_template
+        from inact.utils import html_response
+        return html_response(render_template("search_human.html",
+            title="Search", prefix=prefix, nav="", pills=[]))
+
+    inact_app._human_views[prefix] = _human
+
 
 def mount_search(inact_app, prefix: str, api_key: str | None = None) -> None:
     """

@@ -505,6 +505,14 @@ def attach_mailbox(inact_app, prefix: str, store: MailStore,
         prefix + "/sent",
         endpoint=ep + "_sent", view_func=_sent)
 
+    def _human(path: str):
+        from inact.render import render_template
+        from inact.utils import html_response
+        return html_response(render_template("mail_human.html",
+            title="Mailbox", prefix=prefix, nav="", pills=[]))
+
+    inact_app._human_views[prefix] = _human
+
 
 # ---------------------------------------------------------------------------
 # Mount function
@@ -567,8 +575,9 @@ def mount_mailbox(
     backend = make_storage(storage) if isinstance(storage, str) else storage
     store = MailStore(backend)
 
-    # Resolve SMTP port
-    port = smtp_port or int(os.environ.get("SMTP_PORT", "2525"))
+    # Resolve SMTP port — 0/None means "no inbound SMTP"
+    _env_port = os.environ.get("SMTP_PORT", "")
+    port = smtp_port or (int(_env_port) if _env_port else None)
 
     # Resolve relay from env if not given
     r_host = relay_host or os.environ.get("SMTP_RELAY_HOST", "")
@@ -600,8 +609,9 @@ def mount_mailbox(
                     _push(nstore, agent_id, notif_id,
                           f"New email from {from_email}: {subject}", from_email)
 
-    # Start the embedded SMTP server
-    _start_smtp_server(store, smtp_host, port, notify_fn=inbound_notify_fn)
+    # Start the embedded SMTP server (only when a port is configured)
+    if port:
+        _start_smtp_server(store, smtp_host, port, notify_fn=inbound_notify_fn)
 
     p = "/" + prefix.strip("/")
     attach_mailbox(inact_app, p, store, registry=reg,

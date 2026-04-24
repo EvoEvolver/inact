@@ -52,7 +52,7 @@ async function ensureId() {
   } catch (_) {}
 }
 
-document.getElementById('my-id').textContent = myId || '…';
+// my-id element removed (nav shows identity via base.html)
 
 let selId = null, selName = '', timer = null, shownIds = new Set();
 const sentBodies = {};   // id -> body text, cached at send time

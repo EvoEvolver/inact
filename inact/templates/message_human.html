@@ -30,10 +30,29 @@
 const P  = {{ prefix      | tojson }};
 const AP = {{ agents_prefix | tojson }};
 
-let myId   = localStorage.getItem('inact_agent_id');
-let myName = localStorage.getItem('inact_name') || ('Agent #' + myId);
-if (!myId) { location.href = '/_human' + AP; }
-document.getElementById('my-id').textContent = myId;
+let myId   = localStorage.getItem('inact_agent_id') || '';
+let myName = localStorage.getItem('inact_name') || '';
+const myKey = localStorage.getItem('inact_api_key') || '';
+
+if (!myKey) { location.href = '/_human' + AP; }  // no key at all → register
+
+// If we have a key but no ID (logged in via key paste), resolve it now
+async function ensureId() {
+  if (myId) return;
+  try {
+    const text = await fetch(AP + '/.me', {headers: {'X-Api-Key': myKey}}).then(r => r.text());
+    const m = text.match(/^id\s*=\s*(\d+)/m);
+    const n = (text.match(/^name\s*=\s*"([^"]*)"/m) || [])[1] || '';
+    if (m) {
+      myId   = m[1];
+      myName = n || ('Agent #' + myId);
+      localStorage.setItem('inact_agent_id', myId);
+      localStorage.setItem('inact_name', myName);
+    }
+  } catch (_) {}
+}
+
+document.getElementById('my-id').textContent = myId || '…';
 
 let selId = null, selName = '', timer = null, shownIds = new Set();
 const sentBodies = {};   // id -> body text, cached at send time
@@ -184,6 +203,9 @@ function esc(s) {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
-loadAgents();
+ensureId().then(() => {
+  document.getElementById('my-id').textContent = myId || '?';
+  loadAgents();
+});
 </script>
 {% endblock %}

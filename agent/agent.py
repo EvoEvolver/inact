@@ -43,7 +43,7 @@ CALLBACK_URL  = os.environ.get("CALLBACK_URL",      "")
 PORT          = int(os.environ.get("PORT",           "7779"))
 INTERVAL      = int(os.environ.get("REVIVAL_INTERVAL", "600"))
 MEMORY_DIR    = os.environ.get("MEMORY_DIR",        "./memory")
-MODEL         = os.environ.get("MODEL",             "claude-opus-4-7")
+MODEL         = os.environ.get("MODEL",             "claude-sonnet-4-6")
 MSG           = "/msg"
 NOTIFY        = "/notify"
 

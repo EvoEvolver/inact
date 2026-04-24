@@ -42,6 +42,30 @@ _DDL = [
         read       INTEGER NOT NULL DEFAULT 0,
         created_at BIGINT  NOT NULL
     )""",
+    """CREATE TABLE IF NOT EXISTS groups (
+        id         TEXT    PRIMARY KEY,
+        name       TEXT    NOT NULL DEFAULT '',
+        created_by TEXT    NOT NULL DEFAULT '',
+        created_at BIGINT  NOT NULL
+    )""",
+    """CREATE TABLE IF NOT EXISTS group_members (
+        group_id   TEXT    NOT NULL,
+        agent_id   TEXT    NOT NULL,
+        joined_at  BIGINT  NOT NULL,
+        PRIMARY KEY (group_id, agent_id)
+    )""",
+    """CREATE TABLE IF NOT EXISTS group_messages (
+        id         TEXT    PRIMARY KEY,
+        group_id   TEXT    NOT NULL,
+        from_id    TEXT    NOT NULL,
+        body       TEXT    NOT NULL DEFAULT '',
+        created_at BIGINT  NOT NULL
+    )""",
+    """CREATE TABLE IF NOT EXISTS group_message_reads (
+        message_id TEXT    NOT NULL,
+        agent_id   TEXT    NOT NULL,
+        PRIMARY KEY (message_id, agent_id)
+    )""",
 ]
 
 _DEFAULT_PER_PAGE = 20
@@ -128,6 +152,172 @@ class MessageStore:
 
     def delete(self, msg_id: str) -> bool:
         return self._s.execute("DELETE FROM messages WHERE id = ?", (msg_id,)) > 0
+
+    # ---------- group chats ----------
+
+    def create_group(self, name: str, created_by: str, member_ids: list) -> str:
+        group_id = str(uuid.uuid4())
+        ts = int(time.time())
+        self._s.execute(
+            "INSERT INTO groups VALUES (?, ?, ?, ?)",
+            (group_id, name, created_by, ts),
+        )
+        for agent_id in list({str(m) for m in member_ids} | {str(created_by)}):
+            try:
+                self._s.execute(
+                    "INSERT INTO group_members VALUES (?, ?, ?)",
+                    (group_id, agent_id, ts),
+                )
+            except Exception:
+                pass
+        return group_id
+
+    def get_group(self, group_id: str) -> dict | None:
+        return self._s.fetchone("SELECT * FROM groups WHERE id = ?", (group_id,))
+
+    def list_groups(self, agent_id: str) -> list[dict]:
+        return self._s.fetchall(
+            "SELECT g.* FROM groups g "
+            "JOIN group_members gm ON g.id = gm.group_id "
+            "WHERE gm.agent_id = ? ORDER BY g.created_at DESC",
+            (agent_id,),
+        )
+
+    def get_group_members(self, group_id: str) -> list[str]:
+        rows = self._s.fetchall(
+            "SELECT agent_id FROM group_members WHERE group_id = ? ORDER BY joined_at ASC",
+            (group_id,),
+        )
+        return [r["agent_id"] for r in rows]
+
+    def add_group_member(self, group_id: str, agent_id: str) -> None:
+        try:
+            self._s.execute(
+                "INSERT INTO group_members VALUES (?, ?, ?)",
+                (group_id, str(agent_id), int(time.time())),
+            )
+        except Exception:
+            pass
+
+    def send_group_message(self, group_id: str, from_id: str, body: str) -> str:
+        msg_id = str(uuid.uuid4())
+        self._s.execute(
+            "INSERT INTO group_messages VALUES (?, ?, ?, ?, ?)",
+            (msg_id, group_id, from_id, body, int(time.time())),
+        )
+        return msg_id
+
+    def count_group_messages(self, group_id: str,
+                              agent_id: str = "", unread_only: bool = False) -> int:
+        if unread_only and agent_id:
+            row = self._s.fetchone(
+                "SELECT COUNT(*) AS cnt FROM group_messages "
+                "WHERE group_id = ? AND from_id != ? "
+                "AND NOT EXISTS (SELECT 1 FROM group_message_reads "
+                "  WHERE message_id = group_messages.id AND agent_id = ?)",
+                (group_id, agent_id, agent_id),
+            )
+        else:
+            row = self._s.fetchone(
+                "SELECT COUNT(*) AS cnt FROM group_messages WHERE group_id = ?",
+                (group_id,),
+            )
+        return row["cnt"] if row else 0
+
+    def get_group_messages(self, group_id: str, page: int = 1,
+                            per_page: int = _DEFAULT_PER_PAGE,
+                            agent_id: str = "",
+                            unread_only: bool = False) -> list[dict]:
+        offset = (page - 1) * per_page
+        if unread_only and agent_id:
+            rows = self._s.fetchall(
+                "SELECT * FROM group_messages "
+                "WHERE group_id = ? AND from_id != ? "
+                "AND NOT EXISTS (SELECT 1 FROM group_message_reads "
+                "  WHERE message_id = group_messages.id AND agent_id = ?) "
+                "ORDER BY created_at ASC LIMIT ? OFFSET ?",
+                (group_id, agent_id, agent_id, per_page, offset),
+            )
+        else:
+            rows = self._s.fetchall(
+                "SELECT * FROM group_messages WHERE group_id = ? "
+                "ORDER BY created_at ASC LIMIT ? OFFSET ?",
+                (group_id, per_page, offset),
+            )
+        if agent_id and rows:
+            for m in rows:
+                try:
+                    self._s.execute(
+                        "INSERT INTO group_message_reads VALUES (?, ?)",
+                        (m["id"], agent_id),
+                    )
+                except Exception:
+                    pass
+        return rows
+
+    def list_groups_with_unread(self, agent_id: str) -> list[dict]:
+        groups = self.list_groups(agent_id)
+        for g in groups:
+            row = self._s.fetchone(
+                "SELECT COUNT(*) AS cnt FROM group_messages "
+                "WHERE group_id = ? AND from_id != ? "
+                "AND NOT EXISTS (SELECT 1 FROM group_message_reads "
+                "  WHERE message_id = group_messages.id AND agent_id = ?)",
+                (g["id"], agent_id, agent_id),
+            )
+            g["unread"] = row["cnt"] if row else 0
+        return groups
+
+    def list_conversations(self, agent_id: str, page: int = 1,
+                           per_page: int = _DEFAULT_PER_PAGE) -> tuple[list[dict], int]:
+        """Return (page_items, total) sorted by most-recent message descending."""
+        # DM conversations: one row per distinct peer, latest timestamp + unread count
+        dms = self._s.fetchall(
+            "SELECT peer_id, MAX(last_ts) AS last_ts, SUM(unread) AS unread "
+            "FROM ("
+            "  SELECT "
+            "    CASE WHEN from_id = ? THEN to_id ELSE from_id END AS peer_id,"
+            "    created_at AS last_ts,"
+            "    CASE WHEN to_id = ? AND read = 0 THEN 1 ELSE 0 END AS unread"
+            "  FROM messages WHERE from_id = ? OR to_id = ?"
+            ") GROUP BY peer_id",
+            (agent_id, agent_id, agent_id, agent_id),
+        )
+        # Group conversations: latest message timestamp + unread for this agent
+        grps = self._s.fetchall(
+            "SELECT g.id AS group_id, g.name AS group_name,"
+            "  COALESCE(MAX(gm.created_at), g.created_at) AS last_ts,"
+            "  (SELECT COUNT(*) FROM group_messages gm2"
+            "   WHERE gm2.group_id = g.id AND gm2.from_id != ?"
+            "   AND NOT EXISTS (SELECT 1 FROM group_message_reads r"
+            "     WHERE r.message_id = gm2.id AND r.agent_id = ?)) AS unread"
+            " FROM groups g"
+            " JOIN group_members mem ON g.id = mem.group_id AND mem.agent_id = ?"
+            " LEFT JOIN group_messages gm ON gm.group_id = g.id"
+            " GROUP BY g.id",
+            (agent_id, agent_id, agent_id),
+        )
+        all_convs: list[dict] = []
+        for d in dms:
+            all_convs.append({
+                "type": "dm",
+                "id": d["peer_id"],
+                "name": "",
+                "last_ts": d["last_ts"] or 0,
+                "unread": d["unread"] or 0,
+            })
+        for g in grps:
+            all_convs.append({
+                "type": "group",
+                "id": g["group_id"],
+                "name": g["group_name"] or "",
+                "last_ts": g["last_ts"] or 0,
+                "unread": g["unread"] or 0,
+            })
+        all_convs.sort(key=lambda c: c["last_ts"], reverse=True)
+        total = len(all_convs)
+        offset = (page - 1) * per_page
+        return all_convs[offset:offset + per_page], total
 
     def count_agents(self) -> int:
         row = self._s.fetchone(
@@ -308,6 +498,145 @@ def attach_message(inact_app, prefix: str, store: MessageStore,
             lines.append("\n")
         return text_response("".join(lines))
 
+    def _conversations():
+        agent_id = _agent_id()
+        if not agent_id:
+            return text_response("ERROR 400: agent_id required\n", 400)
+        page, per_page = _parse_page_params()
+        convs, total = store.list_conversations(agent_id, page, per_page)
+        lines = [
+            f"# Conversations for agent {agent_id}\n",
+            _page_header(page, per_page, total),
+            "\n",
+        ]
+        for c in convs:
+            lines.append("[[conversations]]\n")
+            lines.append(f"type      = {toml_str(c['type'])}\n")
+            lines.append(f"id        = {toml_str(c['id'])}\n")
+            if c["name"]:
+                lines.append(f"name      = {toml_str(c['name'])}\n")
+            lines.append(f"last_date = {toml_str(_fmt_ts(c['last_ts']))}\n")
+            lines.append(f"unread    = {c['unread']}\n")
+            lines.append("\n")
+        return text_response("".join(lines))
+
+    def _groups():
+        if request.method == "POST":
+            body = request.get_json(force=True, silent=True) or {}
+            name = (body.get("name") or "").strip()
+            created_by = str(body.get("created_by") or _agent_id()).strip()
+            members = [str(m).strip() for m in (body.get("members") or []) if str(m).strip()]
+            if not name:
+                return text_response("ERROR 400: 'name' required\n", 400)
+            if not created_by:
+                return text_response("ERROR 400: 'created_by' required (or set X-Agent-Id)\n", 400)
+            group_id = store.create_group(name, created_by, members)
+            if notify_fn:
+                for member_id in members:
+                    if str(member_id) != str(created_by):
+                        notify_fn(str(member_id), created_by,
+                                  f"[group:{group_id}] You were added to group '{name}'")
+            return text_response(
+                f"OK\n"
+                f"id   = {toml_str(group_id)}\n"
+                f"name = {toml_str(name)}\n"
+                f"url  = {toml_str(prefix + '/groups/' + group_id)}\n"
+            )
+        # GET — list groups for this agent
+        agent_id = _agent_id()
+        if not agent_id:
+            return text_response("ERROR 400: agent_id required\n", 400)
+        groups = store.list_groups_with_unread(agent_id)
+        lines = [f"# Groups for agent {agent_id}\n\n"]
+        for g in groups:
+            members = store.get_group_members(g["id"])
+            lines.append("[[groups]]\n")
+            lines.append(f"id         = {toml_str(g['id'])}\n")
+            lines.append(f"name       = {toml_str(g['name'])}\n")
+            lines.append(f"created_by = {toml_str(g['created_by'])}\n")
+            lines.append(f"created_at = {toml_str(_fmt_ts(g['created_at']))}\n")
+            lines.append(f"members    = {len(members)}\n")
+            lines.append(f"unread     = {g.get('unread', 0)}\n")
+            lines.append(f"url        = {toml_str(prefix + '/groups/' + g['id'])}\n")
+            lines.append("\n")
+        return text_response("".join(lines))
+
+    def _group_detail(group_id: str):
+        g = store.get_group(group_id)
+        if not g:
+            return text_response("ERROR 404: group not found\n", 404)
+        members = store.get_group_members(group_id)
+        lines = [
+            f"# Group: {g['name']}\n\n",
+            f"id           = {toml_str(g['id'])}\n",
+            f"name         = {toml_str(g['name'])}\n",
+            f"created_by   = {toml_str(g['created_by'])}\n",
+            f"created_at   = {toml_str(_fmt_ts(g['created_at']))}\n",
+            f"member_count = {len(members)}\n",
+            f"messages_url = {toml_str(prefix + '/groups/' + group_id + '/messages')}\n",
+            f"send_url     = {toml_str(prefix + '/groups/' + group_id + '/send')}\n",
+            "\n",
+        ]
+        for m in members:
+            lines.append(f"[[members]]\nagent_id = {toml_str(m)}\n\n")
+        return text_response("".join(lines))
+
+    def _group_send(group_id: str):
+        g = store.get_group(group_id)
+        if not g:
+            return text_response("ERROR 404: group not found\n", 404)
+        body = request.get_json(force=True, silent=True) or {}
+        from_id = str(body.get("from") or _agent_id()).strip()
+        text_body = (body.get("body") or "").strip()
+        if not from_id:
+            return text_response("ERROR 400: 'from' required\n", 400)
+        if not text_body:
+            return text_response("ERROR 400: 'body' required\n", 400)
+        msg_id = store.send_group_message(group_id, from_id, text_body)
+        if notify_fn:
+            for member_id in store.get_group_members(group_id):
+                if str(member_id) != str(from_id):
+                    notify_fn(str(member_id), from_id,
+                              f"[group:{group_id}] {text_body}")
+        return text_response(f"OK\nid = {toml_str(msg_id)}\n")
+
+    def _group_messages(group_id: str):
+        g = store.get_group(group_id)
+        if not g:
+            return text_response("ERROR 404: group not found\n", 404)
+        agent_id = _agent_id()
+        unread_only = request.args.get("unread", "0") == "1"
+        page, per_page = _parse_page_params()
+        total = store.count_group_messages(group_id, agent_id, unread_only)
+        msgs = store.get_group_messages(group_id, page, per_page, agent_id, unread_only)
+        lines = [
+            f"# Messages in '{g['name']}'\n",
+            _page_header(page, per_page, total),
+            "\n",
+        ]
+        for m in msgs:
+            lines.append("[[messages]]\n")
+            lines.append(f"id   = {toml_str(m['id'])}\n")
+            lines.append(f"from = {toml_str(m['from_id'])}\n")
+            lines.append(f"body = {toml_str(m['body'])}\n")
+            lines.append(f"date = {toml_str(_fmt_ts(m['created_at']))}\n")
+            lines.append("\n")
+        return text_response("".join(lines))
+
+    def _group_members(group_id: str):
+        g = store.get_group(group_id)
+        if not g:
+            return text_response("ERROR 404: group not found\n", 404)
+        body = request.get_json(force=True, silent=True) or {}
+        agent_id = str(body.get("agent_id") or "").strip()
+        if not agent_id:
+            return text_response("ERROR 400: 'agent_id' required\n", 400)
+        store.add_group_member(group_id, agent_id)
+        if notify_fn:
+            notify_fn(agent_id, g["created_by"],
+                      f"[group:{group_id}] You were added to group '{g['name']}'")
+        return text_response(f"OK\nagent_id = {toml_str(agent_id)}\n")
+
     def _human():
         from ...render import render_template, workspace_nav
         from ...utils import html_response
@@ -343,6 +672,24 @@ def attach_message(inact_app, prefix: str, store: MessageStore,
     flask_app.add_url_rule(
         prefix + "/agents",
         endpoint=ep + "_agents", view_func=_agents)
+    flask_app.add_url_rule(
+        prefix + "/conversations",
+        endpoint=ep + "_conversations", view_func=_conversations)
+    flask_app.add_url_rule(
+        prefix + "/groups",
+        endpoint=ep + "_groups", view_func=_groups, methods=["GET", "POST"])
+    flask_app.add_url_rule(
+        prefix + "/groups/<group_id>",
+        endpoint=ep + "_group_detail", view_func=_group_detail)
+    flask_app.add_url_rule(
+        prefix + "/groups/<group_id>/send",
+        endpoint=ep + "_group_send", view_func=_group_send, methods=["POST"])
+    flask_app.add_url_rule(
+        prefix + "/groups/<group_id>/messages",
+        endpoint=ep + "_group_messages", view_func=_group_messages)
+    flask_app.add_url_rule(
+        prefix + "/groups/<group_id>/members",
+        endpoint=ep + "_group_members", view_func=_group_members, methods=["POST"])
     inact_app._human_views[prefix] = lambda path: _human()
 
 
@@ -383,11 +730,17 @@ def mount_message(inact_app, prefix: str, storage,
                    notify_fn=notify_fn)
     inact_app._app_mounts.append((p, (
         f"\nAgent messaging: {p}\n"
-        f'  POST   {p}/send          send  body: {{"from":"1","to":"2","body":"..."}}\n'
-        f"  GET    {p}/inbox         received messages  (?agent_id=<id>  ?unread=1  ?page=1)\n"
-        f"  GET    {p}/inbox/{{id}}    read message (marks read)\n"
-        f"  DELETE {p}/inbox/{{id}}    delete message\n"
-        f"  GET    {p}/sent          sent messages  (?agent_id=<id>  ?page=1)\n"
-        f"  GET    {p}/agents        known agents  (?page=1)\n"
+        f'  POST   {p}/send                    send DM  body: {{"from":"1","to":"2","body":"..."}}\n'
+        f"  GET    {p}/inbox                   received messages  (?agent_id=<id>  ?unread=1  ?page=1)\n"
+        f"  GET    {p}/inbox/{{id}}              read message (marks read)\n"
+        f"  DELETE {p}/inbox/{{id}}              delete message\n"
+        f"  GET    {p}/sent                    sent messages  (?agent_id=<id>  ?page=1)\n"
+        f"  GET    {p}/agents                  known agents  (?page=1)\n"
+        f'  POST   {p}/groups                  create group  body: {{"name":"...","created_by":"1","members":["2","3"]}}\n'
+        f"  GET    {p}/groups                  list groups  (?agent_id=<id>)\n"
+        f"  GET    {p}/groups/{{id}}             group details + members\n"
+        f"  POST   {p}/groups/{{id}}/send        send group message  body: {{\"from\":\"1\",\"body\":\"...\"}}\n"
+        f"  GET    {p}/groups/{{id}}/messages    group messages  (?agent_id=<id>  ?unread=1  ?page=1)\n"
+        f"  POST   {p}/groups/{{id}}/members     add member  body: {{\"agent_id\":\"2\"}}\n"
         f"  # identity: X-Agent-Id header or ?agent_id= param\n"
     )))

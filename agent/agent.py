@@ -110,6 +110,47 @@ def update_memory_index(entries: list[tuple[str, str]]) -> None:
 # Claude
 # ---------------------------------------------------------------------------
 
+# Track group messages already replied to (in-memory; re-populated on startup)
+_processed_group_msgs: set[str] = set()
+
+
+def list_my_groups() -> list[dict]:
+    """Return all groups this agent is a member of."""
+    try:
+        r = requests.get(f"{SERVER}{MSG}/groups", headers=_headers(), timeout=10)
+        groups = []
+        for block in r.text.split("[[groups]]")[1:]:
+            g_id   = (re.search(r'id\s*=\s*"([^"]+)"',   block) or ["", ""])[1]
+            g_name = (re.search(r'name\s*=\s*"([^"]*)"', block) or ["", ""])[1]
+            if g_id:
+                groups.append({"id": g_id, "name": g_name})
+        return groups
+    except Exception:
+        return []
+
+
+def fetch_group_context(group_id: str) -> list[dict]:
+    """Return recent messages in a group, oldest-first."""
+    try:
+        r = requests.get(
+            f"{SERVER}{MSG}/groups/{group_id}/messages",
+            params={"per_page": "50"},
+            headers=_headers(),
+            timeout=10,
+        )
+        msgs = []
+        for block in r.text.split("[[messages]]")[1:]:
+            msg_id  = (re.search(r'id\s*=\s*"([^"]+)"',   block) or ["", ""])[1]
+            from_id = (re.search(r'from\s*=\s*"([^"]+)"', block) or ["", ""])[1]
+            body    = (re.search(r'body\s*=\s*"([^"]*)"', block) or ["", ""])[1]
+            date    = (re.search(r'date\s*=\s*"([^"]+)"', block) or ["", ""])[1]
+            if msg_id and from_id:
+                msgs.append({"id": msg_id, "from_id": from_id, "body": body, "date": date})
+        return sorted(msgs, key=lambda m: m.get("date", ""))
+    except Exception:
+        return []
+
+
 def fetch_conversation(with_id: str) -> list[dict]:
     """
     Return the full message history between this agent and *with_id*,
@@ -152,6 +193,37 @@ def fetch_conversation(with_id: str) -> list[dict]:
     return history
 
 
+_GROUP_TOOLS_PROMPT = """
+## Group chat tools (use Bash to call these)
+
+Create a new group chat:
+  curl -s -X POST {server}/msg/groups \\
+    -H 'Content-Type: application/json' \\
+    -H 'X-Agent-Id: {my_id}' \\
+    {key_header} \\
+    -d '{{"name":"<name>","created_by":"{my_id}","members":["<id1>","<id2>"]}}'
+
+List all available agents:
+  curl -s {server}/agents/ -H 'X-Agent-Id: {my_id}' {key_header}
+
+Send a message to a group (after creating it):
+  curl -s -X POST {server}/msg/groups/<group_id>/send \\
+    -H 'Content-Type: application/json' \\
+    -H 'X-Agent-Id: {my_id}' \\
+    {key_header} \\
+    -d '{{"from":"{my_id}","body":"<message>"}}'
+
+When asked to create a group chat: list agents first to find the right IDs, then
+create the group with those IDs as members (always include your own ID), then send
+a welcome message to the group.
+"""
+
+
+def _group_tools_prompt() -> str:
+    key_header = f"-H 'X-Api-Key: {AGENT_KEY}'" if AGENT_KEY else ""
+    return _GROUP_TOOLS_PROMPT.format(server=SERVER, my_id=AGENT_ID, key_header=key_header)
+
+
 def claude_reply_and_memorize(my_id: str, from_id: str,
                               history: list[dict]) -> tuple[str, str]:
     """
@@ -167,7 +239,7 @@ def claude_reply_and_memorize(my_id: str, from_id: str,
         "You have access to WebFetch, WebSearch, and Bash tools.",
         "Use them freely: run shell commands, fetch URLs, search the web,",
         "read files — whatever the task requires.",
-        "",
+        _group_tools_prompt(),
     ]
     if memory:
         lines += [
@@ -256,9 +328,113 @@ def apply_memory(memory_block: str) -> None:
         print(f"[memory] MEMORY.md updated ({len(new_entries)} new entries)")
 
 
+def claude_group_reply_and_memorize(my_id: str, group_id: str, group_name: str,
+                                    history: list[dict]) -> tuple[str, str]:
+    """Generate a reply for a group conversation. Returns (reply_text, memory_block)."""
+    memory = load_memory()
+    lines = [
+        f"You are AI agent #{my_id} in an agent communication system.",
+        f"You are in a group chat named '{group_name}' (group id: {group_id}).",
+        "You have access to WebFetch, WebSearch, and Bash tools.",
+        _group_tools_prompt(),
+    ]
+    if memory:
+        lines += [
+            "## Your long-term memory",
+            "(MEMORY.md index — read referenced files with Bash/cat if you need details)",
+            memory,
+            "",
+        ]
+    lines += ["## Group chat history (oldest first)", ""]
+    for m in history:
+        speaker = f"You (#{my_id})" if m["from_id"] == str(my_id) else f"Agent #{m['from_id']}"
+        lines.append(f"{speaker}: {m['body']}")
+    lines += [
+        "",
+        "## Your task",
+        "1. Reply to the latest message in the group chat. Be concise (1-3 sentences).",
+        "2. After replying, decide if anything is worth saving to long-term memory.",
+        "",
+        "## Output format — use EXACTLY this structure:",
+        "",
+        "REPLY:",
+        "<your reply here>",
+        "",
+        "MEMORY:",
+        "# if nothing to save, write just: NO_MEMORY",
+        "# otherwise: FILE: <name>.md / DESC: <desc> / --- / <content> / ===",
+    ]
+
+    result = subprocess.run(
+        ["claude", "-p", "\n".join(lines), "--allowedTools", ALLOWED_TOOLS],
+        capture_output=True, text=True, timeout=180,
+    )
+    output = result.stdout.strip()
+    if "MEMORY:" in output:
+        reply_part, _, memory_part = output.partition("MEMORY:")
+        return reply_part.replace("REPLY:", "").strip(), memory_part.strip()
+    return output.replace("REPLY:", "").strip(), ""
+
+
 # ---------------------------------------------------------------------------
 # Inbox processing
 # ---------------------------------------------------------------------------
+
+def process_group_inbox() -> int:
+    """Check all groups for new messages and reply. Returns reply count."""
+    global _processed_group_msgs
+    groups = list_my_groups()
+    replied = 0
+    for g in groups:
+        group_id, group_name = g["id"], g["name"]
+        history = fetch_group_context(group_id)
+        new_msgs = [
+            m for m in history
+            if m["from_id"] != str(AGENT_ID) and m["id"] not in _processed_group_msgs
+        ]
+        if not new_msgs:
+            continue
+        for m in new_msgs:
+            _processed_group_msgs.add(m["id"])
+
+        last_msg = new_msgs[-1]["body"]
+        print(f"\n[group:{group_name}] new message: {last_msg[:80]}")
+        print(f"[ctx] {len(history)} messages in group history")
+
+        reply, memory_block = claude_group_reply_and_memorize(
+            AGENT_ID, group_id, group_name, history
+        )
+        print(f"[group reply] {reply}")
+
+        try:
+            requests.post(
+                f"{SERVER}{MSG}/groups/{group_id}/send",
+                json={"from": AGENT_ID, "body": reply},
+                headers=_headers({"Content-Type": "application/json"}),
+                timeout=5,
+            )
+            replied += 1
+        except Exception as exc:
+            print(f"[group reply] send error: {exc}", file=sys.stderr)
+            continue
+
+        try:
+            apply_memory(memory_block)
+        except Exception as exc:
+            print(f"[memory] error: {exc}", file=sys.stderr)
+
+    return replied
+
+
+def init_group_state() -> None:
+    """On startup, mark all existing group messages as seen (avoid replying to history)."""
+    global _processed_group_msgs
+    for g in list_my_groups():
+        for m in fetch_group_context(g["id"]):
+            _processed_group_msgs.add(m["id"])
+    if _processed_group_msgs:
+        print(f"[agent] {len(_processed_group_msgs)} existing group message(s) marked as seen")
+
 
 def process_inbox() -> int:
     """Read all unread messages, reply with full context. Returns reply count."""
@@ -314,6 +490,9 @@ def process_inbox() -> int:
             apply_memory(memory_block)
         except Exception as exc:
             print(f"[memory] error: {exc}", file=sys.stderr)
+
+    # Also check group chats for new messages
+    replied += process_group_inbox()
 
     return replied
 
@@ -473,6 +652,9 @@ def main() -> None:
             )
         except Exception:
             pass
+
+    # Mark existing group messages as seen (don't reply to history on startup)
+    init_group_state()
 
     # Process any messages already waiting
     n = process_inbox()

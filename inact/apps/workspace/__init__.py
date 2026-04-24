@@ -89,7 +89,8 @@ def mount_workspace(
     tasks_prefix  = f"{p}/tasks"
     mail_prefix   = f"{p}/mail"
 
-    mount_register(inact_app, agents_prefix, storage)
+    mount_register(inact_app, agents_prefix, storage,
+                   notify_storage=notify_storage)
 
     mount_message(inact_app, msg_prefix, storage,
                   agents_prefix=agents_prefix,
@@ -102,6 +103,7 @@ def mount_workspace(
     if smtp_port or smtp_host_env:
         mount_mailbox(inact_app, mail_prefix, storage,
                       registry=storage,
+                      notify_storage=notify_storage,
                       smtp_port=smtp_port or 2525,
                       relay_host=relay_host,
                       relay_port=relay_port,

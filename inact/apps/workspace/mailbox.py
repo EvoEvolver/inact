@@ -124,10 +124,11 @@ class MailStore:
 # ---------------------------------------------------------------------------
 
 class _InboundHandler:
-    """aiosmtpd handler — parses and stores every accepted message."""
+    """aiosmtpd handler — parses, stores, and optionally notifies on inbound mail."""
 
-    def __init__(self, store: MailStore):
-        self._store = store
+    def __init__(self, store: MailStore, notify_fn=None):
+        self._store     = store
+        self._notify_fn = notify_fn  # callable(to_addr, from_addr, subject) or None
 
     async def handle_DATA(self, server, session, envelope) -> str:
         try:
@@ -138,15 +139,20 @@ class _InboundHandler:
             body      = _extract_body(msg)
             for to_addr in envelope.rcpt_tos:
                 # Strip plus-tag so to_addr matches the agent's registered email.
-                # e.g. bot+1@domain.com → bot@domain.com
                 canonical = _strip_plus(to_addr)
                 self._store.save("inbox", from_addr, canonical, subject, body)
+                if self._notify_fn:
+                    try:
+                        self._notify_fn(canonical, from_addr, subject)
+                    except Exception:
+                        pass
         except Exception as exc:
             log.warning("mailbox: failed to store incoming message: %s", exc)
         return "250 Message accepted"
 
 
-def _start_smtp_server(store: MailStore, host: str, port: int) -> None:
+def _start_smtp_server(store: MailStore, host: str, port: int,
+                        notify_fn=None) -> None:
     """Start aiosmtpd in a daemon thread."""
     try:
         from aiosmtpd.controller import Controller
@@ -155,7 +161,8 @@ def _start_smtp_server(store: MailStore, host: str, port: int) -> None:
             "aiosmtpd is required for the embedded SMTP server: pip install aiosmtpd"
         )
 
-    controller = Controller(_InboundHandler(store), hostname=host, port=port)
+    controller = Controller(_InboundHandler(store, notify_fn=notify_fn),
+                            hostname=host, port=port)
     controller.start()
     log.info("mailbox: SMTP server listening on %s:%d", host, port)
     # controller runs its own thread; we just keep a reference so it isn't GC'd
@@ -508,6 +515,7 @@ def mount_mailbox(
     prefix: str,
     storage,
     registry=None,
+    notify_storage=None,
     smtp_host: str = "localhost",
     smtp_port: int | None = None,
     relay_host: str = "",
@@ -567,8 +575,32 @@ def mount_mailbox(
     r_user = relay_user or os.environ.get("SMTP_RELAY_USER", "")
     r_pass = relay_password or os.environ.get("SMTP_RELAY_PASSWORD", "")
 
+    # Build notify_fn for inbound email notifications
+    inbound_notify_fn = None
+    if notify_storage is not None:
+        from ..notify import NotifyStore, _push
+        ns = make_storage(notify_storage) if isinstance(notify_storage, str) else notify_storage
+        nstore = NotifyStore(ns)
+
+        def inbound_notify_fn(to_email: str, from_email: str, subject: str) -> None:
+            # Look up which agent owns this email address and notify them
+            if reg is not None:
+                # Find agent by email using the registry storage
+                row = reg._s.fetchone(
+                    "SELECT id FROM agents WHERE email = ?", (to_email,)
+                )
+                if row:
+                    agent_id = str(row["id"])
+                    notif_id = nstore.send(
+                        agent_id,
+                        f"New email from {from_email}: {subject}",
+                        from_email,
+                    )
+                    _push(nstore, agent_id, notif_id,
+                          f"New email from {from_email}: {subject}", from_email)
+
     # Start the embedded SMTP server
-    _start_smtp_server(store, smtp_host, port)
+    _start_smtp_server(store, smtp_host, port, notify_fn=inbound_notify_fn)
 
     p = "/" + prefix.strip("/")
     attach_mailbox(inact_app, p, store, registry=reg,

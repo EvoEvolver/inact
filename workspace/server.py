@@ -193,12 +193,7 @@ if TAVILY_KEY:
     mount_search(app, "/search", api_key=TAVILY_KEY)
 
 # Auth: require X-Api-Key on everything except discovery + UI
-mount_auth(app, STORAGE, public=[
-    "/",
-    "/_human",
-    "/.help",
-    "/agents/",   # listing is public so new agents can discover others
-])
+mount_auth(app, STORAGE)   # uses default public list: /, /.help, /agents/, /_human/agents/
 
 # ---------------------------------------------------------------------------
 # Entry point

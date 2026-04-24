@@ -70,6 +70,8 @@ function load() {
   const key = localStorage.getItem('inact_api_key');
   const nm  = localStorage.getItem('inact_name') || '';
   if (id && key) {
+    // Refresh cookie on every visit so it doesn't expire silently
+    document.cookie = '_inact_key=' + key + '; path=/; SameSite=Lax; Max-Age=' + (30 * 24 * 3600);
     document.getElementById('logged').hidden = false;
     document.getElementById('form-section').hidden = true;
     document.getElementById('li-id').textContent = id;
@@ -108,6 +110,8 @@ document.getElementById('reg-btn').addEventListener('click', async () => {
     localStorage.setItem('inact_agent_id', id);
     localStorage.setItem('inact_api_key',  key);
     localStorage.setItem('inact_name',     name);
+    // Set session cookie so browser navigation to other /_human/* pages is auth'd
+    document.cookie = '_inact_key=' + key + '; path=/; SameSite=Lax; Max-Age=' + (30 * 24 * 3600);
     document.getElementById('form-section').hidden = true;
     document.getElementById('ok').hidden = false;
     document.getElementById('new-id').textContent  = id;
@@ -126,6 +130,7 @@ document.getElementById('name').addEventListener('keydown', e => {
 document.getElementById('logout').addEventListener('click', e => {
   e.preventDefault();
   ['inact_agent_id', 'inact_api_key', 'inact_name'].forEach(k => localStorage.removeItem(k));
+  document.cookie = '_inact_key=; path=/; Max-Age=0';
   location.reload();
 });
 

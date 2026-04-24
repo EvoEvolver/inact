@@ -2,41 +2,47 @@
 API-key authentication middleware for inact.
 
 mount_auth(inact_app, registry_storage, public=None) registers a
-Flask before_request hook that validates every incoming request against
-the agents registry.
+Flask before_request hook that validates every incoming request.
 
-Requests must include:
-    X-Api-Key: <api_key received at registration>
+Accepted credentials (in order):
+  1. X-Api-Key header
+  2. ?api_key= query parameter
+  3. _inact_key cookie  (set by browser after registering in /_human/agents/)
 
-Public paths are exempt (no key needed). Defaults:
-    /_human/*    browser UI pages
-    /.help        help pages
-    /agents/      agent listing (discovery)
+Public paths skip auth entirely. Defaults:
+  /          home / docs
+  /.help     help pages
+  /agents/   agent listing (discovery + self-registration)
+  /_human/agents/   human registration page
+
+All other routes — including /_human/* pages beyond registration — require
+a valid key.  Browsers get the key via the _inact_key cookie which the
+register page sets automatically on registration.
 
 Example::
 
     mount_auth(app, "./agents.db")
-
-    # custom public paths
-    mount_auth(app, "./agents.db", public=["/agents/", "/_human/", "/status"])
+    mount_auth(app, "./agents.db", public=["/", "/agents/", "/_human/agents/"])
 """
 
 from __future__ import annotations
 
 from flask import request
 
-from ..utils import text_response
+from ..utils import text_response, html_response
+
+_SESSION_COOKIE = "_inact_key"
 
 _DEFAULT_PUBLIC = [
-    "/_human",
+    "/",
     "/.help",
-    "/agents/",     # agent listing — public so new agents can discover others
+    "/agents/",           # registration + listing
+    "/_human/agents/",    # human registration page
+    "/_human/agents",
 ]
 
 
 class _AuthStore:
-    """Minimal wrapper — only needs to validate an api_key."""
-
     def __init__(self, storage):
         self._s = storage
 
@@ -53,41 +59,51 @@ def mount_auth(
     public: list[str] | None = None,
 ) -> None:
     """
-    Require ``X-Api-Key`` on every route that is not in *public*.
+    Require a valid API key on every route not in *public*.
 
-    *registry_storage* — same storage passed to :func:`~inact.apps.register.mount_register`.
-    *public*           — list of path prefixes that skip auth (default: see module docstring).
+    Browsers that have registered via ``/_human/agents/`` have their key
+    stored in a ``_inact_key`` cookie (set by the registration page JS).
+    This cookie is checked automatically so browser page navigation works
+    without manual headers.
 
-    Example::
-
-        mount_auth(app, "./agents.db")
-        mount_auth(app, "./agents.db", public=["/agents/", "/_human/", "/status"])
+    *registry_storage* — same storage as :func:`~inact.apps.register.mount_register`.
+    *public*           — path prefixes that skip auth entirely.
     """
     from ..storage import make_storage
 
     backend = make_storage(registry_storage) if isinstance(registry_storage, str) else registry_storage
     store = _AuthStore(backend)
-
     exempt = list(public) if public is not None else list(_DEFAULT_PUBLIC)
 
     def _check():
         path = request.path
 
-        # Always allow OPTIONS (CORS preflight)
         if request.method == "OPTIONS":
             return None
 
         # Exempt public prefixes
         for prefix in exempt:
-            if path == prefix or path.startswith(prefix.rstrip("/") + "/") or path == prefix.rstrip("/"):
+            if prefix in ("/", ""):
+                # exact match only — don't exempt everything
+                if path == "/":
+                    return None
+                continue
+            p = prefix.rstrip("/")
+            if path == p or path == p + "/" or path.startswith(p + "/"):
                 return None
 
+        # Resolve key: header → query param → cookie
         api_key = (
             request.headers.get("X-Api-Key", "")
             or request.args.get("api_key", "")
+            or request.cookies.get(_SESSION_COOKIE, "")
         ).strip()
 
         if not api_key:
+            # Browser page request → redirect to register page
+            if path.startswith("/_human/"):
+                from flask import redirect
+                return redirect("/_human/agents/")
             return text_response(
                 "ERROR 401: X-Api-Key header required\n"
                 "  Register at POST /agents/ to get an API key.\n",
@@ -95,15 +111,18 @@ def mount_auth(
             )
 
         if not store.valid_key(api_key):
+            if path.startswith("/_human/"):
+                from flask import redirect
+                return redirect("/_human/agents/")
             return text_response("ERROR 403: invalid api_key\n", 403)
 
-        return None  # allow
+        return None
 
     inact_app.app.before_request(_check)
 
     inact_app._app_mounts.append(("/_auth", (
-        "\nAuth: all routes require X-Api-Key header\n"
-        "  Register: POST /agents/  → get api_key\n"
-        "  Use:      X-Api-Key: <key>  on every request\n"
-        "  Public:   " + "  ".join(exempt) + "\n"
+        "\nAuth: all routes require X-Api-Key\n"
+        "  Header:  X-Api-Key: <key>\n"
+        "  Cookie:  _inact_key=<key>  (set by /_human/agents/ on registration)\n"
+        "  Public:  " + "  ".join(exempt) + "\n"
     )))

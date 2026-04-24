@@ -143,3 +143,35 @@ def mount_s3(
     client = boto3.client("s3", **kwargs)
     fs = S3FS(bucket, key_prefix, client)
     mount_files(inact_app, prefix, fs, handlers=handlers)
+
+    # Append S3 setup docs to the help entry just registered by mount_files().
+    # Agents reading <prefix>/.help will see both the route surface and how to
+    # reproduce this mount in their own code.
+    p = prefix.rstrip("/") or "/"
+    cred_example = ""
+    if aws_access_key_id:
+        cred_example = (
+            f'\n             aws_access_key_id="{aws_access_key_id}",'
+            f'\n             aws_secret_access_key="<secret>",'
+        )
+    endpoint_example = f'\n             endpoint_url="{endpoint_url}",' if endpoint_url else ""
+    region_example = f'\n             region_name="{region_name}",' if region_name else ""
+    s3_doc = (
+        f"\n  --- How to mount this S3 filesystem in your own code ---\n"
+        f"  pip install boto3 inact\n\n"
+        f"  from inact import mount_s3\n"
+        f"  mount_s3(app, \"{p}\", \"{s3_url}\","
+        f"{region_example}{endpoint_example}{cred_example})\n\n"
+        f"  Key parameters:\n"
+        f"    s3_url              s3://bucket or s3://bucket/prefix\n"
+        f"    region_name         AWS region (or set AWS_DEFAULT_REGION)\n"
+        f"    endpoint_url        MinIO / LocalStack / S3-compatible endpoint\n"
+        f"    aws_access_key_id   explicit credentials (or use env vars /\n"
+        f"    aws_secret_access_key  ~/.aws/credentials / IAM role)\n"
+        f"    handlers            list of FileHandler instances (e.g. CSVHandler)\n\n"
+        f"  Env vars boto3 picks up automatically:\n"
+        f"    AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_DEFAULT_REGION\n"
+    )
+    if inact_app._app_mounts:
+        mp, ht = inact_app._app_mounts[-1]
+        inact_app._app_mounts[-1] = (mp, ht + s3_doc)

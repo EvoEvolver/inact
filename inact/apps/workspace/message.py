@@ -368,7 +368,7 @@ def mount_message(inact_app, prefix: str, storage,
 
     notify_fn = None
     if notify_storage is not None:
-        from .notify import NotifyStore, _push
+        from ..notify import NotifyStore, _push
         ns = make_storage(notify_storage) if isinstance(notify_storage, str) else notify_storage
         nstore = NotifyStore(ns)
 

@@ -60,6 +60,7 @@ def mount_workspace(
     relay_user: str = "",
     relay_password: str = "",
     notify_storage: str | None = None,
+    admin_key: str = "",
 ) -> None:
     """
     Mount the full agent workspace at *prefix*.
@@ -91,7 +92,7 @@ def mount_workspace(
     mail_prefix   = f"{p}/mail"
 
     mount_register(inact_app, agents_prefix, storage,
-                   notify_storage=notify_storage)
+                   notify_storage=notify_storage, admin_key=admin_key)
 
     mount_message(inact_app, msg_prefix, storage,
                   agents_prefix=agents_prefix,

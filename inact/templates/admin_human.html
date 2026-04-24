@@ -1,0 +1,246 @@
+{% extends "base.html" %}
+{% block content %}
+<h1 class="page-title">Admin — Registry</h1>
+
+{# ── Admin key gate ── #}
+<div id="auth-gate" hidden
+     style="background:#fff;border:1px solid #e0e0e0;border-radius:10px;padding:24px;max-width:420px;margin-bottom:20px">
+  <p style="font-size:14px;color:#666;margin-bottom:12px">Enter the admin key to manage the registry.</p>
+  <div style="display:flex;gap:8px">
+    <input id="admin-key-input" type="password" placeholder="Admin key" style="flex:1">
+    <button class="primary" id="admin-login-btn">Unlock</button>
+  </div>
+  <div id="auth-err" style="color:#cc0000;font-size:13px;margin-top:8px"></div>
+</div>
+
+<div id="admin-panel" hidden>
+  {# ── Stats bar ── #}
+  <div style="display:flex;gap:10px;margin-bottom:20px;flex-wrap:wrap">
+    <div class="toml-scalars" style="flex:1;min-width:140px">
+      <table><tr><td class="kkey">Total</td><td class="kval" id="stat-total">—</td></tr></table>
+    </div>
+    <div class="toml-scalars" style="flex:1;min-width:140px">
+      <table><tr><td class="kkey" style="color:#0066cc">Agents</td><td class="kval" id="stat-agents">—</td></tr></table>
+    </div>
+    <div class="toml-scalars" style="flex:1;min-width:140px">
+      <table><tr><td class="kkey" style="color:#22863a">Humans</td><td class="kval" id="stat-humans">—</td></tr></table>
+    </div>
+  </div>
+
+  {# ── Create form ── #}
+  <div style="background:#fff;border:1px solid #e0e0e0;border-radius:10px;padding:20px;margin-bottom:20px">
+    <h2 style="font-size:15px;margin:0 0 14px;font-weight:700">Create new entry</h2>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:12px">
+      <input id="c-name"  placeholder="Name">
+      <select id="c-kind" style="border:1px solid #ddd;border-radius:8px;padding:9px 10px;font-size:14px">
+        <option value="agent">🤖 Agent</option>
+        <option value="human">👤 Human</option>
+      </select>
+      <input id="c-email"    placeholder="Email (optional)">
+      <input id="c-callback" placeholder="Callback URL (agents)">
+    </div>
+    <div style="display:flex;gap:10px;align-items:center">
+      <button class="primary" id="c-create">Create</button>
+      <span id="c-result" style="font-size:13px;color:#22863a;font-family:ui-monospace,monospace"></span>
+    </div>
+  </div>
+
+  {# ── Filter + table ── #}
+  <div style="display:flex;gap:8px;margin-bottom:12px;align-items:center">
+    <input id="search-input" placeholder="Filter by name or email…"
+           style="max-width:240px;border:1px solid #ddd;border-radius:8px;padding:7px 10px;font-size:13px">
+    <select id="kind-filter" style="border:1px solid #ddd;border-radius:8px;padding:7px 10px;font-size:13px">
+      <option value="">All kinds</option>
+      <option value="agent">Agents</option>
+      <option value="human">Humans</option>
+    </select>
+    <button class="primary" id="refresh-btn"
+            style="padding:6px 12px;font-size:13px;margin-left:auto">Refresh</button>
+  </div>
+
+  <div class="toml-array">
+    <table id="registry-table">
+      <thead><tr>
+        <th>ID</th><th>Kind</th><th>Name</th><th>Email</th>
+        <th>API Key</th><th>Created</th><th></th>
+      </tr></thead>
+      <tbody id="registry-body">
+        <tr><td colspan="7" style="color:#aaa;text-align:center;padding:20px">Loading…</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const P   = {{ prefix | tojson }};
+let adminKey = sessionStorage.getItem('inact_admin_key') || '';
+
+function H(extra) {
+  return Object.assign({'X-Admin-Key': adminKey, 'X-Api-Key': localStorage.getItem('inact_api_key')||''}, extra||{});
+}
+function esc(s) { return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+
+/* ── Auth gate ── */
+async function tryUnlock(key) {
+  const r = await fetch(`${P}/.admin/list`, {headers: {'X-Admin-Key': key}});
+  return r.ok || r.status !== 401;
+}
+
+async function init() {
+  if (adminKey) {
+    const ok = await tryUnlock(adminKey);
+    if (ok) { showPanel(); return; }
+    adminKey = '';
+    sessionStorage.removeItem('inact_admin_key');
+  }
+  document.getElementById('auth-gate').hidden = false;
+}
+
+document.getElementById('admin-login-btn').addEventListener('click', async () => {
+  const key = document.getElementById('admin-key-input').value.trim();
+  const errEl = document.getElementById('auth-err');
+  if (!key) return;
+  const ok = await tryUnlock(key);
+  if (!ok) { errEl.textContent = 'Invalid admin key.'; return; }
+  adminKey = key;
+  sessionStorage.setItem('inact_admin_key', key);
+  document.getElementById('auth-gate').hidden = true;
+  showPanel();
+});
+document.getElementById('admin-key-input').addEventListener('keydown', e => {
+  if (e.key === 'Enter') document.getElementById('admin-login-btn').click();
+});
+
+function showPanel() {
+  document.getElementById('admin-panel').hidden = false;
+  load();
+}
+
+/* ── Load all entries ── */
+let allEntries = [];
+
+async function load() {
+  const text = await fetch(`${P}/.admin/list`, {headers: H()}).then(r => r.text());
+  allEntries = parseEntries(text);
+  renderStats();
+  renderTable();
+}
+
+function parseEntries(text) {
+  return text.split('[[entries]]').slice(1).map(b => {
+    const o = {};
+    b.split('\n').forEach(l => {
+      const m = l.match(/^(\w+)\s*=\s*"([^"]*)"/) || l.match(/^(\w+)\s*=\s*(\S+)/);
+      if (m) o[m[1]] = m[2];
+    });
+    return o;
+  }).filter(o => o.id);
+}
+
+function renderStats() {
+  const agents = allEntries.filter(e => e.kind === 'agent').length;
+  const humans = allEntries.filter(e => e.kind === 'human').length;
+  document.getElementById('stat-total').textContent   = allEntries.length;
+  document.getElementById('stat-agents').textContent  = agents;
+  document.getElementById('stat-humans').textContent  = humans;
+}
+
+function renderTable() {
+  const q    = document.getElementById('search-input').value.toLowerCase();
+  const kind = document.getElementById('kind-filter').value;
+  const rows = allEntries
+    .filter(e => (!kind || e.kind === kind))
+    .filter(e => !q || (e.name||'').toLowerCase().includes(q) || (e.email||'').toLowerCase().includes(q));
+
+  const tbody = document.getElementById('registry-body');
+  if (!rows.length) {
+    tbody.innerHTML = '<tr><td colspan="7" style="color:#aaa;text-align:center;padding:20px">No entries.</td></tr>';
+    return;
+  }
+  tbody.innerHTML = rows.map(e => {
+    const kindBadge = e.kind === 'human'
+      ? '<span style="background:#e8f5e9;color:#22863a;border-radius:10px;padding:2px 8px;font-size:11px">👤 human</span>'
+      : '<span style="background:#e8f0fe;color:#0066cc;border-radius:10px;padding:2px 8px;font-size:11px">🤖 agent</span>';
+    return `<tr>
+      <td style="color:#888;font-size:13px">#${esc(e.id)}</td>
+      <td>${kindBadge}</td>
+      <td><strong>${esc(e.name) || '<em style="color:#aaa">unnamed</em>'}</strong></td>
+      <td style="font-size:12px;color:#666">${esc(e.email)}</td>
+      <td>
+        <span style="font-family:ui-monospace,monospace;font-size:11px;color:#888">${esc((e.api_key||'').slice(0,16))}…</span>
+        <button onclick="copyKey('${esc(e.api_key)}')"
+                style="background:none;border:none;cursor:pointer;font-size:11px;color:#0066cc;padding:0 4px">copy</button>
+        <button onclick="rekey('${esc(e.id)}')"
+                style="background:none;border:none;cursor:pointer;font-size:11px;color:#e07000;padding:0 2px">rekey</button>
+      </td>
+      <td style="font-size:12px;color:#aaa">${esc((e.created_at||'').slice(0,10))}</td>
+      <td>
+        <button onclick="del('${esc(e.id)}')"
+                style="background:none;border:none;cursor:pointer;color:#cc0000;font-size:12px">delete</button>
+      </td>
+    </tr>`;
+  }).join('');
+}
+
+function copyKey(key) {
+  navigator.clipboard.writeText(key).then(() => {
+    const old = event.target.textContent;
+    event.target.textContent = '✓';
+    setTimeout(() => { event.target.textContent = old; }, 1200);
+  });
+}
+
+async function rekey(id) {
+  if (!confirm(`Re-issue API key for entry #${id}? The old key will stop working.`)) return;
+  const r    = await fetch(`${P}/.admin/${id}/rekey`, {method:'POST', headers: H()});
+  const text = await r.text();
+  const m    = text.match(/api_key\s*=\s*"([^"]+)"/);
+  if (m) { alert(`New key for #${id}:\n${m[1]}`); }
+  await load();
+}
+
+async function del(id) {
+  if (!confirm(`Delete entry #${id}? This cannot be undone.`)) return;
+  await fetch(`${P}/.admin/${id}/delete`, {method:'POST', headers: H()});
+  await load();
+}
+
+/* ── Create ── */
+document.getElementById('c-create').addEventListener('click', async () => {
+  const res = document.getElementById('c-result');
+  const r = await fetch(`${P}/.admin/create`, {
+    method: 'POST',
+    headers: H({'Content-Type': 'application/json'}),
+    body: JSON.stringify({
+      name:     document.getElementById('c-name').value.trim(),
+      kind:     document.getElementById('c-kind').value,
+      email:    document.getElementById('c-email').value.trim(),
+      callback: document.getElementById('c-callback').value.trim(),
+    }),
+  });
+  const text = await r.text();
+  if (text.startsWith('OK')) {
+    const m = text.match(/api_key\s*=\s*"([^"]+)"/);
+    res.textContent = m ? `Created — key: ${m[1]}` : 'Created';
+    res.style.color = '#22863a';
+    ['c-name','c-email','c-callback'].forEach(id => document.getElementById(id).value='');
+  } else {
+    res.textContent = text.split('\n')[0];
+    res.style.color = '#cc0000';
+  }
+  await load();
+});
+
+/* ── Filters ── */
+document.getElementById('refresh-btn').addEventListener('click', load);
+document.getElementById('kind-filter').addEventListener('change', renderTable);
+let _d;
+document.getElementById('search-input').addEventListener('input', () => {
+  clearTimeout(_d); _d = setTimeout(renderTable, 200);
+});
+
+init();
+</script>
+{% endblock %}

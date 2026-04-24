@@ -1,22 +1,22 @@
 """
-Agent registry — auto-incrementing integer IDs and API keys for agents.
+Registry — agents and humans share a single identity store.
 
-mount_register(prefix, storage) registers:
-
-  POST   {prefix}/                register a new agent
-                                  body: {"name": "optional", "email": "optional"}
+  POST   {prefix}/                register
+                                  body: {"name":"...","kind":"agent"|"human",
+                                         "email":"...","callback":"http://..."}
                                   returns: id, api_key, url
-  GET    {prefix}/                list all agents (paginated)
-                                  ?page=1&per_page=20
-  GET    {prefix}/{id}            agent public profile (id, name, email, created_at)
-  POST   {prefix}/{id}/.email     set / update email address
-                                  requires X-Api-Key header
-                                  body: {"email": "agent@example.com"}
-  DELETE {prefix}/{id}            deregister agent
-                                  requires X-Api-Key header
+  GET    {prefix}/                list all  ?kind=agent|human  ?page=1&per_page=20
+  GET    {prefix}/{id}            public profile
+  POST   {prefix}/{id}/.email     set email   (own X-Api-Key or admin_key)
+  POST   {prefix}/{id}/.callback  set callback url  (own X-Api-Key or admin_key)
+  DELETE {prefix}/{id}            deregister  (own X-Api-Key or admin_key)
 
-*storage* accepts a :class:`~inact.storage.Storage` object or any URL/path
-accepted by :func:`~inact.storage.make_storage`.
+Admin endpoints  (require X-Admin-Key header):
+  POST   {prefix}/.admin/create   create agent/human with chosen name/kind
+  GET    {prefix}/.admin/list     full list including api_keys
+  DELETE {prefix}/.admin/{id}     force-delete any entry
+
+*storage* accepts a :class:`~inact.storage.Storage` object or URL/path.
 """
 
 from __future__ import annotations
@@ -34,6 +34,7 @@ _DDL = [
         id           INTEGER PRIMARY KEY,
         api_key      TEXT    NOT NULL UNIQUE,
         name         TEXT    NOT NULL DEFAULT '',
+        kind         TEXT    NOT NULL DEFAULT 'agent',
         email        TEXT    NOT NULL DEFAULT '',
         callback_url TEXT    NOT NULL DEFAULT '',
         created_at   BIGINT  NOT NULL
@@ -43,6 +44,7 @@ _DDL = [
 _MIGRATIONS = [
     "ALTER TABLE agents ADD COLUMN email        TEXT NOT NULL DEFAULT ''",
     "ALTER TABLE agents ADD COLUMN callback_url TEXT NOT NULL DEFAULT ''",
+    "ALTER TABLE agents ADD COLUMN kind         TEXT NOT NULL DEFAULT 'agent'",
 ]
 
 _DEFAULT_PER_PAGE = 20
@@ -86,41 +88,73 @@ class AgentRegistry:
                 pass  # column already exists
 
     def register(self, name: str = "", email: str = "",
-                 callback_url: str = "") -> tuple[int, str]:
+                 callback_url: str = "",
+                 kind: str = "agent") -> tuple[int, str]:
+        if kind not in ("agent", "human"):
+            kind = "agent"
         api_key = secrets.token_urlsafe(32)
         ts = int(time.time())
         self._s.execute(
-            "INSERT INTO agents (id, api_key, name, email, callback_url, created_at) "
-            "SELECT COALESCE(MAX(id), 0) + 1, ?, ?, ?, ?, ? FROM agents",
-            (api_key, name, email, callback_url, ts),
+            "INSERT INTO agents (id, api_key, name, kind, email, callback_url, created_at) "
+            "SELECT COALESCE(MAX(id), 0) + 1, ?, ?, ?, ?, ?, ? FROM agents",
+            (api_key, name, kind, email, callback_url, ts),
         )
         row = self._s.fetchone("SELECT id FROM agents WHERE api_key = ?", (api_key,))
         return row["id"], api_key
 
-    def count(self) -> int:
-        row = self._s.fetchone("SELECT COUNT(*) AS cnt FROM agents")
+    def count(self, kind: str | None = None) -> int:
+        if kind:
+            row = self._s.fetchone("SELECT COUNT(*) AS cnt FROM agents WHERE kind=?", (kind,))
+        else:
+            row = self._s.fetchone("SELECT COUNT(*) AS cnt FROM agents")
         return row["cnt"] if row else 0
 
-    def list_agents(self, page: int = 1, per_page: int = _DEFAULT_PER_PAGE) -> list[dict]:
+    def list_agents(self, page: int = 1, per_page: int = _DEFAULT_PER_PAGE,
+                    kind: str | None = None) -> list[dict]:
         offset = (page - 1) * per_page
+        if kind:
+            return self._s.fetchall(
+                "SELECT id, name, kind, email, callback_url, created_at FROM agents "
+                "WHERE kind=? ORDER BY id ASC LIMIT ? OFFSET ?",
+                (kind, per_page, offset),
+            )
         return self._s.fetchall(
-            "SELECT id, name, email, callback_url, created_at FROM agents "
+            "SELECT id, name, kind, email, callback_url, created_at FROM agents "
             "ORDER BY id ASC LIMIT ? OFFSET ?",
             (per_page, offset),
         )
 
+    def list_all_with_keys(self) -> list[dict]:
+        """Admin: returns api_key too."""
+        return self._s.fetchall(
+            "SELECT id, name, kind, email, callback_url, api_key, created_at "
+            "FROM agents ORDER BY id ASC"
+        )
+
     def get(self, agent_id: int) -> dict | None:
         return self._s.fetchone(
-            "SELECT id, name, email, callback_url, created_at FROM agents WHERE id = ?",
+            "SELECT id, name, kind, email, callback_url, created_at FROM agents WHERE id = ?",
             (agent_id,)
         )
 
     def get_by_key(self, api_key: str) -> dict | None:
         """Look up a full agent record by API key (for auth in other apps)."""
         return self._s.fetchone(
-            "SELECT id, name, email, callback_url, created_at FROM agents WHERE api_key = ?",
+            "SELECT id, name, kind, email, callback_url, created_at FROM agents WHERE api_key = ?",
             (api_key,)
         )
+
+    def force_delete(self, agent_id: int) -> bool:
+        """Admin: delete without checking api_key."""
+        return self._s.execute("DELETE FROM agents WHERE id = ?", (agent_id,)) > 0
+
+    def regenerate_key(self, agent_id: int) -> str | None:
+        """Admin: issue a fresh api_key for an existing entry."""
+        new_key = secrets.token_urlsafe(32)
+        ok = self._s.execute(
+            "UPDATE agents SET api_key = ? WHERE id = ?", (new_key, agent_id)
+        ) > 0
+        return new_key if ok else None
 
     def set_callback(self, agent_id: int, api_key: str, callback_url: str) -> bool:
         return self._s.execute(
@@ -145,10 +179,14 @@ class AgentRegistry:
 # ---------------------------------------------------------------------------
 
 def attach_register(inact_app, prefix: str, registry: AgentRegistry,
-                    notify_fn=None) -> None:
+                    notify_fn=None, admin_key: str = "") -> None:
     prefix = "/" + prefix.strip("/")
     ep = "_inact_register_" + prefix.replace("/", "__")
     flask_app = inact_app.app
+
+    def _is_admin() -> bool:
+        return bool(admin_key and
+                    request.headers.get("X-Admin-Key", "").strip() == admin_key)
 
     def _root():
         if request.method == "POST":
@@ -156,13 +194,14 @@ def attach_register(inact_app, prefix: str, registry: AgentRegistry,
             name         = (body.get("name")     or "").strip()
             email        = (body.get("email")    or "").strip()
             callback_url = (body.get("callback") or "").strip()
-            agent_id, api_key = registry.register(name, email, callback_url)
-            # Propagate callback to notify system in one shot
+            kind         = (body.get("kind")     or "agent").strip()
+            agent_id, api_key = registry.register(name, email, callback_url, kind)
             if callback_url and notify_fn:
                 notify_fn(str(agent_id), callback_url)
             lines = [
                 "OK\n",
                 f"id      = {agent_id}\n",
+                f"kind    = {toml_str(kind)}\n",
                 f"api_key = {toml_str(api_key)}\n",
                 f"url     = {toml_str(prefix + '/' + str(agent_id))}\n",
             ]
@@ -171,13 +210,17 @@ def attach_register(inact_app, prefix: str, registry: AgentRegistry,
             if callback_url:
                 lines.append(f"callback = {toml_str(callback_url)}\n")
             return text_response("".join(lines))
+
+        kind_filter = request.args.get("kind", "").strip() or None
         page, per_page = _parse_page_params()
-        total = registry.count()
-        agents = registry.list_agents(page, per_page)
-        lines = ["# Agents\n", _page_header(page, per_page, total), "\n"]
+        total = registry.count(kind_filter)
+        agents = registry.list_agents(page, per_page, kind_filter)
+        label = f"# {'Humans' if kind_filter=='human' else 'Agents' if kind_filter=='agent' else 'All'}\n"
+        lines = [label, _page_header(page, per_page, total), "\n"]
         for a in agents:
             lines.append("[[agents]]\n")
             lines.append(f"id         = {a['id']}\n")
+            lines.append(f"kind       = {toml_str(a.get('kind','agent'))}\n")
             if a["name"]:
                 lines.append(f"name       = {toml_str(a['name'])}\n")
             if a["email"]:
@@ -193,27 +236,25 @@ def attach_register(inact_app, prefix: str, registry: AgentRegistry,
         except ValueError:
             return text_response("ERROR 400: agent id must be an integer\n", 400)
         if request.method == "DELETE":
-            api_key = request.headers.get("X-Api-Key", "").strip()
-            if not api_key:
-                return text_response(
-                    "ERROR 401: X-Api-Key header required\n"
-                    f"Usage: DELETE {prefix}/{{id}}\n"
-                    "  Header: X-Api-Key: <your api_key>\n",
-                    401,
-                )
-            ok = registry.delete(aid, api_key)
+            if _is_admin():
+                ok = registry.force_delete(aid)
+            else:
+                api_key = request.headers.get("X-Api-Key", "").strip()
+                if not api_key:
+                    return text_response("ERROR 401: X-Api-Key or X-Admin-Key required\n", 401)
+                ok = registry.delete(aid, api_key)
             if not ok:
-                return text_response(
-                    "ERROR 404: agent not found or api_key mismatch\n", 404
-                )
+                return text_response("ERROR 404: not found or key mismatch\n", 404)
             return text_response("OK\n")
         agent = registry.get(aid)
         if not agent:
             return text_response("ERROR 404: agent not found\n", 404)
-        display = agent["name"] or f"agent {aid}"
+        kind    = agent.get("kind", "agent")
+        display = agent["name"] or f"{kind} {aid}"
         lines = [
             f"# {display}\n\n",
             f"id         = {agent['id']}\n",
+            f"kind       = {toml_str(kind)}\n",
         ]
         if agent["name"]:
             lines.append(f"name         = {toml_str(agent['name'])}\n")
@@ -237,22 +278,26 @@ def attach_register(inact_app, prefix: str, registry: AgentRegistry,
             aid = int(agent_id)
         except ValueError:
             return text_response("ERROR 400: agent id must be an integer\n", 400)
-        api_key = request.headers.get("X-Api-Key", "").strip()
-        if not api_key:
-            return text_response(
-                "ERROR 401: X-Api-Key header required\n"
-                f"Usage: POST {prefix}/{{id}}/.email\n"
-                "  Header: X-Api-Key: <your api_key>\n"
-                '  Body:   {"email": "you@example.com"}\n',
-                401,
-            )
+        if not _is_admin():
+            api_key = request.headers.get("X-Api-Key", "").strip()
+            if not api_key:
+                return text_response("ERROR 401: X-Api-Key or X-Admin-Key required\n", 401)
+            body = request.get_json(force=True, silent=True) or {}
+            email = (body.get("email") or "").strip()
+            if not email:
+                return text_response("ERROR 400: 'email' required\n", 400)
+            ok = registry.set_email(aid, api_key, email)
+            if not ok:
+                return text_response("ERROR 404: not found or api_key mismatch\n", 404)
+            return text_response(f"OK\nemail = {toml_str(email)}\n")
+        # Admin path — no api_key check
         body = request.get_json(force=True, silent=True) or {}
         email = (body.get("email") or "").strip()
         if not email:
             return text_response("ERROR 400: 'email' required\n", 400)
-        ok = registry.set_email(aid, api_key, email)
+        ok = registry._s.execute("UPDATE agents SET email=? WHERE id=?", (email, aid)) > 0
         if not ok:
-            return text_response("ERROR 404: agent not found or api_key mismatch\n", 404)
+            return text_response("ERROR 404: agent not found\n", 404)
         return text_response(f"OK\nemail = {toml_str(email)}\n")
 
     def _human():
@@ -293,6 +338,69 @@ def attach_register(inact_app, prefix: str, registry: AgentRegistry,
             notify_fn(str(aid), callback_url)
         return text_response(f"OK\ncallback = {toml_str(callback_url)}\n")
 
+    def _admin_require() -> bool | tuple:
+        if not admin_key:
+            return text_response("ERROR 503: admin_key not configured on this server\n", 503)
+        if request.headers.get("X-Admin-Key", "").strip() != admin_key:
+            return text_response("ERROR 401: X-Admin-Key required\n", 401)
+        return True
+
+    def _admin_list():
+        auth = _admin_require()
+        if auth is not True: return auth
+        entries = registry.list_all_with_keys()
+        lines = [f"# All entries ({len(entries)})\n\n"]
+        for e in entries:
+            lines += [
+                "[[entries]]\n",
+                f"id         = {e['id']}\n",
+                f"kind       = {toml_str(e.get('kind','agent'))}\n",
+                f"name       = {toml_str(e['name'])}\n",
+                f"api_key    = {toml_str(e['api_key'])}\n",
+                f"email      = {toml_str(e['email'])}\n",
+                f"created_at = {toml_str(_fmt_ts(e['created_at']))}\n",
+                "\n",
+            ]
+        return text_response("".join(lines))
+
+    def _admin_create():
+        auth = _admin_require()
+        if auth is not True: return auth
+        body = request.get_json(force=True, silent=True) or {}
+        name  = (body.get("name")  or "").strip()
+        kind  = (body.get("kind")  or "agent").strip()
+        email = (body.get("email") or "").strip()
+        cb    = (body.get("callback") or "").strip()
+        agent_id, api_key = registry.register(name, email, cb, kind)
+        if cb and notify_fn:
+            notify_fn(str(agent_id), cb)
+        return text_response(
+            f"OK\nid      = {agent_id}\nkind    = {toml_str(kind)}\n"
+            f"api_key = {toml_str(api_key)}\n"
+        )
+
+    def _admin_delete(agent_id: str):
+        auth = _admin_require()
+        if auth is not True: return auth
+        try:
+            aid = int(agent_id)
+        except ValueError:
+            return text_response("ERROR 400: integer id required\n", 400)
+        ok = registry.force_delete(aid)
+        return text_response("OK\n" if ok else "ERROR 404: not found\n", 200 if ok else 404)
+
+    def _admin_rekey(agent_id: str):
+        auth = _admin_require()
+        if auth is not True: return auth
+        try:
+            aid = int(agent_id)
+        except ValueError:
+            return text_response("ERROR 400: integer id required\n", 400)
+        new_key = registry.regenerate_key(aid)
+        if not new_key:
+            return text_response("ERROR 404: not found\n", 404)
+        return text_response(f"OK\napi_key = {toml_str(new_key)}\n")
+
     flask_app.add_url_rule(
         prefix + "/",
         endpoint=ep + "_root", view_func=_root, methods=["GET", "POST"])
@@ -305,11 +413,30 @@ def attach_register(inact_app, prefix: str, registry: AgentRegistry,
     flask_app.add_url_rule(
         prefix + "/<agent_id>/.callback",
         endpoint=ep + "_callback", view_func=_set_callback, methods=["POST"])
+    flask_app.add_url_rule(
+        prefix + "/.admin/list",
+        endpoint=ep + "_admin_list", view_func=_admin_list)
+    flask_app.add_url_rule(
+        prefix + "/.admin/create",
+        endpoint=ep + "_admin_create", view_func=_admin_create, methods=["POST"])
+    flask_app.add_url_rule(
+        prefix + "/.admin/<agent_id>/delete",
+        endpoint=ep + "_admin_delete", view_func=_admin_delete, methods=["POST"])
+    flask_app.add_url_rule(
+        prefix + "/.admin/<agent_id>/rekey",
+        endpoint=ep + "_admin_rekey", view_func=_admin_rekey, methods=["POST"])
+    def _admin_human(path: str):
+        from inact.render import render_template
+        from inact.utils import html_response
+        return html_response(render_template("admin_human.html",
+            title="Admin", prefix=prefix, nav="", pills=[]))
+
     inact_app._human_views[prefix] = lambda path: _human()
+    inact_app._human_views[prefix + "/.admin"] = _admin_human
 
 
 def mount_register(inact_app, prefix: str, storage,
-                   notify_storage=None) -> None:
+                   notify_storage=None, admin_key: str = "") -> None:
     """
     Mount an agent registry at *prefix*.
 
@@ -335,7 +462,8 @@ def mount_register(inact_app, prefix: str, storage,
         def notify_fn(agent_id: str, callback_url: str) -> None:
             nstore.register_callback(agent_id, callback_url)
 
-    attach_register(inact_app, p, AgentRegistry(backend), notify_fn=notify_fn)
+    attach_register(inact_app, p, AgentRegistry(backend),
+                    notify_fn=notify_fn, admin_key=admin_key)
     inact_app._app_mounts.append((p, (
         f"\nAgent registry: {p}\n"
         f'  POST   {p}/               register  body: {{"name":"...","email":"...","callback":"http://..."}}\n'

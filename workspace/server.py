@@ -75,7 +75,8 @@ RELAY_PORT   = int(os.environ.get("SMTP_RELAY_PORT", "587"))
 RELAY_USER   = os.environ.get("SMTP_RELAY_USER",   "")
 RELAY_PASS   = os.environ.get("SMTP_RELAY_PASSWORD", "")
 TAVILY_KEY   = os.environ.get("TAVILY_API_KEY", "")
-DOMAIN       = os.environ.get("DOMAIN", "")  # e.g. agents.example.com  (no http://)
+DOMAIN       = os.environ.get("DOMAIN", "")      # e.g. agents.example.com
+ADMIN_KEY    = os.environ.get("ADMIN_KEY", "")   # secret key for /_human/agents/.admin
 
 # ---------------------------------------------------------------------------
 # App
@@ -175,6 +176,7 @@ mount_workspace(app,
     relay_port=RELAY_PORT,
     relay_user=RELAY_USER,
     relay_password=RELAY_PASS,
+    admin_key=ADMIN_KEY,
 )
 
 # Shared SQL database (agents can run arbitrary SQL, create tables, etc.)

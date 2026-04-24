@@ -26,7 +26,9 @@ EXPOSE 7779
 # Environment variables — set these in Railway / docker run -e
 # SERVER, AGENT_KEY, AGENT_ID, CALLBACK_URL, PORT, REVIVAL_INTERVAL, ALLOWED_TOOLS
 # ANTHROPIC_API_KEY — required by claude CLI
+# MEMORY_DIR        — mount a Railway volume here for persistent memory
 
 ENV PORT=7779
+ENV MEMORY_DIR=/memory
 
 CMD ["python", "agent.py"]

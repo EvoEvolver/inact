@@ -40,6 +40,7 @@ CALLBACK_URL  = os.environ.get("CALLBACK_URL",     "")
 PORT          = int(os.environ.get("PORT",          "7779"))
 INTERVAL      = int(os.environ.get("REVIVAL_INTERVAL", "600"))
 ALLOWED_TOOLS = os.environ.get("ALLOWED_TOOLS",    "WebFetch,WebSearch,Bash")
+MEMORY_DIR    = os.environ.get("MEMORY_DIR",       "./memory")
 MSG           = "/msg"
 NOTIFY        = "/notify"
 
@@ -51,6 +52,59 @@ def _headers(extra: dict | None = None) -> dict:
     if extra:
         h.update(extra)
     return h
+
+# ---------------------------------------------------------------------------
+# Memory system
+# ---------------------------------------------------------------------------
+
+_MEMORY_INDEX = "MEMORY.md"
+
+
+def _memory_path() -> str:
+    os.makedirs(MEMORY_DIR, exist_ok=True)
+    return MEMORY_DIR
+
+
+def load_memory() -> str:
+    """Return the full contents of MEMORY.md, or empty string if it doesn't exist."""
+    index = os.path.join(_memory_path(), _MEMORY_INDEX)
+    if not os.path.exists(index):
+        return ""
+    try:
+        return open(index, encoding="utf-8").read().strip()
+    except OSError:
+        return ""
+
+
+def save_memory_file(filename: str, content: str) -> str:
+    """Write a memory file to memory/ and return its path."""
+    path = os.path.join(_memory_path(), filename)
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(content)
+    return path
+
+
+def update_memory_index(entries: list[tuple[str, str]]) -> None:
+    """
+    Append new entries to MEMORY.md.
+    entries: list of (filename, one-line description)
+    """
+    index_path = os.path.join(_memory_path(), _MEMORY_INDEX)
+    lines = []
+    if os.path.exists(index_path):
+        lines = open(index_path, encoding="utf-8").readlines()
+        # Remove trailing newline blanks
+        while lines and not lines[-1].strip():
+            lines.pop()
+
+    for filename, description in entries:
+        lines.append(f"- [{filename}]({filename}) — {description}\n")
+
+    with open(index_path, "w", encoding="utf-8") as f:
+        f.writelines(lines)
+
+
+
 
 # ---------------------------------------------------------------------------
 # Claude
@@ -98,7 +152,15 @@ def fetch_conversation(with_id: str) -> list[dict]:
     return history
 
 
-def claude_reply(my_id: str, from_id: str, history: list[dict]) -> str:
+def claude_reply_and_memorize(my_id: str, from_id: str,
+                              history: list[dict]) -> tuple[str, str]:
+    """
+    Single claude -p session: reply to the conversation AND optionally update memory.
+
+    Returns (reply_text, raw_memory_block).
+    The raw_memory_block is empty if claude decided nothing is worth saving.
+    """
+    memory = load_memory()
     lines = [
         f"You are AI agent #{my_id} in an agent communication system.",
         f"You are having a conversation with agent #{from_id}.",
@@ -106,7 +168,16 @@ def claude_reply(my_id: str, from_id: str, history: list[dict]) -> str:
         "Use them freely: run shell commands, fetch URLs, search the web,",
         "read files — whatever the task requires.",
         "",
-        "Conversation history (oldest first):",
+    ]
+    if memory:
+        lines += [
+            "## Your long-term memory",
+            "(MEMORY.md index — read referenced files with Bash/cat if you need details)",
+            memory,
+            "",
+        ]
+    lines += [
+        "## Conversation history (oldest first)",
         "",
     ]
     for m in history:
@@ -114,15 +185,75 @@ def claude_reply(my_id: str, from_id: str, history: list[dict]) -> str:
         lines.append(f"{speaker}: {m['text']}")
     lines += [
         "",
-        "Reply to the last message. Use WebFetch or WebSearch if helpful.",
-        "Keep your reply concise (2-4 sentences unless a longer answer is warranted).",
+        "## Your task",
+        "1. Reply to the last message. Use tools if helpful. Be concise (2-4 sentences).",
+        "2. After replying, decide if anything from this conversation is worth saving to",
+        "   long-term memory for future sessions.",
+        "",
+        "## Output format — use EXACTLY this structure:",
+        "",
+        "REPLY:",
+        "<your reply here>",
+        "",
+        "MEMORY:",
+        "# if nothing to save, write just: NO_MEMORY",
+        "# otherwise write one or more blocks:",
+        "FILE: <short_descriptive_name>.md",
+        "DESC: <one-line description for the index>",
+        "---",
+        "<markdown content>",
+        "===",
+        "# (repeat FILE/DESC/---/content/=== for each file, max 3)",
     ]
+
     result = subprocess.run(
-        ["claude", "-p", "\n".join(lines),
-         "--allowedTools", ALLOWED_TOOLS],
-        capture_output=True, text=True, timeout=120,
+        ["claude", "-p", "\n".join(lines), "--allowedTools", ALLOWED_TOOLS],
+        capture_output=True, text=True, timeout=180,
     )
-    return result.stdout.strip()
+    output = result.stdout.strip()
+
+    # Split on the MEMORY: marker
+    if "MEMORY:" in output:
+        reply_part, _, memory_part = output.partition("MEMORY:")
+        # Strip the REPLY: prefix if present
+        reply = reply_part.replace("REPLY:", "").strip()
+        return reply, memory_part.strip()
+
+    # Fallback: no marker found — treat everything as the reply
+    reply = output.replace("REPLY:", "").strip()
+    return reply, ""
+
+
+def apply_memory(memory_block: str) -> None:
+    """Parse and persist the MEMORY: section produced by claude."""
+    if not memory_block or memory_block.startswith("NO_MEMORY"):
+        print("[memory] nothing to save")
+        return
+
+    new_entries: list[tuple[str, str]] = []
+    for block in memory_block.split("==="):
+        block = block.strip()
+        if not block:
+            continue
+        filename = desc = content_start = None
+        block_lines = block.split("\n")
+        for i, line in enumerate(block_lines):
+            if line.startswith("FILE:"):
+                filename = line[5:].strip()
+            elif line.startswith("DESC:"):
+                desc = line[5:].strip()
+            elif line.strip() == "---":
+                content_start = i + 1
+                break
+        if filename and desc and content_start is not None:
+            content = "\n".join(block_lines[content_start:]).strip()
+            save_memory_file(filename, content)
+            new_entries.append((filename, desc))
+            print(f"[memory] saved {filename}: {desc}")
+
+    if new_entries:
+        update_memory_index(new_entries)
+        print(f"[memory] MEMORY.md updated ({len(new_entries)} new entries)")
 
 
 # ---------------------------------------------------------------------------
@@ -162,7 +293,8 @@ def process_inbox() -> int:
         print(f"\n[msg] from agent #{from_id}: {last_msg[:100]}")
         print(f"[ctx] {len(history)} messages in history")
 
-        reply = claude_reply(AGENT_ID, from_id, history)
+        # Single claude session: reply + memory update
+        reply, memory_block = claude_reply_and_memorize(AGENT_ID, from_id, history)
         print(f"[reply] {reply}")
 
         try:
@@ -175,6 +307,13 @@ def process_inbox() -> int:
             replied += 1
         except Exception as exc:
             print(f"[reply] send error: {exc}", file=sys.stderr)
+            continue
+
+        # Persist any memory updates from this session
+        try:
+            apply_memory(memory_block)
+        except Exception as exc:
+            print(f"[memory] error: {exc}", file=sys.stderr)
 
     return replied
 

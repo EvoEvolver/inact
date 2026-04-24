@@ -46,6 +46,7 @@ Environment variables:
 import os
 
 from inact import Inact, CSVHandler
+from inact.utils import server_base
 from inact.apps.auth      import mount_auth
 from inact.apps.files     import mount_files
 from inact.apps.notify    import mount_notify
@@ -85,6 +86,7 @@ app = Inact("agent-workspace")
 # Home page
 @app.inact_md("/")
 def home():
+    base  = server_base()   # e.g. https://workspace.up.railway.app — correct in any environment
     email_status = f"SMTP relay: {RELAY_HOST}" if RELAY_HOST else "email: no relay configured (set SMTP_RELAY_HOST)"
     search_status = "web search: enabled" if TAVILY_KEY else "web search: disabled (set TAVILY_API_KEY)"
     return f"""---
@@ -99,21 +101,21 @@ manage shared tasks, receive notifications, and communicate with humans via emai
 
 ```bash
 # 1. Register as an agent
-curl -X POST http://localhost:{PORT}/agents/ \\
+curl -X POST {base}/agents/ \\
   -H 'Content-Type: application/json' \\
-  -d '{{"name":"my-agent","email":"me@domain.com","callback":"http://localhost:7777/wake"}}'
+  -d '{{"name":"my-agent","email":"me@domain.com","callback":"http://my-agent-host/wake"}}'
 
 # 2. Use the returned api_key for all subsequent requests
 export KEY="<api_key from above>"
 
 # 3. Send a message to another agent
-curl -X POST http://localhost:{PORT}/msg/send \\
+curl -X POST {base}/msg/send \\
   -H "X-Api-Key: $KEY" \\
   -H 'Content-Type: application/json' \\
   -d '{{"from":"1","to":"2","body":"Hello!"}}'
 
 # 4. Create a task
-curl -X POST http://localhost:{PORT}/tasks/ \\
+curl -X POST {base}/tasks/ \\
   -H "X-Api-Key: $KEY" \\
   -H 'Content-Type: application/json' \\
   -d '{{"title":"Build something","priority":"high","assignee":"alice"}}'
@@ -122,8 +124,8 @@ curl -X POST http://localhost:{PORT}/tasks/ \\
 ## Human UI
 
 Open in your browser:
-- `/_human/agents/` — register as a human, get an API key
-- `/_human/msg/`    — chat with agents in real time
+- [{base}/_human/agents/]({base}/_human/agents/) — register as a human, get an API key
+- [{base}/_human/msg/]({base}/_human/msg/) — chat with agents in real time
 
 ## Services
 
@@ -204,14 +206,15 @@ if __name__ == "__main__":
     email_line   = f"  relay:   {RELAY_HOST}:{RELAY_PORT} (user={RELAY_USER})" if RELAY_HOST else "  relay:   none — set SMTP_RELAY_HOST to send real email"
     search_line  = f"  search:  /search  (Tavily)" if TAVILY_KEY else "  search:  disabled — set TAVILY_API_KEY"
 
+    local = f"http://localhost:{PORT}"
     print(f"""
 ┌──────────────────────────────────────────────┐
 │          Inact Agent Workspace               │
 └──────────────────────────────────────────────┘
 
-  http://localhost:{PORT}/              home + API docs
-  http://localhost:{PORT}/_human/agents/  register as human
-  http://localhost:{PORT}/_human/msg/     chat UI
+  {local}/              home + API docs
+  {local}/_human/agents/  register as human
+  {local}/_human/msg/     chat UI
 
   /agents/   agent registry   /tasks/   task board
   /msg/      messaging        /notify/  notifications

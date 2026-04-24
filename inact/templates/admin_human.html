@@ -1,19 +1,11 @@
 {% extends "base.html" %}
 {% block content %}
-<h1 class="page-title">Admin — Registry</h1>
-
-{# ── Admin key gate ── #}
-<div id="auth-gate" hidden
-     style="background:#fff;border:1px solid #e0e0e0;border-radius:10px;padding:24px;max-width:420px;margin-bottom:20px">
-  <p style="font-size:14px;color:#666;margin-bottom:12px">Enter the admin key to manage the registry.</p>
-  <div style="display:flex;gap:8px">
-    <input id="admin-key-input" type="password" placeholder="Admin key" style="flex:1">
-    <button class="primary" id="admin-login-btn">Unlock</button>
-  </div>
-  <div id="auth-err" style="color:#cc0000;font-size:13px;margin-top:8px"></div>
+<div style="display:flex;align-items:baseline;gap:12px;margin-bottom:20px">
+  <h1 class="page-title" style="margin:0">Admin — Registry</h1>
+  <a href="?logout=1" style="font-size:12px;color:#aaa">Sign out</a>
 </div>
 
-<div id="admin-panel" hidden>
+<div id="admin-panel">
   {# ── Stats bar ── #}
   <div style="display:flex;gap:10px;margin-bottom:20px;flex-wrap:wrap">
     <div class="toml-scalars" style="flex:1;min-width:140px">
@@ -74,49 +66,14 @@
 
 {% block scripts %}
 <script>
-const P   = {{ prefix | tojson }};
-let adminKey = sessionStorage.getItem('inact_admin_key') || '';
+const P = {{ prefix | tojson }};
 
+// The server already verified the cookie — just send the admin key header
+// via the cookie value so admin API calls are authenticated.
 function H(extra) {
-  return Object.assign({'X-Admin-Key': adminKey, 'X-Api-Key': localStorage.getItem('inact_api_key')||''}, extra||{});
+  return Object.assign({'X-Admin-Key': document.cookie.match(/_inact_admin=([^;]+)/)?.[1] || ''}, extra||{});
 }
 function esc(s) { return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
-
-/* ── Auth gate ── */
-async function tryUnlock(key) {
-  const r = await fetch(`${P}/.admin/list`, {headers: {'X-Admin-Key': key}});
-  return r.ok || r.status !== 401;
-}
-
-async function init() {
-  if (adminKey) {
-    const ok = await tryUnlock(adminKey);
-    if (ok) { showPanel(); return; }
-    adminKey = '';
-    sessionStorage.removeItem('inact_admin_key');
-  }
-  document.getElementById('auth-gate').hidden = false;
-}
-
-document.getElementById('admin-login-btn').addEventListener('click', async () => {
-  const key = document.getElementById('admin-key-input').value.trim();
-  const errEl = document.getElementById('auth-err');
-  if (!key) return;
-  const ok = await tryUnlock(key);
-  if (!ok) { errEl.textContent = 'Invalid admin key.'; return; }
-  adminKey = key;
-  sessionStorage.setItem('inact_admin_key', key);
-  document.getElementById('auth-gate').hidden = true;
-  showPanel();
-});
-document.getElementById('admin-key-input').addEventListener('keydown', e => {
-  if (e.key === 'Enter') document.getElementById('admin-login-btn').click();
-});
-
-function showPanel() {
-  document.getElementById('admin-panel').hidden = false;
-  load();
-}
 
 /* ── Load all entries ── */
 let allEntries = [];
@@ -241,6 +198,6 @@ document.getElementById('search-input').addEventListener('input', () => {
   clearTimeout(_d); _d = setTimeout(renderTable, 200);
 });
 
-init();
+load();
 </script>
 {% endblock %}

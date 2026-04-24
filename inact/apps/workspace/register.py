@@ -425,14 +425,56 @@ def attach_register(inact_app, prefix: str, registry: AgentRegistry,
     flask_app.add_url_rule(
         prefix + "/.admin/<agent_id>/rekey",
         endpoint=ep + "_admin_rekey", view_func=_admin_rekey, methods=["POST"])
-    def _admin_human(path: str):
+    _COOKIE = "_inact_admin"
+
+    def _admin_human():
         from inact.render import render_template
         from inact.utils import html_response
+        from flask import make_response, redirect
+
+        # No admin key configured → 404
+        if not admin_key:
+            from inact.utils import text_response
+            return text_response("ERROR 404: not found\n", 404)
+
+        # POST — validate submitted key, set cookie, redirect
+        if request.method == "POST":
+            submitted = (request.form.get("key") or "").strip()
+            if submitted == admin_key:
+                resp = make_response(redirect(request.path))
+                resp.set_cookie(_COOKIE, admin_key,
+                                httponly=True, samesite="Lax",
+                                max_age=8 * 3600)
+                return resp
+            html = render_template("admin_login.html", error="Incorrect key.")
+            return make_response(html_response(html)[0], 401,
+                                 {"Content-Type": "text/html; charset=utf-8"})
+
+        # GET — logout
+        if request.args.get("logout"):
+            resp = make_response(redirect(request.path))
+            resp.delete_cookie(_COOKIE)
+            return resp
+
+        # GET — check cookie
+        if request.cookies.get(_COOKIE) != admin_key:
+            html = render_template("admin_login.html", error=None)
+            return html_response(html)
+
         return html_response(render_template("admin_human.html",
             title="Admin", prefix=prefix, nav="", pills=[]))
 
+    # Register both GET and POST so the login form can submit
+    ep_admin = ep + "_admin_human"
+    inact_app.app.add_url_rule(
+        "/_human" + prefix + "/.admin",
+        endpoint=ep_admin, view_func=_admin_human, methods=["GET", "POST"])
+
     inact_app._human_views[prefix] = lambda path: _human()
-    inact_app._human_views[prefix + "/.admin"] = _admin_human
+    # Also catch sub-paths under /.admin so the cookie redirect lands correctly
+    inact_app.app.add_url_rule(
+        "/_human" + prefix + "/.admin/",
+        endpoint=ep_admin + "_slash", view_func=_admin_human, methods=["GET", "POST"])
 
 
 def mount_register(inact_app, prefix: str, storage,

@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Admin</title>
+<style>
+*, *::before, *::after { box-sizing: border-box; }
+body {
+  font-family: system-ui, -apple-system, sans-serif;
+  background: #f5f5f5; color: #222; margin: 0;
+  min-height: 100vh; display: flex; align-items: center; justify-content: center;
+}
+.card {
+  background: #fff; border-radius: 12px; padding: 40px;
+  width: 100%; max-width: 360px; box-shadow: 0 2px 12px rgba(0,0,0,.08);
+  text-align: center;
+}
+h1 { font-size: 18px; margin: 0 0 6px; }
+p  { color: #888; font-size: 13px; margin: 0 0 24px; }
+input {
+  width: 100%; border: 1px solid #ddd; border-radius: 8px;
+  padding: 11px 14px; font-size: 14px; font-family: inherit;
+  margin-bottom: 12px; display: block;
+}
+input:focus { outline: none; border-color: #0066cc; }
+button {
+  width: 100%; background: #0066cc; color: #fff; border: none;
+  border-radius: 8px; padding: 11px; font-size: 14px; cursor: pointer;
+}
+button:hover { background: #0052a3; }
+.err { color: #cc0000; font-size: 13px; margin-top: 10px; }
+</style>
+</head>
+<body>
+<div class="card">
+  <h1>Admin</h1>
+  <p>Enter the admin key to continue.</p>
+  <form method="post">
+    <input type="password" name="key" placeholder="Admin key" autofocus>
+    <button type="submit">Unlock</button>
+  </form>
+  {% if error %}
+  <div class="err">{{ error }}</div>
+  {% endif %}
+</div>
+</body>
+</html>

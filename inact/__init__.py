@@ -1,12 +1,11 @@
 from .apps.a2a import A2AClient, mount_a2a
 from .core import Inact
-from .apps.cron import CronScheduler, mount_cron
 from .apps.auth import mount_auth
 from .apps.workspace import mount_workspace
 from .apps.files import mount_files
 from .apps.notify import mount_notify, NotifyStore
 from .apps.forms import FormStore, mount_forms
-from .apps.workspace.todo import TodoStore, mount_todo
+from .apps.workspace.todo import TodoStore, ReminderScheduler, mount_todo
 from .handlers import FileHandler, PDFHandler, CSVHandler
 from .apps.workspace.mailbox import MailStore, mount_mailbox
 from .apps.mcp import McpClient, StdioMcpClient, mount_mcp, mount_mcp_npx, mount_mcp_uvx
@@ -27,9 +26,9 @@ __all__ = [
     "mount_workspace",
     "CSVHandler",
     "AgentRegistry",
-    "CronScheduler",
     "FileHandler",
     "FormStore",
+    "ReminderScheduler",
     "Inact",
     "MailStore",
     "McpClient",
@@ -47,7 +46,6 @@ __all__ = [
     "html_response",
     "make_storage",
     "mount_a2a",
-    "mount_cron",
     "mount_files",
     "mount_forms",
     "mount_mailbox",

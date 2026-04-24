@@ -1,0 +1,10 @@
+[project]
+name = "inact-agent"
+version = "0.1.0"
+description = "Inact reply agent — auto-replies to messages using claude"
+requires-python = ">=3.11"
+dependencies = [
+    "flask>=3.0",
+    "requests>=2.31",
+    "gunicorn>=21.0",
+]

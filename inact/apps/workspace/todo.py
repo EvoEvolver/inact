@@ -862,6 +862,14 @@ def attach_todo(inact_app, prefix: str, store: TodoStore,
         prefix + "/<task_id>/reminders/<rid>/runs",
         endpoint=ep + "_runs", view_func=_runs)
 
+    def _human(path: str):
+        from inact.render import render_template
+        from inact.utils import html_response
+        return html_response(render_template("todo_human.html",
+            title="Tasks", prefix=prefix, nav="", pills=[]))
+
+    inact_app._human_views[prefix] = _human
+
 
 def mount_todo(inact_app, prefix: str, storage) -> None:
     """

@@ -1,0 +1,199 @@
+{% extends "base.html" %}
+{% block content %}
+<h1 class="page-title">Tasks</h1>
+
+{# ── Toolbar ── #}
+<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px;align-items:center">
+  <button class="primary" id="new-task-btn">+ New task</button>
+
+  <select id="filter-status" style="border:1px solid #ddd;border-radius:8px;padding:7px 10px;font-size:13px">
+    <option value="">All statuses</option>
+    <option value="todo">Todo</option>
+    <option value="done">Done</option>
+  </select>
+
+  <select id="filter-priority" style="border:1px solid #ddd;border-radius:8px;padding:7px 10px;font-size:13px">
+    <option value="">All priorities</option>
+    <option value="urgent">Urgent</option>
+    <option value="high">High</option>
+    <option value="normal">Normal</option>
+    <option value="low">Low</option>
+  </select>
+
+  <input id="filter-assignee" placeholder="Assignee…"
+         style="width:130px;border:1px solid #ddd;border-radius:8px;padding:7px 10px;font-size:13px">
+
+  <div style="margin-left:auto;display:flex;gap:6px">
+    <a href="{{ prefix }}/.today" target="_blank"
+       style="font-size:12px;color:#0066cc;padding:6px 10px;background:#e8f0fe;border-radius:6px;text-decoration:none">Due today</a>
+    <a href="{{ prefix }}/.overdue" target="_blank"
+       style="font-size:12px;color:#cc0000;padding:6px 10px;background:#fde8e8;border-radius:6px;text-decoration:none">Overdue</a>
+  </div>
+</div>
+
+{# ── New task form (hidden) ── #}
+<div id="new-form" hidden
+     style="background:#fff;border:1px solid #e0e0e0;border-radius:10px;padding:20px;margin-bottom:16px">
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px">
+    <input id="f-title"    placeholder="Title *" style="grid-column:1/-1">
+    <input id="f-desc"     placeholder="Description">
+    <input id="f-assignee" placeholder="Assignee">
+    <input id="f-due"      type="date">
+    <select id="f-priority" style="border:1px solid #ddd;border-radius:8px;padding:9px 10px;font-size:14px">
+      <option value="normal">Normal</option>
+      <option value="low">Low</option>
+      <option value="high">High</option>
+      <option value="urgent">Urgent</option>
+    </select>
+  </div>
+  <div style="display:flex;gap:8px;align-items:center">
+    <button class="primary" id="save-btn">Create</button>
+    <button onclick="document.getElementById('new-form').hidden=true"
+            style="background:none;border:none;cursor:pointer;font-size:13px;color:#888">Cancel</button>
+    <span id="form-err" style="color:#cc0000;font-size:13px"></span>
+  </div>
+</div>
+
+{# ── Task list ── #}
+<div id="task-list"></div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const P   = {{ prefix | tojson }};
+const KEY = localStorage.getItem('inact_api_key') || '';
+function H(extra) { return Object.assign({'X-Api-Key': KEY}, extra || {}); }
+function esc(s) { return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+
+const PRIORITY_COLOR = {urgent:'#cc0000', high:'#e07000', normal:'#0066cc', low:'#888'};
+const PRIORITY_BG    = {urgent:'#fde8e8', high:'#fff3e0', normal:'#e8f0fe', low:'#f0f0f0'};
+
+function parseBlocks(text, tag) {
+  return text.split('[[' + tag + ']]').slice(1).map(b => {
+    const o = {};
+    b.split('\n').forEach(l => {
+      const m = l.match(/^(\w+)\s*=\s*"([^"]*)"/) || l.match(/^(\w+)\s*=\s*(\S+)/);
+      if (m) o[m[1]] = m[2];
+    });
+    return o;
+  }).filter(o => Object.keys(o).length > 0);
+}
+
+/* ── Load tasks ── */
+async function load() {
+  const status   = document.getElementById('filter-status').value;
+  const priority = document.getElementById('filter-priority').value;
+  const assignee = document.getElementById('filter-assignee').value.trim();
+  const params   = new URLSearchParams();
+  if (status)   params.set('status',   status);
+  if (priority) params.set('priority', priority);
+  if (assignee) params.set('assignee', assignee);
+
+  const text  = await fetch(`${P}/?${params}`, {headers: H()}).then(r => r.text()).catch(() => '');
+  const tasks = parseBlocks(text, 'tasks');
+  const list  = document.getElementById('task-list');
+
+  if (!tasks.length) {
+    list.innerHTML = '<p style="color:#aaa;font-size:14px;padding:20px 0">No tasks.</p>';
+    return;
+  }
+
+  list.innerHTML = tasks.map(t => {
+    const done     = t.status === 'done';
+    const overdue  = t.overdue === 'true';
+    const pri      = t.priority || 'normal';
+    const priColor = PRIORITY_COLOR[pri] || '#888';
+    const priBg    = PRIORITY_BG[pri]    || '#f0f0f0';
+    const childInfo = t.children && t.children !== '0'
+      ? `<span style="font-size:11px;color:#aaa">${t.done||0}/${t.children} subtasks</span>` : '';
+
+    return `
+    <div class="toml-scalars" style="margin-bottom:8px;opacity:${done?0.5:1}">
+      <table><tr>
+        <td style="width:28px;vertical-align:middle;padding:10px 8px 10px 14px">
+          <input type="checkbox" ${done?'checked':''} title="${done?'reopen':'mark done'}"
+            onchange="toggleDone('${t.id}', this.checked)"
+            style="width:16px;height:16px;cursor:pointer">
+        </td>
+        <td style="vertical-align:middle;padding:10px 0">
+          <span style="${done?'text-decoration:line-through;color:#aaa':''}">${esc(t.title)}</span>
+          ${childInfo}
+          ${t.assignee ? `<span style="margin-left:8px;font-size:12px;color:#888">@${esc(t.assignee)}</span>` : ''}
+          ${t.due ? `<span style="margin-left:8px;font-size:12px;color:${overdue?'#cc0000':'#888'}">${overdue?'⚠ ':''}${esc(t.due)}</span>` : ''}
+        </td>
+        <td style="vertical-align:middle;padding:10px 8px;white-space:nowrap">
+          <span style="background:${priBg};color:${priColor};border-radius:10px;padding:2px 8px;font-size:11px;font-weight:600">
+            ${pri}
+          </span>
+        </td>
+        <td style="vertical-align:middle;padding:10px 14px 10px 4px;text-align:right">
+          <a href="#" onclick="event.preventDefault();deleteTask('${t.id}')"
+             style="color:#cc0000;font-size:12px">del</a>
+        </td>
+      </tr></table>
+    </div>`;
+  }).join('');
+}
+
+/* ── Toggle done / reopen ── */
+async function toggleDone(id, checked) {
+  await fetch(`${P}/${id}/${checked ? '.done' : '.reopen'}`,
+    {method: 'POST', headers: H()});
+  await load();
+}
+
+/* ── Delete ── */
+async function deleteTask(id) {
+  await fetch(`${P}/${id}`, {method: 'DELETE', headers: H()});
+  await load();
+}
+
+/* ── New task ── */
+document.getElementById('new-task-btn').addEventListener('click', () => {
+  document.getElementById('new-form').hidden = false;
+  document.getElementById('f-title').focus();
+});
+
+document.getElementById('save-btn').addEventListener('click', async () => {
+  const title    = document.getElementById('f-title').value.trim();
+  const errEl    = document.getElementById('form-err');
+  if (!title) { errEl.textContent = 'Title required'; return; }
+  errEl.textContent = '';
+  const body = {
+    title,
+    description: document.getElementById('f-desc').value.trim(),
+    assignee:    document.getElementById('f-assignee').value.trim(),
+    priority:    document.getElementById('f-priority').value,
+  };
+  const due = document.getElementById('f-due').value;
+  if (due) body.due = due;
+
+  const r = await fetch(`${P}/`, {
+    method: 'POST',
+    headers: H({'Content-Type': 'application/json'}),
+    body: JSON.stringify(body),
+  });
+  const text = await r.text();
+  if (!text.startsWith('OK')) { errEl.textContent = text.split('\n')[0]; return; }
+  document.getElementById('new-form').hidden = true;
+  ['f-title','f-desc','f-assignee','f-due'].forEach(id => document.getElementById(id).value = '');
+  document.getElementById('f-priority').value = 'normal';
+  await load();
+});
+
+document.getElementById('f-title').addEventListener('keydown', e => {
+  if (e.key === 'Enter') document.getElementById('save-btn').click();
+});
+
+/* ── Filters ── */
+['filter-status','filter-priority'].forEach(id =>
+  document.getElementById(id).addEventListener('change', load));
+let _debounce;
+document.getElementById('filter-assignee').addEventListener('input', () => {
+  clearTimeout(_debounce);
+  _debounce = setTimeout(load, 300);
+});
+
+load();
+</script>
+{% endblock %}

@@ -66,12 +66,11 @@
 
 {% block scripts %}
 <script>
-const P = {{ prefix | tojson }};
+const P        = {{ prefix | tojson }};
+const ADMIN_KEY = {{ admin_key | tojson }};  // injected server-side after cookie auth
 
-// The server already verified the cookie — just send the admin key header
-// via the cookie value so admin API calls are authenticated.
 function H(extra) {
-  return Object.assign({'X-Admin-Key': document.cookie.match(/_inact_admin=([^;]+)/)?.[1] || ''}, extra||{});
+  return Object.assign({'X-Admin-Key': ADMIN_KEY}, extra || {});
 }
 function esc(s) { return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 

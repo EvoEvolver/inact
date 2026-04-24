@@ -462,7 +462,8 @@ def attach_register(inact_app, prefix: str, registry: AgentRegistry,
             return html_response(html)
 
         return html_response(render_template("admin_human.html",
-            title="Admin", prefix=prefix, nav="", pills=[]))
+            title="Admin", prefix=prefix, nav="", pills=[],
+            admin_key=admin_key))
 
     # Register both GET and POST so the login form can submit
     ep_admin = ep + "_admin_human"

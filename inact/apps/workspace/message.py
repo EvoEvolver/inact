@@ -309,7 +309,7 @@ def attach_message(inact_app, prefix: str, store: MessageStore,
         return text_response("".join(lines))
 
     def _human():
-        from ...render import render_template
+        from ...render import render_template, workspace_nav
         from ...utils import html_response
         html = render_template(
             "message_human.html",
@@ -317,6 +317,8 @@ def attach_message(inact_app, prefix: str, store: MessageStore,
             prefix=prefix,
             agents_prefix=agents_prefix,
             register_url="/_human" + agents_prefix,
+            workspace_links=workspace_nav("/_human/msg/"),
+            show_identity=True,
         )
         return html_response(html)
 

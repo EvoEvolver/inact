@@ -1,17 +1,8 @@
 {% extends "base.html" %}
 
-{% block nav %}{% endblock %}
+{# workspace nav rendered by base.html via workspace_links #}
 {% block body_wrap %}
-<div class="app">
-  <div class="app-header">
-    <strong>Chat</strong>
-    <small>
-      Agent&nbsp;#<span id="my-id">…</span>
-      &nbsp;·&nbsp;
-      <a href="{{ register_url }}" style="color:#aaa">switch account</a>
-    </small>
-  </div>
-
+<div class="app" style="height:calc(100vh - 45px)">{# 45px = nav height #}
   <div class="layout">
     <aside>
       <div class="aside-title">Agents</div>

@@ -78,8 +78,11 @@ def attach_search(inact_app, prefix: str, api_key: str | None) -> None:
     def _human(path: str):
         from inact.render import render_template
         from inact.utils import html_response
+        from inact.render import workspace_nav
         return html_response(render_template("search_human.html",
-            title="Search", prefix=prefix, nav="", pills=[]))
+            title="Search", prefix=prefix, nav="", pills=[],
+            workspace_links=workspace_nav("/_human/search/"),
+            show_identity=True))
 
     inact_app._human_views[prefix] = _human
 

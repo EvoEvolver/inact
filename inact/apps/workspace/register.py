@@ -301,15 +301,18 @@ def attach_register(inact_app, prefix: str, registry: AgentRegistry,
         return text_response(f"OK\nemail = {toml_str(email)}\n")
 
     def _human():
-        from ...render import render_template
+        from ...render import render_template, workspace_nav
         from ...utils import html_response
+        msg_prefix = "/_human" + prefix.rstrip("/").rsplit("/", 1)[0] + "/msg" \
+                     if "/" in prefix.strip("/") else "/_human/msg"
         html = render_template(
             "register_human.html",
             title="Register",
             prefix=prefix,
             agents_api=prefix,
-            chat_url="/_human" + prefix.rstrip("/").rsplit("/", 1)[0] + "/msg"
-                     if "/" in prefix.strip("/") else "/_human/msg",
+            chat_url=msg_prefix,
+            workspace_links=workspace_nav("/_human/agents/"),
+            show_identity=True,
         )
         return html_response(html)
 
@@ -489,9 +492,12 @@ def attach_register(inact_app, prefix: str, registry: AgentRegistry,
             html = render_template("admin_login.html", error=None)
             return html_response(html)
 
+        from inact.render import workspace_nav
         return html_response(render_template("admin_human.html",
             title="Admin", prefix=prefix, nav="", pills=[],
-            admin_key=admin_key))
+            admin_key=admin_key,
+            workspace_links=workspace_nav("/_human/agents/.admin"),
+            show_identity=False))
 
     # Register both GET and POST so the login form can submit
     ep_admin = ep + "_admin_human"

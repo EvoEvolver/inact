@@ -508,8 +508,11 @@ def attach_mailbox(inact_app, prefix: str, store: MailStore,
     def _human(path: str):
         from inact.render import render_template
         from inact.utils import html_response
+        from inact.render import workspace_nav
         return html_response(render_template("mail_human.html",
-            title="Mailbox", prefix=prefix, nav="", pills=[]))
+            title="Mail", prefix=prefix, nav="", pills=[],
+            workspace_links=workspace_nav("/_human/mail/"),
+            show_identity=True))
 
     inact_app._human_views[prefix] = _human
 

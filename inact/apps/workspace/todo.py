@@ -865,8 +865,11 @@ def attach_todo(inact_app, prefix: str, store: TodoStore,
     def _human(path: str):
         from inact.render import render_template
         from inact.utils import html_response
+        from inact.render import workspace_nav
         return html_response(render_template("todo_human.html",
-            title="Tasks", prefix=prefix, nav="", pills=[]))
+            title="Todo", prefix=prefix, nav="", pills=[],
+            workspace_links=workspace_nav("/_human/tasks/"),
+            show_identity=True))
 
     inact_app._human_views[prefix] = _human
 

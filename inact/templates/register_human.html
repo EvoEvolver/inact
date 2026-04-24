@@ -1,12 +1,6 @@
 {% extends "base.html" %}
 
-{% block nav %}
-<nav>
-  <a href="{{ prefix }}/_human">Register</a>
-  <span class="sep">/</span>
-  <a href="{{ agents_api }}/">Agents API</a>
-</nav>
-{% endblock %}
+{# uses base.html nav with workspace_links #}
 
 {% block body_wrap %}
 <div style="display:flex;justify-content:center;padding:40px 16px">

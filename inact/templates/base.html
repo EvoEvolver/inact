@@ -228,10 +228,29 @@ button.send:disabled { background: #aaa; cursor: default; }
 <body>
 {% block nav %}
 <nav>
-  {{ nav | safe }}
-  {% for label, href in pills %}
-  <a class="pill" href="{{ href }}">{{ label }}</a>
-  {% endfor %}
+  {# Workspace top-level links — highlight the current section #}
+  {% if workspace_links is defined %}
+    {% for label, href, active in workspace_links %}
+    <a href="{{ href }}"
+       style="{% if active %}font-weight:700;color:#0066cc{% else %}color:#555{% endif %}">
+      {{ label }}
+    </a>
+    {% if not loop.last %}<span class="sep">/</span>{% endif %}
+    {% endfor %}
+  {% else %}
+    {# Fallback: breadcrumb for content routes (markdown, toml, ls) #}
+    {{ nav | safe }}
+    {% for label, href in pills %}
+    <a class="pill" href="{{ href }}">{{ label }}</a>
+    {% endfor %}
+  {% endif %}
+
+  {# Right-hand side: identity + sign-out #}
+  <span style="flex:1"></span>
+  {% if show_identity is defined and show_identity %}
+  <span style="font-size:12px;color:#aaa" id="nav-identity"></span>
+  <a href="/_human/agents/" style="font-size:12px;color:#aaa;margin-left:10px">account</a>
+  {% endif %}
 </nav>
 {% endblock %}
 {% block body_wrap %}
@@ -240,5 +259,15 @@ button.send:disabled { background: #aaa; cursor: default; }
 </div>
 {% endblock %}
 {% block scripts %}{% endblock %}
+{% if show_identity is defined and show_identity %}
+<script>
+(function() {
+  const id  = localStorage.getItem('inact_agent_id');
+  const nm  = localStorage.getItem('inact_name') || '';
+  const el  = document.getElementById('nav-identity');
+  if (el && id) el.textContent = (nm || ('Agent #' + id));
+})();
+</script>
+{% endif %}
 </body>
 </html>

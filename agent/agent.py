@@ -11,15 +11,14 @@ Usage:
 
 import argparse
 import json
-import logging
 import os
 import queue
 import re
 import subprocess
-import sys
 import threading
 import time
 
+import logfire
 import requests as http
 from flask import Flask, jsonify
 from flask import request as freq
@@ -27,12 +26,8 @@ from pydantic_ai import Agent
 from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.providers.openai import OpenAIProvider
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s %(levelname)-8s %(message)s",
-    datefmt="%H:%M:%S",
-)
-log = logging.getLogger("agent")
+logfire.configure()
+logfire.instrument_pydantic_ai()
 
 # ---------------------------------------------------------------------------
 # Config
@@ -82,7 +77,7 @@ def _resolve_agent_id() -> None:
         if not m:
             raise ValueError(f"no id field in response: {r.text[:200]}")
         AGENT_ID = m.group(1).strip('"')
-        log.info("resolved id=%s from api key", AGENT_ID)
+        logfire.info("resolved id={agent_id} from api key", agent_id=AGENT_ID)
     except Exception as exc:
         raise RuntimeError(f"could not resolve agent id: {exc}") from exc
 
@@ -152,11 +147,11 @@ def apply_memory(memory_block: str) -> None:
             content = "\n".join(block_lines[content_start:]).strip()
             save_memory_file(filename, content)
             new_entries.append((filename, desc))
-            log.info("memory: saved %s — %s", filename, desc)
+            logfire.info("memory: saved {filename} — {desc}", filename=filename, desc=desc)
 
     if new_entries:
         update_memory_index(new_entries)
-        log.info("memory: MEMORY.md updated (%d new entries)", len(new_entries))
+        logfire.info("memory: MEMORY.md updated ({n} new entries)", n=len(new_entries))
 
 
 # ---------------------------------------------------------------------------
@@ -234,7 +229,6 @@ def _system_prompt() -> str:
 @_agent.tool_plain
 def bash(command: str) -> str:
     """Execute a bash command and return its stdout/stderr."""
-    log.info("tool: bash(%s)", command[:80])
     try:
         result = subprocess.run(
             command, shell=True, capture_output=True, text=True, timeout=60
@@ -242,19 +236,16 @@ def bash(command: str) -> str:
         out = result.stdout
         if result.stderr:
             out += f"\nSTDERR:\n{result.stderr}"
-        output = out or "(no output)"
+        return out or "(no output)"
     except subprocess.TimeoutExpired:
-        output = "ERROR: command timed out after 60s"
+        return "ERROR: command timed out after 60s"
     except Exception as exc:
-        output = f"ERROR: {exc}"
-    log.info("  ↳ %s", output.replace("\n", " ")[:120])
-    return output
+        return f"ERROR: {exc}"
 
 
 @_agent.tool_plain
 def curl_workspace(method: str, path: str, body: dict | None = None) -> str:
     """Make an HTTP request to the workspace server. Base URL and auth headers are added automatically."""
-    log.info("tool: curl_workspace(%s %s)", method, path)
     try:
         r = http.request(
             method.upper(),
@@ -263,11 +254,9 @@ def curl_workspace(method: str, path: str, body: dict | None = None) -> str:
             json=body,
             timeout=10,
         )
-        output = r.text[:4000]
+        return r.text[:4000]
     except Exception as exc:
-        output = f"ERROR: {exc}"
-    log.info("  ↳ %s", output.replace("\n", " ")[:120])
-    return output
+        return f"ERROR: {exc}"
 
 
 # ---------------------------------------------------------------------------
@@ -287,7 +276,7 @@ def _run_llm(user_msg: str) -> str:
 
 def _reset_session() -> None:
     global _history, _session_start
-    log.info("session timeout — consolidating memory and resetting conversation")
+    logfire.info("session timeout — consolidating memory and resetting conversation")
     try:
         output = _run_llm(
             "Session timeout reached. Save everything worth keeping from this conversation "
@@ -297,10 +286,10 @@ def _reset_session() -> None:
             _, _, mem = output.partition("MEMORY:")
             apply_memory(mem.strip())
     except Exception as exc:
-        log.error("consolidation error: %s", exc, exc_info=True)
+        logfire.exception("consolidation error")
     _history = []
     _session_start = time.time()
-    log.info("conversation reset")
+    logfire.info("conversation reset")
 
 
 # ---------------------------------------------------------------------------
@@ -318,7 +307,7 @@ def _get_unread_notification_ids() -> list[str]:
         )
         return re.findall(r'id\s*=\s*"([^"]+)"', resp.text)
     except Exception as exc:
-        log.warning("could not fetch unread notifications: %s", exc)
+        logfire.warning("could not fetch unread notifications: {exc}", exc=exc)
         return []
 
 
@@ -328,9 +317,9 @@ def _mark_notifications_read(ids: list[str]) -> None:
         try:
             http.get(f"{WORKSPACE_HOST}{NOTIFY_INBOX}/{nid}", headers=_headers(), timeout=5)
         except Exception as exc:
-            log.warning("could not mark notification %s as read: %s", nid, exc)
+            logfire.warning("could not mark notification {nid} as read: {exc}", nid=nid, exc=exc)
     if ids:
-        log.info("marked %d notification(s) as read", len(ids))
+        logfire.info("marked {n} notification(s) as read", n=len(ids))
 
 
 _notification_queue: queue.Queue = queue.Queue()
@@ -361,7 +350,7 @@ def _agent_loop() -> None:
                     parts.append(f"Notification received:\n{json.dumps(p, indent=2)}")
 
             user_msg = "\n\n".join(parts)
-            log.info("trigger: %s", user_msg[:200])
+            logfire.info("trigger: {msg}", msg=user_msg[:200])
 
             # Snapshot unread IDs before the LLM runs — new ones arriving
             # during the call must stay unread so they get processed next.
@@ -370,18 +359,18 @@ def _agent_loop() -> None:
             try:
                 output = _run_llm(user_msg)
             except Exception as exc:
-                log.error("LLM error: %s", exc, exc_info=True)
+                logfire.exception("LLM error")
                 continue
 
             reply = output.partition("MEMORY:")[0].strip() if "MEMORY:" in output else output.strip()
-            log.info("reply: %s", reply)
+            logfire.info("reply: {reply}", reply=reply)
 
             if "MEMORY:" in output:
                 _, _, mem = output.partition("MEMORY:")
                 try:
                     apply_memory(mem.strip())
-                except Exception as exc:
-                    log.error("memory error: %s", exc)
+                except Exception:
+                    logfire.exception("memory error")
 
             _mark_notifications_read(unread_before)
         finally:
@@ -398,7 +387,7 @@ agent_app = Flask("reply-agent")
 @agent_app.route("/wake", methods=["POST"])
 def wake():
     payload = freq.get_json(force=True, silent=True) or {}
-    log.info("wake: %s — queued", payload.get("type", "notification"))
+    logfire.info("wake: {type} — queued", type=payload.get("type", "notification"))
     _notification_queue.put(payload)
     return jsonify({"status": "ok"})
 
@@ -441,9 +430,9 @@ def main() -> None:
                 headers=_headers({"Content-Type": "application/json"}),
                 timeout=5,
             )
-            log.info("registered callback: %s", r.text.strip())
+            logfire.info("registered callback: {resp}", resp=r.text.strip())
         except Exception as exc:
-            log.warning("could not register callback: %s", exc)
+            logfire.warning("could not register callback: {exc}", exc=exc)
 
     _session_start = time.time()
     threading.Thread(target=_agent_loop, daemon=True).start()
@@ -465,19 +454,19 @@ def main() -> None:
                 except Exception:
                     has_unread = True  # wake on error so we don't miss messages
                 if has_unread:
-                    log.info("poll — unread notifications found, queuing check")
+                    logfire.info("poll — unread notifications found, queuing check")
                     _notification_queue.put(None)
         threading.Thread(target=_poll_loop, daemon=True).start()
 
-    log.info("checking for pending messages...")
+    logfire.info("checking for pending messages...")
     _notification_queue.put(None)
 
-    log.info(
-        "agent #%s ready — workspace=%s callback=%s model=%s",
-        AGENT_ID, WORKSPACE_HOST, callback_url, MODEL,
+    logfire.info(
+        "agent #{agent_id} ready — workspace={workspace} callback={callback} model={model}",
+        agent_id=AGENT_ID, workspace=WORKSPACE_HOST, callback=callback_url, model=MODEL,
     )
 
-    log.info("callback server on :%d", PORT)
+    logfire.info("callback server on :{port}", port=PORT)
     agent_app.run(host="0.0.0.0", port=PORT, debug=False, use_reloader=False)
 
 

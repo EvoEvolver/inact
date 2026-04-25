@@ -11,18 +11,25 @@ Usage:
 
 import argparse
 import json
+import logging
 import os
 import queue
 import re
 import subprocess
 import sys
 import threading
-import time
 
 import openai
 import requests as http
 from flask import Flask, jsonify
 from flask import request as freq
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)-8s %(message)s",
+    datefmt="%H:%M:%S",
+)
+log = logging.getLogger("agent")
 
 # ---------------------------------------------------------------------------
 # Config
@@ -74,7 +81,7 @@ def _resolve_agent_id() -> None:
         if not m:
             raise ValueError(f"no id field in response: {r.text[:200]}")
         AGENT_ID = m.group(1).strip('"')
-        print(f"[agent] resolved id={AGENT_ID} from api key")
+        log.info("resolved id=%s from api key", AGENT_ID)
     except Exception as exc:
         raise RuntimeError(f"could not resolve agent id: {exc}") from exc
 
@@ -144,11 +151,11 @@ def apply_memory(memory_block: str) -> None:
             content = "\n".join(block_lines[content_start:]).strip()
             save_memory_file(filename, content)
             new_entries.append((filename, desc))
-            print(f"[memory] saved {filename}: {desc}")
+            log.info("memory: saved %s — %s", filename, desc)
 
     if new_entries:
         update_memory_index(new_entries)
-        print(f"[memory] MEMORY.md updated ({len(new_entries)} new entries)")
+        log.info("memory: MEMORY.md updated (%d new entries)", len(new_entries))
 
 
 # ---------------------------------------------------------------------------
@@ -251,16 +258,12 @@ _conversation: list[dict] = []
 _notification_queue: queue.Queue = queue.Queue()
 
 
-def _ts() -> str:
-    return time.strftime("%H:%M:%S")
-
-
 def _run_llm() -> str:
     """Advance _conversation by one LLM turn (including any tool calls). Returns final text."""
     call = 0
     while True:
         call += 1
-        print(f"[{_ts()}] thinking (call #{call})...")
+        log.info("thinking (call #%d)...", call)
         response = _client.chat.completions.create(
             model=MODEL,
             max_tokens=8096,
@@ -278,10 +281,9 @@ def _run_llm() -> str:
         for tc in message.tool_calls:
             inputs = json.loads(tc.function.arguments)
             args_preview = ", ".join(f"{k}={json.dumps(v)[:60]}" for k, v in inputs.items())
-            print(f"[{_ts()}] tool: {tc.function.name}({args_preview})")
+            log.info("tool: %s(%s)", tc.function.name, args_preview)
             result = _run_tool(tc.function.name, inputs)
-            result_preview = result.replace("\n", " ")[:120]
-            print(f"[{_ts()}]    ↳ {result_preview}")
+            log.info("  ↳ %s", result.replace("\n", " ")[:120])
             _conversation.append({"role": "tool", "tool_call_id": tc.id, "content": result})
 
 
@@ -307,20 +309,20 @@ def _agent_loop() -> None:
                 parts.append(f"Notification received:\n{json.dumps(p, indent=2)}")
 
         user_msg = "\n\n".join(parts)
-        print(f"\n[{_ts()}] trigger: {user_msg[:200]}")
+        log.info("trigger: %s", user_msg[:200])
         _conversation.append({"role": "user", "content": user_msg})
 
         output = _run_llm()
 
         reply = output.partition("MEMORY:")[0].strip() if "MEMORY:" in output else output.strip()
-        print(f"[{_ts()}] reply: {reply}")
+        log.info("reply: %s", reply)
 
         if "MEMORY:" in output:
             _, _, mem = output.partition("MEMORY:")
             try:
                 apply_memory(mem.strip())
             except Exception as exc:
-                print(f"[{_ts()}] memory error: {exc}", file=sys.stderr)
+                log.error("memory error: %s", exc)
 
 
 def _system_prompt() -> str:
@@ -364,7 +366,7 @@ agent_app = Flask("reply-agent")
 @agent_app.route("/wake", methods=["POST"])
 def wake():
     payload = freq.get_json(force=True, silent=True) or {}
-    print(f"[{_ts()}] wake: {payload.get('type', 'notification')} — queued")
+    log.info("wake: %s — queued", payload.get("type", "notification"))
     _notification_queue.put(payload)
     return jsonify({"status": "ok"})
 
@@ -407,24 +409,22 @@ def main() -> None:
                 headers=_headers({"Content-Type": "application/json"}),
                 timeout=5,
             )
-            print(f"[agent] registered callback: {r.text.strip()}")
+            log.info("registered callback: %s", r.text.strip())
         except Exception as exc:
-            print(f"[agent] WARNING: could not register callback: {exc}", file=sys.stderr)
+            log.warning("could not register callback: %s", exc)
 
     _conversation.append({"role": "system", "content": _system_prompt()})
     threading.Thread(target=_agent_loop, daemon=True).start()
 
-    print("[agent] checking for pending messages...")
+    log.info("checking for pending messages...")
     _notification_queue.put(None)
 
-    print(f"""
-Agent #{AGENT_ID} ready
-  workspace: {WORKSPACE_HOST}
-  callback:  {callback_url}
-  model:     {MODEL}
-""")
+    log.info(
+        "agent #%s ready — workspace=%s callback=%s model=%s",
+        AGENT_ID, WORKSPACE_HOST, callback_url, MODEL,
+    )
 
-    print(f"[agent] callback server on :{PORT}")
+    log.info("callback server on :%d", PORT)
     agent_app.run(host="0.0.0.0", port=PORT, debug=False, use_reloader=False)
 
 

@@ -49,7 +49,7 @@ MEMORY_DIR      = os.environ.get("MEMORY_DIR",           "./memory")
 MODEL           = os.environ.get("MODEL",                "openai/gpt-4o-mini")
 SESSION_TIMEOUT = int(os.environ.get("SESSION_TIMEOUT",  "600"))
 # Periodic self-check interval in seconds — safety net for missed push notifications (0 = off)
-POLL_INTERVAL   = int(os.environ.get("POLL_INTERVAL",    "5"))
+POLL_INTERVAL   = int(os.environ.get("POLL_INTERVAL",    "60"))
 NOTIFY_REGISTER = os.environ.get("NOTIFY_REGISTER_PATH", "/notify/register")
 NOTIFY_INBOX    = os.environ.get("NOTIFY_INBOX_PATH",    "/notify/inbox")
 
@@ -308,47 +308,52 @@ def _reset_session() -> None:
 # ---------------------------------------------------------------------------
 
 _notification_queue: queue.Queue = queue.Queue()
+_agent_busy = threading.Event()
 
 
 def _agent_loop() -> None:
     while True:
         payload = _notification_queue.get()
-
-        batch = [payload]
-        while not _notification_queue.empty():
-            try:
-                batch.append(_notification_queue.get_nowait())
-            except queue.Empty:
-                break
-
-        if SESSION_TIMEOUT > 0 and time.time() - _session_start > SESSION_TIMEOUT:
-            _reset_session()
-
-        parts = []
-        for p in batch:
-            if p is None:
-                parts.append("Revival tick: check for any unread messages and reply to them.")
-            else:
-                parts.append(f"Notification received:\n{json.dumps(p, indent=2)}")
-
-        user_msg = "\n\n".join(parts)
-        log.info("trigger: %s", user_msg[:200])
+        _agent_busy.set()
 
         try:
-            output = _run_llm(user_msg)
-        except Exception as exc:
-            log.error("LLM error: %s", exc, exc_info=True)
-            continue
+            batch = [payload]
+            while not _notification_queue.empty():
+                try:
+                    batch.append(_notification_queue.get_nowait())
+                except queue.Empty:
+                    break
 
-        reply = output.partition("MEMORY:")[0].strip() if "MEMORY:" in output else output.strip()
-        log.info("reply: %s", reply)
+            if SESSION_TIMEOUT > 0 and time.time() - _session_start > SESSION_TIMEOUT:
+                _reset_session()
 
-        if "MEMORY:" in output:
-            _, _, mem = output.partition("MEMORY:")
+            parts = []
+            for p in batch:
+                if p is None:
+                    parts.append("Revival tick: check for any unread messages and reply to them.")
+                else:
+                    parts.append(f"Notification received:\n{json.dumps(p, indent=2)}")
+
+            user_msg = "\n\n".join(parts)
+            log.info("trigger: %s", user_msg[:200])
+
             try:
-                apply_memory(mem.strip())
+                output = _run_llm(user_msg)
             except Exception as exc:
-                log.error("memory error: %s", exc)
+                log.error("LLM error: %s", exc, exc_info=True)
+                continue
+
+            reply = output.partition("MEMORY:")[0].strip() if "MEMORY:" in output else output.strip()
+            log.info("reply: %s", reply)
+
+            if "MEMORY:" in output:
+                _, _, mem = output.partition("MEMORY:")
+                try:
+                    apply_memory(mem.strip())
+                except Exception as exc:
+                    log.error("memory error: %s", exc)
+        finally:
+            _agent_busy.clear()
 
 
 # ---------------------------------------------------------------------------
@@ -415,6 +420,8 @@ def main() -> None:
         def _poll_loop() -> None:
             while True:
                 time.sleep(POLL_INTERVAL)
+                if _agent_busy.is_set():
+                    continue  # agent is mid-run; don't pile up revival ticks
                 try:
                     resp = http.get(
                         f"{WORKSPACE_HOST}{NOTIFY_INBOX}",

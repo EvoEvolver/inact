@@ -616,7 +616,7 @@ def mount_files(
             ["code-server",
              "--port",          str(code_server_port),
              "--auth",          "none",
-             "--base-path",     "/_vscode",
+             "--base-path",     "/vscode",
              "--user-data-dir", "/tmp/code-server-data",
              _path_arg],
             stdout=_sp.DEVNULL, stderr=None,
@@ -633,7 +633,7 @@ def mount_files(
         if _vscode_enabled:
             return html_response(render_template("vscode_embed.html",
                 title="Files",
-                vscode_src="/_vscode/",
+                vscode_src="/vscode/",
                 workspace_links=workspace_nav("/_human/files/"),
                 show_identity=True))
         return html_response(render_template("files_human.html",

@@ -11,20 +11,22 @@ cs_port  = int(os.environ.get('CODE_SERVER_PORT', 0) or 0)
 cs_block = ""
 if cs_port:
     cs_block = f"""
-        location /_vscode {{
-            proxy_pass         http://127.0.0.1:{cs_port};
-            proxy_http_version 1.1;
-            proxy_set_header   Upgrade    $http_upgrade;
-            proxy_set_header   Connection upgrade;
-            proxy_set_header   Host       $http_host;
-            proxy_set_header   X-Real-IP  $remote_addr;
-            proxy_read_timeout 86400;
-            proxy_next_upstream error timeout;
-            proxy_connect_timeout 10s;
+        location /vscode {{
+            proxy_pass             http://127.0.0.1:{cs_port};
+            proxy_http_version     1.1;
+            proxy_set_header       Upgrade    $http_upgrade;
+            proxy_set_header       Connection upgrade;
+            proxy_set_header       Host       $http_host;
+            proxy_set_header       X-Real-IP  $remote_addr;
+            proxy_read_timeout     86400;
+            proxy_connect_timeout  30s;
+            proxy_next_upstream    error timeout http_502 http_503;
+            proxy_next_upstream_tries 5;
+            proxy_next_upstream_timeout 60s;
         }}
 """
 
-cfg = f"""events {{ worker_connections 1024; }}
+cfg = f"""events {{ worker_connections 4096; }}
 http {{
     include /etc/nginx/mime.types;
     server {{
@@ -44,7 +46,7 @@ http {{
 """
 with open('/tmp/nginx.conf', 'w') as f:
     f.write(cfg)
-print(f"nginx: :{port} -> inact:{internal}" + (f"  /_vscode -> code-server:{cs_port}" if cs_port else ""))
+print(f"nginx: :{port} -> inact:{internal}" + (f"  /vscode -> code-server:{cs_port}" if cs_port else ""))
 PYEOF
 
 nginx -c /tmp/nginx.conf -g "daemon off;" &

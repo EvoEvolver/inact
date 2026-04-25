@@ -1,15 +1,70 @@
 {% extends "base.html" %}
 {% block body_wrap %}
 <style>
+  #vscode-wrap {
+    position: relative;
+    width: 100%;
+    height: calc(100vh - 45px);
+  }
   .vscode-frame {
     display: block;
     width: 100%;
-    height: calc(100vh - 45px);
+    height: 100%;
     border: none;
   }
+  #vscode-loading {
+    position: absolute; inset: 0;
+    display: flex; flex-direction: column;
+    align-items: center; justify-content: center;
+    background: #1e1e1e; color: #ccc; font-family: system-ui, sans-serif;
+    font-size: 14px; gap: 12px;
+  }
+  .spinner {
+    width: 32px; height: 32px;
+    border: 3px solid #555; border-top-color: #0066cc;
+    border-radius: 50%; animation: spin 0.8s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
 </style>
-<iframe class="vscode-frame"
-        src="{{ vscode_src }}"
-        allow="clipboard-read; clipboard-write">
-</iframe>
+
+<div id="vscode-wrap">
+  <div id="vscode-loading">
+    <div class="spinner"></div>
+    <span id="loading-msg">Starting VS Code…</span>
+  </div>
+  <iframe class="vscode-frame" id="vscode-frame"
+          allow="clipboard-read; clipboard-write"
+          style="visibility:hidden">
+  </iframe>
+</div>
+
+<script>
+const VSCODE_SRC = {{ vscode_src | tojson }};
+const frame     = document.getElementById('vscode-frame');
+const loading   = document.getElementById('vscode-loading');
+const msg       = document.getElementById('loading-msg');
+let   attempts  = 0;
+
+function tryLoad() {
+  attempts++;
+  msg.textContent = attempts > 1
+    ? `Starting VS Code… (attempt ${attempts})`
+    : 'Starting VS Code…';
+  fetch(VSCODE_SRC, {method: 'HEAD', cache: 'no-store'})
+    .then(r => {
+      if (r.ok) {
+        frame.src = VSCODE_SRC;
+        frame.onload = () => {
+          loading.style.display = 'none';
+          frame.style.visibility = 'visible';
+        };
+      } else {
+        setTimeout(tryLoad, 2000);
+      }
+    })
+    .catch(() => setTimeout(tryLoad, 2000));
+}
+
+tryLoad();
+</script>
 {% endblock %}

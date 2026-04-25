@@ -424,9 +424,13 @@ async function pollSession() {
   let added  = 0;
   for (const m of msgs) {
     shownIds.add(m.id);
-    const isMe = m.from === String(myId);
-    const senderName = isMe ? 'You' : (agentNameCache[m.from] || await getAgentName(m.from));
-    const fromKind   = m.from_kind || agentKindCache[m.from] || 'agent';
+    // from is now "Name#id" — extract id for identity check, name for display
+    const fromParts  = (m.from || '').match(/^(.*?)#(\d+)$/);
+    const fromId     = fromParts ? fromParts[2] : m.from;
+    const fromName   = fromParts ? fromParts[1] : '';
+    const isMe       = fromId === String(myId);
+    const senderName = isMe ? 'You' : (agentNameCache[fromId] || fromName || await getAgentName(fromId));
+    const fromKind   = m.from_kind || agentKindCache[fromId] || 'agent';
     const kindBadge  = !isMe
       ? (fromKind === 'human'
           ? '<span class="kind-human">human</span>'

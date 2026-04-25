@@ -193,6 +193,18 @@ class TodoStore:
         self._migrate()
 
     def _migrate(self) -> None:
+        # Schema migration: detect old TEXT PRIMARY KEY and drop/recreate tables
+        try:
+            cols = self._s.fetchall("PRAGMA table_info(tasks)")
+            id_col = next((c for c in cols if c["name"] == "id"), None)
+            if id_col and id_col["type"].upper() == "TEXT":
+                for t in ("reminder_runs", "reminders", "tasks"):
+                    self._s.execute(f"DROP TABLE IF EXISTS {t}")
+                self._s.init(_DDL)
+                return
+        except Exception:
+            pass
+        # Column additions for existing INTEGER schema
         for sql in _MIGRATIONS:
             try:
                 self._s.execute(sql)

@@ -9,6 +9,60 @@ NGINX_WORKER_PROCESSES=${NGINX_WORKER_PROCESSES:-auto}
 
 # Start code-server before gunicorn so it is ready when nginx starts routing
 if [ "${CODE_SERVER_PORT}" != "0" ]; then
+    # Avoid port conflicts with the public PORT and any existing listener
+    PUBLIC_PORT=${PORT:-5050}
+    pick_free_port() {
+        python3 - "$@" <<'PY'
+import os, socket, sys
+start = int(sys.argv[1]) if len(sys.argv) > 1 else 8081
+avoid = set(int(x) for x in sys.argv[2].split(',') if x) if len(sys.argv) > 2 else set()
+for p in list(range(start, start + 200)) + [0]:
+    if p in avoid: continue
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        s.bind(("127.0.0.1", p))
+        print(s.getsockname()[1])
+        sys.exit(0)
+    except OSError:
+        pass
+    finally:
+        try: s.close()
+        except Exception: pass
+print(start)
+PY
+    }
+
+    # If CODE_SERVER_PORT collides with PUBLIC_PORT or is already in use, pick another
+    if [ "${CODE_SERVER_PORT}" = "${PUBLIC_PORT}" ]; then
+        NEW_PORT=$(pick_free_port 8081 "${PUBLIC_PORT}")
+        echo "CODE_SERVER_PORT=${CODE_SERVER_PORT} conflicts with PORT=${PUBLIC_PORT}; switching to ${NEW_PORT}"
+        CODE_SERVER_PORT=${NEW_PORT}
+        export CODE_SERVER_PORT
+    else
+        # Probe usage; if in use, switch
+        INUSE=$(python3 - "$CODE_SERVER_PORT" <<'PY'
+import socket, sys
+p = int(sys.argv[1])
+s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+try:
+    s.bind(("127.0.0.1", p))
+except OSError:
+    print("IN_USE")
+else:
+    print("FREE")
+finally:
+    try: s.close()
+    except Exception: pass
+PY
+        )
+        if [ "$INUSE" = "IN_USE" ]; then
+            NEW_PORT=$(pick_free_port 8081 "${PUBLIC_PORT},${CODE_SERVER_PORT}")
+            echo "CODE_SERVER_PORT=${CODE_SERVER_PORT} is already in use; switching to ${NEW_PORT}"
+            CODE_SERVER_PORT=${NEW_PORT}
+            export CODE_SERVER_PORT
+        fi
+    fi
+
     echo "Starting code-server on :${CODE_SERVER_PORT} for ${FILES_DIR} ..."
     # Detect which base path flag is supported (varies across code-server/openvscode builds)
     CS_HELP=$(code-server --help 2>&1 || true)
@@ -25,6 +79,7 @@ if [ "${CODE_SERVER_PORT}" != "0" ]; then
 
     set -x
     code-server \
+        --host          127.0.0.1 \
         --port          "${CODE_SERVER_PORT}" \
         --auth          none \
         "${BASE_FLAG[@]}" \

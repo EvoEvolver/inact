@@ -241,7 +241,11 @@ def serve_ls(fs: FileSystem, prefix: str, subpath: str,
         f"# Directory listing: {url_base}\n",
         f"# {total} entries\n",
         "# tip: append /.download to any file path to get the raw file\n",
-        f"# WebDAV mount: GET {prefix}/dav/  — mount with rclone/davfs2 for native fs access\n\n",
+        f"# File access (no FUSE needed):\n",
+        f"#   read : curl -s {{base}}{prefix}/dav/path/to/file  > local_file\n",
+        f"#   write: curl -s -T local_file {{base}}{prefix}/dav/path/to/file\n",
+        f"#   list : curl -s -X PROPFIND {{base}}{prefix}/dav/\n",
+        f"#   rclone (no mount): rclone copy ws:path/file . --webdav-url {{base}}{prefix}/dav/\n\n",
     ]
     for name in subdirs:
         path = (prefix + "/" + subpath + "/" + name).replace("//", "/")

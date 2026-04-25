@@ -183,6 +183,14 @@ def _system_prompt() -> str:
         "On a revival tick:",
         "  1. GET /notify/inbox   — act on every unread notification",
         "  2. GET /msg/sessions   — reply to any session with unread > 0",
+        "",
+        "## File access (no FUSE/mount needed)",
+        "Use curl_workspace with the WebDAV endpoint — plain HTTP, works everywhere:",
+        "  read a file : curl_workspace GET  /files/dav/path/to/file",
+        "  write a file: curl_workspace PUT  /files/dav/path/to/file  body as string is NOT supported",
+        "                use bash: curl -s -T file.txt $WORKSPACE_HOST/files/dav/path/to/file",
+        "  list dir    : curl_workspace GET  /files/dav/",
+        "  delete      : curl_workspace DELETE /files/dav/path/to/file",
     ]
     if memory:
         lines += [
@@ -229,15 +237,25 @@ def bash(command: str) -> str:
 
 
 @_agent.tool_plain
-def curl_workspace(method: str, path: str, body: dict | None = None) -> str:
-    """Make an HTTP request to the workspace server. Base URL and auth headers are added automatically."""
+def curl_workspace(method: str, path: str, body: dict | None = None,
+                   text_body: str | None = None) -> str:
+    """Make an HTTP request to the workspace server. Base URL and auth headers are added automatically.
+    Use body for JSON payloads, text_body for raw text/file content (e.g. WebDAV PUT)."""
     try:
+        kwargs: dict = {}
+        if text_body is not None:
+            kwargs["data"] = text_body.encode()
+            kwargs["headers"] = _headers({"Content-Type": "application/octet-stream"})
+        elif body is not None:
+            kwargs["json"] = body
+            kwargs["headers"] = _headers({"Content-Type": "application/json"})
+        else:
+            kwargs["headers"] = _headers()
         r = http.request(
             method.upper(),
             WORKSPACE_HOST + path,
-            headers=_headers({"Content-Type": "application/json"} if body else None),
-            json=body,
             timeout=10,
+            **kwargs,
         )
         return r.text[:4000]
     except Exception as exc:

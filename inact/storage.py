@@ -38,6 +38,10 @@ class Storage:
         """Execute one DML statement; return rowcount."""
         raise NotImplementedError
 
+    def insert(self, sql: str, params: tuple = ()) -> int:
+        """Execute an INSERT statement; return the new row's id."""
+        raise NotImplementedError
+
     def batch(self, ops: list[tuple[str, tuple]]) -> None:
         """Execute multiple DML statements in a single transaction."""
         raise NotImplementedError
@@ -82,6 +86,12 @@ class SqliteStorage(Storage):
             c = conn.execute(sql, params)
             conn.commit()
             return c.rowcount
+
+    def insert(self, sql: str, params: tuple = ()) -> int:
+        with self._lock, self._conn() as conn:
+            c = conn.execute(sql, params)
+            conn.commit()
+            return c.lastrowid
 
     def batch(self, ops: list[tuple[str, tuple]]) -> None:
         with self._lock, self._conn() as conn:
@@ -162,6 +172,13 @@ class PostgresStorage(Storage):
             with conn.cursor() as cur:
                 cur.execute(self._p(sql), params)
                 return cur.rowcount
+
+    def insert(self, sql: str, params: tuple = ()) -> int:
+        with self._conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(self._p(sql) + " RETURNING id", params)
+                row = cur.fetchone()
+                return row[0] if row else 0
 
     def batch(self, ops: list[tuple[str, tuple]]) -> None:
         with self._conn() as conn:

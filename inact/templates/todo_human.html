@@ -281,14 +281,22 @@ function startSub(parentId, parentTitle) {
 
 /* ── Toggle done ── */
 async function toggleDone(id, checked) {
-  await fetch(`${P}/${id}/${checked ? '.done' : '.reopen'}`, {method: 'POST', headers: H()});
+  const r = await fetch(`${P}/${id}/${checked ? '.done' : '.reopen'}`, {method: 'POST', headers: H()});
+  const text = await r.text();
+  if (!text.startsWith('OK')) {
+    alert('Error: ' + text.split('\n')[0]);
+  }
   await load();
 }
 
 /* ── Delete ── */
 async function deleteTask(id) {
   if (!confirm('Delete this task and all its subtasks?')) return;
-  await fetch(`${P}/${id}`, {method: 'DELETE', headers: H()});
+  const r = await fetch(`${P}/${id}`, {method: 'DELETE', headers: H()});
+  const text = await r.text();
+  if (!text.startsWith('OK')) {
+    alert('Error: ' + text.split('\n')[0]);
+  }
   await load();
 }
 

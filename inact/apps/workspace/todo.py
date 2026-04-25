@@ -203,13 +203,12 @@ class TodoStore:
                priority: str = "normal", due: str | None = None,
                assignee: str = "", parent_id: str | None = None) -> str:
         now = int(time.time())
-        self._s.execute(
+        new_id = self._s.insert(
             "INSERT INTO tasks (parent_id, title, description, status, priority, due, assignee,"
             " created_at, updated_at, done_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
             (parent_id, title, description, "todo", priority, due, assignee, now, now, None),
         )
-        row = self._s.fetchone("SELECT last_insert_rowid() AS id")
-        return str(row["id"])
+        return str(new_id)
 
     def list_tasks(self, parent_id: str | None = None,
                    status: str | None = None,
@@ -307,13 +306,12 @@ class TodoStore:
     def add_reminder(self, task_id: str, url: str, schedule: str,
                      label: str = "", body: str = "") -> str:
         first_next = int(_next_run(schedule, time.time()))
-        self._s.execute(
+        new_id = self._s.insert(
             "INSERT INTO reminders (task_id, url, schedule, label, body, created_at, last_run,"
             " next_run, enabled) VALUES (?,?,?,?,?,?,?,?,?)",
             (task_id, url, schedule, label, body, int(time.time()), None, first_next, 1),
         )
-        row = self._s.fetchone("SELECT last_insert_rowid() AS id")
-        return str(row["id"])
+        return str(new_id)
 
     def list_reminders(self, task_id: str) -> list[dict]:
         return self._s.fetchall(

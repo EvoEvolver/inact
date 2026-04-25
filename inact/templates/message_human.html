@@ -72,10 +72,10 @@
 @media (max-width: 640px) {
   /* Body becomes a flex column so the app fills whatever space is left
      after the nav, without needing to know the nav's exact height. */
-  html, body { height: 100%; }
-  body { display: flex; flex-direction: column; overflow: hidden; }
-  nav  { flex-shrink: 0; position: relative; } /* un-sticky; stays in flow */
-  .app { flex: 1 !important; height: auto !important; min-height: 0; overflow: hidden; }
+  html { height: 100%; }
+  body { height: 100dvh; display: flex; flex-direction: column; overflow: hidden; }
+  nav  { flex-shrink: 0; position: relative; }
+  .app { flex: 1 !important; height: 0 !important; min-height: 0; overflow: hidden; }
 
   /* Aside fills full width instead of the fixed 200 px */
   aside { width: 100% !important; }
@@ -395,10 +395,13 @@ function selectSession(id, name) {
 // ── poll ───────────────────────────────────────────────────────────────────
 async function pollSession() {
   if (!selId) return;
+  const sessionId = selId; // snapshot before await — guards against session switches
   const text = await fetch(
-    P + '/sessions/' + selId + '/messages?per_page=100',
+    P + '/sessions/' + sessionId + '/messages?per_page=100',
     {headers: authHeaders()}
   ).then(r => r.text()).catch(() => '');
+
+  if (selId !== sessionId) return; // session changed while fetching
 
   const msgs = parseBlocks(text, 'messages').filter(m => m.id && !shownIds.has(m.id));
   const box  = document.getElementById('messages');

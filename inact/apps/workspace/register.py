@@ -190,6 +190,8 @@ def attach_register(inact_app, prefix: str, registry: AgentRegistry,
 
     def _root():
         if request.method == "POST":
+            if not _is_admin():
+                return text_response("ERROR 403: registration requires X-Admin-Key\n", 403)
             body = request.get_json(force=True, silent=True) or {}
             name         = (body.get("name")     or "").strip()
             email        = (body.get("email")    or "").strip()

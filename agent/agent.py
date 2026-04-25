@@ -383,15 +383,6 @@ def main() -> None:
 
     callback_url = CALLBACK_URL or f"http://localhost:{PORT}/wake"
 
-    threading.Thread(
-        target=lambda: agent_app.run(
-            host="0.0.0.0", port=PORT, debug=False, use_reloader=False
-        ),
-        daemon=True,
-    ).start()
-    time.sleep(0.5)
-    print(f"[agent] callback server on :{PORT}")
-
     if NOTIFY_REGISTER:
         try:
             r = http.post(
@@ -417,11 +408,8 @@ Agent #{AGENT_ID} ready
   model:     {MODEL}
 """)
 
-    try:
-        while True:
-            time.sleep(1)
-    except KeyboardInterrupt:
-        print("\n[agent] stopped.")
+    print(f"[agent] callback server on :{PORT}")
+    agent_app.run(host="0.0.0.0", port=PORT, debug=False, use_reloader=False)
 
 
 if __name__ == "__main__":

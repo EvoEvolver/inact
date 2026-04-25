@@ -56,6 +56,70 @@
 .panel-actions button { flex: 1; padding: 10px; border-radius: 8px; border: none; cursor: pointer; font-size: 14px; }
 .btn-cancel { background: #f0f0f0; color: #444; }
 .btn-cancel:hover { background: #e0e0e0; }
+
+/* chat title row — flex so back button and text sit inline */
+.chat-title { display: flex; align-items: center; }
+.chat-title-text { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* back button — hidden on desktop, shown on mobile */
+.back-btn {
+  display: none; background: none; border: none; cursor: pointer;
+  color: #0066cc; font-size: 24px; line-height: 1;
+  padding: 0 10px 0 0; flex-shrink: 0;
+}
+
+/* ── Mobile ────────────────────────────────────────────────────────────── */
+@media (max-width: 640px) {
+  /* Hide the top nav to reclaim screen space */
+  nav { display: none; }
+
+  /* App fills the whole viewport */
+  .app {
+    height: 100vh !important;   /* fallback */
+    height: 100dvh !important;  /* dynamic — accounts for mobile chrome */
+  }
+
+  /* Make .layout the positioning context for the absolute aside */
+  .layout { position: relative; }
+
+  /* Sidebar covers the full layout area */
+  aside {
+    position: absolute; inset: 0; z-index: 2;
+    width: 100%; display: flex; flex-direction: column;
+    overflow: hidden;
+  }
+
+  /* Main chat area hidden until a session is chosen */
+  main { display: none; width: 100%; }
+
+  /* Chat mode: hide list, show chat */
+  .layout.chat-active aside { display: none; }
+  .layout.chat-active main  { display: flex; }
+
+  /* Reveal back button */
+  .back-btn { display: block; }
+
+  /* Bubbles can use more width */
+  .wrap-msg { max-width: 88%; }
+
+  /* 16 px minimum prevents iOS auto-zoom on focus */
+  textarea, input[type=text] { font-size: 16px !important; }
+
+  /* Larger tap targets for session rows */
+  .agent-btn { padding: 13px 14px; font-size: 15px; }
+
+  /* Slightly tighter compose bar */
+  .compose { padding: 10px 12px; }
+
+  /* New-session panel: compact padding */
+  #new-session-panel { padding: 20px 16px 16px; }
+
+  /* Member list can grow taller on phone */
+  .member-check-list { max-height: 50vh; }
+
+  /* Bigger member rows for touch */
+  .member-check-item { padding: 12px 14px; font-size: 15px; }
+}
 </style>
 
 <div class="app" style="height:calc(100vh - 45px)">
@@ -81,7 +145,10 @@
     <main>
       <!-- Chat area -->
       <div id="chat-area" style="flex:1;display:flex;flex-direction:column;overflow:hidden">
-        <div class="chat-title" id="chat-title">Select a session</div>
+        <div class="chat-title">
+          <button class="back-btn" id="back-btn">‹</button>
+          <span class="chat-title-text" id="chat-title">Select a session</span>
+        </div>
         <div id="messages">
           <div class="placeholder">← choose a session</div>
         </div>
@@ -153,6 +220,7 @@ const agentKindCache = {};
 let allAgents = [];
 
 // ── helpers ────────────────────────────────────────────────────────────────
+function isMobile() { return window.matchMedia('(max-width: 640px)').matches; }
 function apiKey() { return localStorage.getItem('inact_api_key') || ''; }
 function authHeaders(extra) {
   const h = {'X-Agent-Id': myId};
@@ -304,6 +372,12 @@ function hidePanels() {
   document.getElementById('new-session-panel').style.display = 'none';
 }
 
+function enterChatView() {
+  if (isMobile()) {
+    document.querySelector('.layout').classList.add('chat-active');
+  }
+}
+
 function selectSession(id, name) {
   selId = id; selName = name;
   clearActive();
@@ -315,9 +389,17 @@ function selectSession(id, name) {
   shownIds.clear();
   document.getElementById('messages').innerHTML = '';
   hidePanels();
+  enterChatView();
   if (msgTimer) clearInterval(msgTimer);
   pollSession();
   msgTimer = setInterval(pollSession, 3000);
+}
+
+// ── back button (mobile) ───────────────────────────────────────────────────
+function goBack() {
+  if (msgTimer) { clearInterval(msgTimer); msgTimer = null; }
+  document.querySelector('.layout').classList.remove('chat-active');
+  clearActive();
 }
 
 // ── poll ───────────────────────────────────────────────────────────────────
@@ -376,6 +458,7 @@ function showNewSessionPanel() {
   document.getElementById('new-session-panel').style.display = 'flex';
   document.getElementById('session-name-inp').value = '';
   document.getElementById('create-session-err').style.display = 'none';
+  enterChatView();
   populateMemberList();
 }
 
@@ -441,6 +524,7 @@ document.getElementById('inp').addEventListener('keydown', e => {
 });
 document.getElementById('new-session-btn').addEventListener('click', showNewSessionPanel);
 document.getElementById('create-session-btn').addEventListener('click', createSession);
+document.getElementById('back-btn').addEventListener('click', goBack);
 document.getElementById('cancel-session-btn').addEventListener('click', () => {
   hidePanels();
   if (selId) {
@@ -453,10 +537,15 @@ document.getElementById('cancel-session-btn').addEventListener('click', () => {
     const btn = document.querySelector(`.agent-btn[data-id="${selId}"]`);
     if (btn) btn.classList.add('active');
   } else {
-    document.getElementById('chat-title').textContent = 'Select a session';
-    document.getElementById('messages').innerHTML = '<div class="placeholder">← choose a session</div>';
-    document.getElementById('inp').disabled      = true;
-    document.getElementById('send-btn').disabled = true;
+    // No active session — on mobile go back to list, on desktop show placeholder
+    if (isMobile()) {
+      goBack();
+    } else {
+      document.getElementById('chat-title').textContent = 'Select a session';
+      document.getElementById('messages').innerHTML = '<div class="placeholder">← choose a session</div>';
+      document.getElementById('inp').disabled      = true;
+      document.getElementById('send-btn').disabled = true;
+    }
   }
 });
 

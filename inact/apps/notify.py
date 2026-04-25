@@ -211,10 +211,19 @@ def _start_revival(store: NotifyStore, interval: int) -> None:
 # ---------------------------------------------------------------------------
 
 def attach_notify(inact_app, prefix: str, store: NotifyStore,
-                  kind_fn=None) -> None:
+                  kind_fn=None, member_fn=None) -> None:
     prefix = "/" + prefix.strip("/")
     ep = "_inact_notify_" + prefix.replace("/", "__")
     flask_app = inact_app.app
+
+    def _from_str(agent_id: str) -> str:
+        if not agent_id:
+            return agent_id
+        info = member_fn(agent_id) if member_fn else {"name": "", "kind": "agent"}
+        name = info["name"] or (
+            "Human #" + agent_id if info["kind"] == "human" else "Agent #" + agent_id
+        )
+        return f"{name}#{agent_id}"
 
     def _register():
         body = request.get_json(force=True, silent=True) or {}
@@ -272,7 +281,7 @@ def attach_notify(inact_app, prefix: str, store: NotifyStore,
             fk = kind_fn(n['from_id']) if kind_fn and n['from_id'] else ""
             lines += ["[[notifications]]\n",
                       f"id        = {toml_str(n['id'])}\n",
-                      f"from      = {toml_str(n['from_id'])}\n"]
+                      f"from      = {toml_str(_from_str(n['from_id']))}\n"]
             if fk:
                 lines.append(f"from_kind = {toml_str(fk)}\n")
             lines += [f"message   = {toml_str(n['message'])}\n",
@@ -292,7 +301,7 @@ def attach_notify(inact_app, prefix: str, store: NotifyStore,
         fk = kind_fn(n['from_id']) if kind_fn and n['from_id'] else ""
         return text_response(
             f"id        = {toml_str(n['id'])}\n"
-            f"from      = {toml_str(n['from_id'])}\n"
+            f"from      = {toml_str(_from_str(n['from_id']))}\n"
             + (f"from_kind = {toml_str(fk)}\n" if fk else "")
             + f"to        = {toml_str(n['to_id'])}\n"
             f"message   = {toml_str(n['message'])}\n"
@@ -356,10 +365,23 @@ def mount_notify(
             except Exception:
                 return "agent"
 
+        def member_fn(from_id: str, _r=_reg) -> dict:
+            if not from_id:
+                return {"name": "", "kind": "agent"}
+            try:
+                row = _r.get(int(from_id))
+                if row:
+                    return {"name": row.get("name", "") or "", "kind": row.get("kind", "agent") or "agent"}
+            except Exception:
+                pass
+            return {"name": "", "kind": "agent"}
+    else:
+        member_fn = None
+
     if revival_interval > 0:
         _start_revival(store, revival_interval)
 
-    attach_notify(inact_app, p, store, kind_fn=kind_fn)
+    attach_notify(inact_app, p, store, kind_fn=kind_fn, member_fn=member_fn)
     inact_app._app_mounts.append((p, (
         f"\nNotifications: {p}\n"
         f'  POST {p}/register   register callback  body: {{"agent_id":"1","callback":"http://..."}}\n'

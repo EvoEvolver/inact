@@ -237,6 +237,16 @@ def attach_message(inact_app, prefix: str, store: SessionStore,
     ep = "_inact_msg_" + prefix.replace("/", "__")
     flask_app = inact_app.app
 
+    def _from_str(agent_id: str) -> str:
+        """Return 'Name#id' for display, falling back to 'Kind #id#id'."""
+        if not agent_id:
+            return agent_id
+        info = member_fn(agent_id) if member_fn else {"name": "", "kind": "agent"}
+        name = info["name"] or (
+            "Human #" + agent_id if info["kind"] == "human" else "Agent #" + agent_id
+        )
+        return f"{name}#{agent_id}"
+
     def _agent_id() -> str:
         return (
             request.args.get("agent_id", "")
@@ -393,7 +403,7 @@ def attach_message(inact_app, prefix: str, store: SessionStore,
             fk = kind_fn(m["from_id"]) if kind_fn else ""
             lines.append("[[messages]]\n")
             lines.append(f"id        = {toml_str(m['id'])}\n")
-            lines.append(f"from      = {toml_str(m['from_id'])}\n")
+            lines.append(f"from      = {toml_str(_from_str(m['from_id']))}\n")
             if fk:
                 lines.append(f"from_kind = {toml_str(fk)}\n")
             lines.append(f"body      = {toml_str(m['body'])}\n")

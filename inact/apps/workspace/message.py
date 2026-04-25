@@ -89,6 +89,20 @@ class SessionStore:
     def __init__(self, storage: Storage):
         self._s = storage
         self._s.init(_DDL)
+        self._migrate()
+
+    def _migrate(self) -> None:
+        """Drop session tables that still use the old TEXT PRIMARY KEY schema."""
+        try:
+            cols = self._s.fetchall("PRAGMA table_info(sessions)")
+            id_col = next((c for c in cols if c["name"] == "id"), None)
+            if id_col and id_col["type"].upper() == "TEXT":
+                for t in ("session_message_reads", "session_messages",
+                          "session_members", "sessions"):
+                    self._s.execute(f"DROP TABLE IF EXISTS {t}")
+                self._s.init(_DDL)
+        except Exception:
+            pass
 
     def create(self, name: str, created_by: str, member_ids: list) -> int:
         ts = int(time.time())

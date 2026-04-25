@@ -1,6 +1,22 @@
 #!/bin/sh
 set -e
 
+CODE_SERVER_PORT=${CODE_SERVER_PORT:-0}
+FILES_DIR=${DATA_DIR:-/data}/files
+
+# Start code-server before gunicorn so it is ready when nginx starts routing
+if [ "${CODE_SERVER_PORT}" != "0" ]; then
+    echo "Starting code-server on :${CODE_SERVER_PORT} for ${FILES_DIR} ..."
+    code-server \
+        --port          "${CODE_SERVER_PORT}" \
+        --auth          none \
+        --base-path     /vscode \
+        --user-data-dir /tmp/code-server-data \
+        "${FILES_DIR}" &
+    CS_PID=$!
+    echo "code-server pid=${CS_PID}"
+fi
+
 python3 - << 'PYEOF'
 import os
 

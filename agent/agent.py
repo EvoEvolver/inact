@@ -12,6 +12,7 @@ Usage:
 import argparse
 import json
 import os
+import queue
 import re
 import subprocess
 import sys
@@ -242,40 +243,74 @@ def _run_tool(name: str, inputs: dict) -> str:
 
 
 # ---------------------------------------------------------------------------
-# LLM loop
+# LLM loop + persistent conversation
 # ---------------------------------------------------------------------------
 
-def _run_llm(system: str, messages: list[dict]) -> str:
-    msgs = [{"role": "system", "content": system}, *messages]
+# Single persistent conversation shared across all notifications.
+# Initialised in main() once AGENT_ID is resolved.
+_conversation: list[dict] = []
+_notification_queue: queue.Queue = queue.Queue()
 
+
+def _run_llm() -> str:
+    """Advance _conversation by one LLM turn (including any tool calls). Returns final text."""
     while True:
         response = _client.chat.completions.create(
             model=MODEL,
             max_tokens=8096,
-            messages=msgs,
+            messages=_conversation,
             tools=_TOOLS,
         )
 
         choice = response.choices[0]
         message = choice.message
+        _conversation.append(message)
 
         if choice.finish_reason != "tool_calls" or not message.tool_calls:
             return message.content or ""
-
-        msgs.append(message)
 
         for tc in message.tool_calls:
             inputs = json.loads(tc.function.arguments)
             result = _run_tool(tc.function.name, inputs)
             print(f"[tool:{tc.function.name}] {tc.function.arguments[:80]} → {result[:80]}")
-            msgs.append({"role": "tool", "tool_call_id": tc.id, "content": result})
+            _conversation.append({"role": "tool", "tool_call_id": tc.id, "content": result})
 
 
-# ---------------------------------------------------------------------------
-# Notification handler
-# ---------------------------------------------------------------------------
+def _agent_loop() -> None:
+    """Single worker thread: dequeues notifications and runs the LLM sequentially."""
+    while True:
+        # Block until at least one notification arrives
+        payload = _notification_queue.get()
 
-def _system_prompt(memory: str) -> str:
+        # Drain any that piled up while we were busy so they land in one user turn
+        batch = [payload]
+        while not _notification_queue.empty():
+            try:
+                batch.append(_notification_queue.get_nowait())
+            except queue.Empty:
+                break
+
+        parts = []
+        for p in batch:
+            if p is None:
+                parts.append("Revival tick: check for any unread messages and reply to them.")
+            else:
+                parts.append(f"Notification received:\n{json.dumps(p, indent=2)}")
+        _conversation.append({"role": "user", "content": "\n\n".join(parts)})
+
+        output = _run_llm()
+        print(f"[agent] {output[:300]}")
+
+        if "MEMORY:" in output:
+            _, _, mem = output.partition("MEMORY:")
+            try:
+                apply_memory(mem.strip())
+            except Exception as exc:
+                print(f"[memory] error: {exc}", file=sys.stderr)
+
+
+def _system_prompt() -> str:
+    memory = load_memory()
     lines = [
         f"You are AI agent #{AGENT_ID} connected to a workspace at {WORKSPACE_HOST}.",
         "Use curl_workspace to interact with the workspace API.",
@@ -291,7 +326,7 @@ def _system_prompt(memory: str) -> str:
     lines += [
         "",
         "## Instructions",
-        "Handle the situation described in the user message.",
+        "Each user message is a notification or revival tick. Handle it appropriately.",
         "If anything is worth saving to long-term memory, append a MEMORY section:",
         "",
         "MEMORY:",
@@ -305,26 +340,6 @@ def _system_prompt(memory: str) -> str:
     return "\n".join(lines)
 
 
-def handle_notification(payload: dict | None) -> None:
-    memory = load_memory()
-    system = _system_prompt(memory)
-
-    if payload:
-        trigger = f"Notification received:\n{json.dumps(payload, indent=2)}"
-    else:
-        trigger = "Revival tick: check for any unread messages and reply to them."
-
-    output = _run_llm(system, [{"role": "user", "content": trigger}])
-    print(f"[agent] {output[:300]}")
-
-    if "MEMORY:" in output:
-        _, _, mem = output.partition("MEMORY:")
-        try:
-            apply_memory(mem.strip())
-        except Exception as exc:
-            print(f"[memory] error: {exc}", file=sys.stderr)
-
-
 # ---------------------------------------------------------------------------
 # Callback server
 # ---------------------------------------------------------------------------
@@ -335,8 +350,8 @@ agent_app = Flask("reply-agent")
 @agent_app.route("/wake", methods=["POST"])
 def wake():
     payload = freq.get_json(force=True, silent=True) or {}
-    print(f"\n[wake] {payload.get('type', 'notification')} — invoking LLM...")
-    threading.Thread(target=handle_notification, args=(payload,), daemon=True).start()
+    print(f"\n[wake] {payload.get('type', 'notification')} — queued")
+    _notification_queue.put(payload)
     return jsonify({"status": "ok"})
 
 
@@ -352,8 +367,8 @@ def health():
 def revival_loop(interval: int) -> None:
     while True:
         time.sleep(interval)
-        print(f"\n[revival] {time.strftime('%H:%M:%S')} — invoking LLM...")
-        handle_notification(None)
+        print(f"\n[revival] {time.strftime('%H:%M:%S')} — queued")
+        _notification_queue.put(None)
 
 
 # ---------------------------------------------------------------------------
@@ -395,8 +410,11 @@ def main() -> None:
         except Exception as exc:
             print(f"[agent] WARNING: could not register callback: {exc}", file=sys.stderr)
 
+    _conversation.append({"role": "system", "content": _system_prompt()})
+    threading.Thread(target=_agent_loop, daemon=True).start()
+
     print("[agent] checking for pending messages...")
-    handle_notification(None)
+    _notification_queue.put(None)
 
     threading.Thread(target=revival_loop, args=(INTERVAL,), daemon=True).start()
 

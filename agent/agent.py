@@ -307,8 +307,8 @@ def _reset_session() -> None:
 # Notification queue + agent loop
 # ---------------------------------------------------------------------------
 
-def _mark_notifications_read() -> None:
-    """Fetch all unread notifications and mark each as read."""
+def _get_unread_notification_ids() -> list[str]:
+    """Return the IDs of all currently unread notifications."""
     try:
         resp = http.get(
             f"{WORKSPACE_HOST}{NOTIFY_INBOX}",
@@ -316,17 +316,21 @@ def _mark_notifications_read() -> None:
             params={"unread": "1"},
             timeout=5,
         )
-        ids = re.findall(r'id\s*=\s*"([^"]+)"', resp.text)
-        for nid in ids:
-            http.get(
-                f"{WORKSPACE_HOST}{NOTIFY_INBOX}/{nid}",
-                headers=_headers(),
-                timeout=5,
-            )
-        if ids:
-            log.info("marked %d notification(s) as read", len(ids))
+        return re.findall(r'id\s*=\s*"([^"]+)"', resp.text)
     except Exception as exc:
-        log.warning("could not mark notifications read: %s", exc)
+        log.warning("could not fetch unread notifications: %s", exc)
+        return []
+
+
+def _mark_notifications_read(ids: list[str]) -> None:
+    """Mark a specific set of notification IDs as read."""
+    for nid in ids:
+        try:
+            http.get(f"{WORKSPACE_HOST}{NOTIFY_INBOX}/{nid}", headers=_headers(), timeout=5)
+        except Exception as exc:
+            log.warning("could not mark notification %s as read: %s", nid, exc)
+    if ids:
+        log.info("marked %d notification(s) as read", len(ids))
 
 
 _notification_queue: queue.Queue = queue.Queue()
@@ -359,6 +363,10 @@ def _agent_loop() -> None:
             user_msg = "\n\n".join(parts)
             log.info("trigger: %s", user_msg[:200])
 
+            # Snapshot unread IDs before the LLM runs — new ones arriving
+            # during the call must stay unread so they get processed next.
+            unread_before = _get_unread_notification_ids()
+
             try:
                 output = _run_llm(user_msg)
             except Exception as exc:
@@ -375,7 +383,7 @@ def _agent_loop() -> None:
                 except Exception as exc:
                     log.error("memory error: %s", exc)
 
-            _mark_notifications_read()
+            _mark_notifications_read(unread_before)
         finally:
             _agent_busy.clear()
 

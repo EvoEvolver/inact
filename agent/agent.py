@@ -17,7 +17,6 @@ import re
 import subprocess
 import sys
 import threading
-import time
 
 import openai
 import requests as http
@@ -35,7 +34,6 @@ AGENT_ME_PATH   = os.environ.get("AGENT_ME_PATH",        "/agents/.me")
 _railway_domain = os.environ.get("RAILWAY_PRIVATE_DOMAIN", "")
 CALLBACK_URL    = os.environ.get("CALLBACK_URL", f"https://{_railway_domain}/wake" if _railway_domain else "")
 PORT            = int(os.environ.get("PORT",              "7779"))
-INTERVAL        = int(os.environ.get("REVIVAL_INTERVAL", "600"))
 MEMORY_DIR      = os.environ.get("MEMORY_DIR",           "./memory")
 MODEL           = os.environ.get("MODEL",                "openai/gpt-4o-mini")
 # Path the workspace exposes for callback registration (empty = skip registration)
@@ -361,17 +359,6 @@ def health():
 
 
 # ---------------------------------------------------------------------------
-# Revival loop
-# ---------------------------------------------------------------------------
-
-def revival_loop(interval: int) -> None:
-    while True:
-        time.sleep(interval)
-        print(f"\n[revival] {time.strftime('%H:%M:%S')} — queued")
-        _notification_queue.put(None)
-
-
-# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -383,7 +370,6 @@ def main() -> None:
     parser.add_argument("--agent-id",  default=None, help="agent id (resolved from key if omitted)")
     parser.add_argument("--agent-key", default=None, help="override AGENT_KEY env var")
     parser.add_argument("--port",      default=None, type=int)
-    parser.add_argument("--interval",  default=None, type=int)
     parser.add_argument("--callback",  default=None)
     args = parser.parse_args()
 
@@ -391,7 +377,6 @@ def main() -> None:
     if args.agent_id:   AGENT_ID       = args.agent_id
     if args.agent_key:  AGENT_KEY      = args.agent_key
     if args.port:       PORT           = args.port
-    if args.interval:   INTERVAL       = args.interval
     if args.callback:   CALLBACK_URL   = args.callback
 
     _resolve_agent_id()
@@ -416,13 +401,10 @@ def main() -> None:
     print("[agent] checking for pending messages...")
     _notification_queue.put(None)
 
-    threading.Thread(target=revival_loop, args=(INTERVAL,), daemon=True).start()
-
     print(f"""
 Agent #{AGENT_ID} ready
   workspace: {WORKSPACE_HOST}
   callback:  {callback_url}
-  revival:   every {INTERVAL}s
   model:     {MODEL}
 """)
 

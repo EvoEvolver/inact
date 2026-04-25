@@ -48,6 +48,8 @@ PORT            = int(os.environ.get("PORT",              "7779"))
 MEMORY_DIR      = os.environ.get("MEMORY_DIR",           "./memory")
 MODEL           = os.environ.get("MODEL",                "openai/gpt-4o-mini")
 SESSION_TIMEOUT = int(os.environ.get("SESSION_TIMEOUT",  "600"))
+# Periodic self-check interval in seconds — safety net for missed push notifications (0 = off)
+POLL_INTERVAL   = int(os.environ.get("POLL_INTERVAL",    "120"))
 NOTIFY_REGISTER = os.environ.get("NOTIFY_REGISTER_PATH", "/notify/register")
 
 
@@ -384,6 +386,14 @@ def main() -> None:
 
     _session_start = time.time()
     threading.Thread(target=_agent_loop, daemon=True).start()
+
+    if POLL_INTERVAL > 0:
+        def _poll_loop() -> None:
+            while True:
+                time.sleep(POLL_INTERVAL)
+                log.info("poll — queuing self-check")
+                _notification_queue.put(None)
+        threading.Thread(target=_poll_loop, daemon=True).start()
 
     log.info("checking for pending messages...")
     _notification_queue.put(None)

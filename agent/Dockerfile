@@ -9,6 +9,13 @@ RUN python3 -c \
     uv pip install --system --no-cache -r requirements.txt && \
     rm requirements.txt
 
+# System packages + rclone
+RUN apt-get update -qq && \
+    apt-get install -y --no-install-recommends curl ca-certificates unzip fuse3 && \
+    curl -fsSL https://rclone.org/install.sh | bash && \
+    echo "user_allow_other" >> /etc/fuse.conf && \
+    apt-get clean && rm -rf /var/lib/apt/lists/*
+
 # Install Claude CLI (requires Node.js)
 RUN apt-get update -qq && \
     apt-get install -y --no-install-recommends curl ca-certificates && \

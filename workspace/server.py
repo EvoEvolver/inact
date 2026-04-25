@@ -77,6 +77,7 @@ RELAY_PASS   = os.environ.get("SMTP_RELAY_PASSWORD", "")
 TAVILY_KEY   = os.environ.get("TAVILY_API_KEY", "")
 DOMAIN       = os.environ.get("DOMAIN", "")      # e.g. agents.example.com
 ADMIN_KEY    = os.environ.get("ADMIN_KEY", "")   # secret key for /_human/agents/.admin
+CODE_SERVER_PORT = int(os.environ.get("CODE_SERVER_PORT", "0")) or None  # 0 = disabled
 
 # ---------------------------------------------------------------------------
 # App
@@ -187,7 +188,8 @@ mount_sql(app, "/db", SHARED_DB)
 # Shared file storage (read + write for all file types, CSV paginated)
 mount_files(app, "/files", FILES_DIR,
             handlers=[CSVHandler(rows_per_page=50)],
-            editable=True)
+            editable=True,
+            code_server_port=CODE_SERVER_PORT)
 
 # Web search (optional)
 if TAVILY_KEY:

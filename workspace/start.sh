@@ -19,6 +19,8 @@ if cs_port:
             proxy_set_header   Host       $http_host;
             proxy_set_header   X-Real-IP  $remote_addr;
             proxy_read_timeout 86400;
+            proxy_next_upstream error timeout;
+            proxy_connect_timeout 10s;
         }}
 """
 

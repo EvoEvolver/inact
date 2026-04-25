@@ -610,18 +610,21 @@ def mount_files(
     if _vscode_enabled:
         import atexit, subprocess as _sp
         _path_arg = local_path or "."
+        # --user-data-dir avoids permission issues in containers
+        # stderr=None so crashes show up in Docker/Railway logs
         _proc = _sp.Popen(
             ["code-server",
-             "--port",      str(code_server_port),
-             "--auth",      "none",
-             "--base-path", "/_vscode",
+             "--port",          str(code_server_port),
+             "--auth",          "none",
+             "--base-path",     "/_vscode",
+             "--user-data-dir", "/tmp/code-server-data",
              _path_arg],
-            stdout=_sp.DEVNULL, stderr=_sp.DEVNULL,
+            stdout=_sp.DEVNULL, stderr=None,
         )
         atexit.register(_proc.terminate)
         import logging as _log
         _log.getLogger(__name__).info(
-            "code-server started on :%d for %s (base /_vscode)", code_server_port, _path_arg
+            "code-server started on :%d for %s", code_server_port, _path_arg
         )
 
     def _human(path: str):

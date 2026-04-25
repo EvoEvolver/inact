@@ -307,6 +307,28 @@ def _reset_session() -> None:
 # Notification queue + agent loop
 # ---------------------------------------------------------------------------
 
+def _mark_notifications_read() -> None:
+    """Fetch all unread notifications and mark each as read."""
+    try:
+        resp = http.get(
+            f"{WORKSPACE_HOST}{NOTIFY_INBOX}",
+            headers=_headers(),
+            params={"unread": "1"},
+            timeout=5,
+        )
+        ids = re.findall(r'id\s*=\s*"([^"]+)"', resp.text)
+        for nid in ids:
+            http.get(
+                f"{WORKSPACE_HOST}{NOTIFY_INBOX}/{nid}",
+                headers=_headers(),
+                timeout=5,
+            )
+        if ids:
+            log.info("marked %d notification(s) as read", len(ids))
+    except Exception as exc:
+        log.warning("could not mark notifications read: %s", exc)
+
+
 _notification_queue: queue.Queue = queue.Queue()
 _agent_busy = threading.Event()
 
@@ -352,6 +374,8 @@ def _agent_loop() -> None:
                     apply_memory(mem.strip())
                 except Exception as exc:
                     log.error("memory error: %s", exc)
+
+            _mark_notifications_read()
         finally:
             _agent_busy.clear()
 
@@ -424,15 +448,16 @@ def main() -> None:
                     continue  # agent is mid-run; don't pile up revival ticks
                 try:
                     resp = http.get(
-                        f"{WORKSPACE_HOST}/msg/sessions",
+                        f"{WORKSPACE_HOST}{NOTIFY_INBOX}",
                         headers=_headers(),
+                        params={"unread": "1"},
                         timeout=5,
                     )
-                    has_unread = bool(re.search(r"unread\s*=\s*[1-9]", resp.text))
+                    has_unread = "[[notifications]]" in resp.text
                 except Exception:
                     has_unread = True  # wake on error so we don't miss messages
                 if has_unread:
-                    log.info("poll — sessions with unread messages found, queuing check")
+                    log.info("poll — unread notifications found, queuing check")
                     _notification_queue.put(None)
         threading.Thread(target=_poll_loop, daemon=True).start()
 

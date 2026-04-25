@@ -32,7 +32,7 @@ from __future__ import annotations
 import os
 
 from .register import AgentRegistry, attach_register, mount_register
-from .message  import MessageStore,  attach_message,  mount_message
+from .message  import SessionStore, MessageStore, attach_message, mount_message
 from .mailbox  import MailStore,     attach_mailbox,  mount_mailbox
 from .todo     import TodoStore,     attach_todo,     mount_todo
 from .database import DbStore,       attach_db,       mount_db
@@ -40,7 +40,7 @@ from .database import DbStore,       attach_db,       mount_db
 
 __all__ = [
     # stores
-    "AgentRegistry", "MessageStore", "MailStore", "TodoStore", "DbStore",
+    "AgentRegistry", "SessionStore", "MessageStore", "MailStore", "TodoStore", "DbStore",
     # attach functions
     "attach_register", "attach_message", "attach_mailbox", "attach_todo", "attach_db",
     # mount functions
@@ -96,7 +96,8 @@ def mount_workspace(
 
     mount_message(inact_app, msg_prefix, storage,
                   agents_prefix=agents_prefix,
-                  notify_storage=notify_storage)
+                  notify_storage=notify_storage,
+                  registry=storage)
 
     mount_todo(inact_app, tasks_prefix, storage,
                agents_prefix=agents_prefix,

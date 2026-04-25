@@ -262,10 +262,11 @@ button.send:disabled { background: #aaa; cursor: default; }
 {% if show_identity is defined and show_identity %}
 <script>
 (function() {
-  const id  = localStorage.getItem('inact_agent_id');
-  const nm  = localStorage.getItem('inact_name') || '';
-  const el  = document.getElementById('nav-identity');
-  if (el && id) el.textContent = (nm || ('Agent #' + id));
+  const id   = localStorage.getItem('inact_agent_id');
+  const nm   = localStorage.getItem('inact_name') || '';
+  const kind = localStorage.getItem('inact_kind') || 'agent';
+  const el   = document.getElementById('nav-identity');
+  if (el && id) el.textContent = nm || (kind === 'human' ? 'Human #' + id : 'Agent #' + id);
 })();
 </script>
 {% endif %}

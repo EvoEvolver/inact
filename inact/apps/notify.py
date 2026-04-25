@@ -167,17 +167,20 @@ def _fire_callback(url: str, payload: dict) -> None:
 
 
 def _push(store: NotifyStore, to_id: str, notif_id: str,
-          message: str, from_id: str) -> None:
+          message: str, from_id: str, from_kind: str = "") -> None:
     url = store.get_callback(to_id)
     if url:
+        payload: dict = {
+            "type": "notification",
+            "id": notif_id,
+            "from": from_id,
+            "message": message,
+        }
+        if from_kind:
+            payload["from_kind"] = from_kind
         threading.Thread(
             target=_fire_callback,
-            args=(url, {
-                "type": "notification",
-                "id": notif_id,
-                "from": from_id,
-                "message": message,
-            }),
+            args=(url, payload),
             daemon=True,
         ).start()
 
@@ -207,7 +210,8 @@ def _start_revival(store: NotifyStore, interval: int) -> None:
 # Route attachment
 # ---------------------------------------------------------------------------
 
-def attach_notify(inact_app, prefix: str, store: NotifyStore) -> None:
+def attach_notify(inact_app, prefix: str, store: NotifyStore,
+                  kind_fn=None) -> None:
     prefix = "/" + prefix.strip("/")
     ep = "_inact_notify_" + prefix.replace("/", "__")
     flask_app = inact_app.app
@@ -265,16 +269,17 @@ def attach_notify(inact_app, prefix: str, store: NotifyStore) -> None:
             "# tip: ?unread=1 to filter unread\n\n",
         ]
         for n in notifs:
-            lines += [
-                "[[notifications]]\n",
-                f"id      = {toml_str(n['id'])}\n",
-                f"from    = {toml_str(n['from_id'])}\n",
-                f"message = {toml_str(n['message'])}\n",
-                f"date    = {toml_str(_fmt_ts(n['created_at']))}\n",
-                f"read    = {str(bool(n['read'])).lower()}\n",
-                f"url     = {toml_str(prefix + '/inbox/' + n['id'])}\n",
-                "\n",
-            ]
+            fk = kind_fn(n['from_id']) if kind_fn and n['from_id'] else ""
+            lines += ["[[notifications]]\n",
+                      f"id        = {toml_str(n['id'])}\n",
+                      f"from      = {toml_str(n['from_id'])}\n"]
+            if fk:
+                lines.append(f"from_kind = {toml_str(fk)}\n")
+            lines += [f"message   = {toml_str(n['message'])}\n",
+                      f"date      = {toml_str(_fmt_ts(n['created_at']))}\n",
+                      f"read      = {str(bool(n['read'])).lower()}\n",
+                      f"url       = {toml_str(prefix + '/inbox/' + n['id'])}\n",
+                      "\n"]
         return text_response("".join(lines))
 
     def _notif(notif_id: str):
@@ -284,13 +289,15 @@ def attach_notify(inact_app, prefix: str, store: NotifyStore) -> None:
         n = store.get(notif_id)
         if not n:
             return text_response("ERROR 404: notification not found\n", 404)
+        fk = kind_fn(n['from_id']) if kind_fn and n['from_id'] else ""
         return text_response(
-            f"id      = {toml_str(n['id'])}\n"
-            f"from    = {toml_str(n['from_id'])}\n"
-            f"to      = {toml_str(n['to_id'])}\n"
-            f"message = {toml_str(n['message'])}\n"
-            f"date    = {toml_str(_fmt_ts(n['created_at']))}\n"
-            f"read    = {str(bool(n['read'])).lower()}\n"
+            f"id        = {toml_str(n['id'])}\n"
+            f"from      = {toml_str(n['from_id'])}\n"
+            + (f"from_kind = {toml_str(fk)}\n" if fk else "")
+            + f"to        = {toml_str(n['to_id'])}\n"
+            f"message   = {toml_str(n['message'])}\n"
+            f"date      = {toml_str(_fmt_ts(n['created_at']))}\n"
+            f"read      = {str(bool(n['read'])).lower()}\n"
         )
 
     flask_app.add_url_rule(
@@ -316,6 +323,7 @@ def mount_notify(
     prefix: str,
     storage,
     revival_interval: int = 600,
+    registry=None,
 ) -> None:
     """
     Mount the notification system at *prefix*.
@@ -333,10 +341,25 @@ def mount_notify(
     backend = make_storage(storage) if isinstance(storage, str) else storage
     store = NotifyStore(backend)
 
+    kind_fn = None
+    if registry is not None:
+        from .workspace.register import AgentRegistry
+        _reg = registry if isinstance(registry, AgentRegistry) \
+               else AgentRegistry(make_storage(registry) if isinstance(registry, str) else registry)
+
+        def kind_fn(from_id: str, _r=_reg) -> str:
+            if not from_id:
+                return "agent"
+            try:
+                row = _r.get(int(from_id))
+                return (row.get("kind", "agent") if row else "agent")
+            except Exception:
+                return "agent"
+
     if revival_interval > 0:
         _start_revival(store, revival_interval)
 
-    attach_notify(inact_app, p, store)
+    attach_notify(inact_app, p, store, kind_fn=kind_fn)
     inact_app._app_mounts.append((p, (
         f"\nNotifications: {p}\n"
         f'  POST {p}/register   register callback  body: {{"agent_id":"1","callback":"http://..."}}\n'

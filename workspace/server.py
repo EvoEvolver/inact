@@ -163,7 +163,8 @@ Open in your browser:
 # Notifications (must come before workspace so callbacks can be registered)
 mount_notify(app, "/notify",
              storage=NOTIFY_DB,
-             revival_interval=600)
+             revival_interval=600,
+             registry=STORAGE)
 
 # Core workspace: agents + messaging + tasks + email (if explicitly configured)
 # Email is mounted only when a relay is set or SMTP_PORT is explicitly given

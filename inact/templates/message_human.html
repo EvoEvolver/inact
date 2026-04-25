@@ -7,18 +7,11 @@
   justify-content: space-between; border-bottom: 1px solid #f0f0f0; flex-shrink: 0;
 }
 .aside-top-title { font-size: 12px; font-weight: 700; color: #555; }
-.aside-top-actions { display: flex; gap: 4px; }
 .aside-action-btn {
   background: none; border: 1px solid #ddd; cursor: pointer; color: #555;
   font-size: 11px; padding: 3px 8px; border-radius: 5px;
 }
 .aside-action-btn:hover { background: #f0f0f0; }
-.dm-picker-header {
-  padding: 5px 14px 3px; font-size: 11px; font-weight: 700; letter-spacing: .05em;
-  text-transform: uppercase; color: #888; display: flex; justify-content: space-between;
-  align-items: center; background: #fafafa; border-bottom: 1px solid #eee;
-}
-#dm-picker-list { max-height: 200px; overflow-y: auto; border-bottom: 1px solid #eee; }
 .pag-row {
   display: flex; align-items: center; justify-content: center; gap: 6px;
   padding: 8px 14px; border-top: 1px solid #f0f0f0; flex-shrink: 0;
@@ -30,19 +23,24 @@
 .pag-btn:hover:not([disabled]) { background: #f5f5f5; }
 .pag-btn[disabled] { color: #ccc; border-color: #eee; cursor: default; }
 .pag-info { font-size: 12px; color: #888; min-width: 44px; text-align: center; }
-.conv-type-tag { color: #888; font-size: 11px; margin-right: 3px; }
-.group-unread {
+.unread-badge {
   display: inline-block; background: #0066cc; color: #fff;
   border-radius: 10px; font-size: 11px; padding: 1px 6px; margin-left: 4px;
   vertical-align: middle;
 }
-#new-group-panel {
+.kind-human, .kind-agent {
+  display: inline-block; border-radius: 4px; font-size: 10px;
+  padding: 1px 5px; margin-left: 4px; font-weight: 600; vertical-align: middle;
+}
+.kind-human { background: #e8f5e9; color: #388e3c; }
+.kind-agent { background: #e3f2fd; color: #1565c0; }
+#new-session-panel {
   display: none; flex-direction: column; overflow-y: auto;
   padding: 28px 28px 20px; background: #fafafa; flex: 1;
 }
-#new-group-panel h2 { font-size: 18px; margin: 0 0 20px; font-weight: 700; }
-#new-group-panel label { font-size: 13px; font-weight: 600; color: #555; display: block; margin-bottom: 4px; }
-#new-group-panel input[type=text] { width: 100%; margin-bottom: 16px; }
+#new-session-panel h2 { font-size: 18px; margin: 0 0 20px; font-weight: 700; }
+#new-session-panel label { font-size: 13px; font-weight: 600; color: #555; display: block; margin-bottom: 4px; }
+#new-session-panel input[type=text] { width: 100%; margin-bottom: 16px; }
 .member-check-list {
   max-height: 240px; overflow-y: auto; border: 1px solid #ddd;
   border-radius: 8px; background: #fff;
@@ -64,41 +62,28 @@
   <div class="layout">
     <aside style="display:flex;flex-direction:column;overflow:hidden">
 
-      <!-- Header: title + action buttons -->
+      <!-- Header -->
       <div class="aside-top">
         <span class="aside-top-title">Messages</span>
-        <div class="aside-top-actions">
-          <button class="aside-action-btn" id="new-dm-btn" title="New direct message">+ DM</button>
-          <button class="aside-action-btn" id="new-group-btn" title="New group">+ Group</button>
-        </div>
+        <button class="aside-action-btn" id="new-session-btn">+ New</button>
       </div>
 
-      <!-- DM picker (toggle on + DM click) -->
-      <div id="dm-picker" style="display:none;flex-shrink:0">
-        <div class="dm-picker-header">
-          <span>New DM</span>
-          <button id="close-dm-btn"
-            style="background:none;border:none;cursor:pointer;color:#888;font-size:15px;padding:0 2px;line-height:1">×</button>
-        </div>
-        <div id="dm-picker-list"></div>
-      </div>
-
-      <!-- Scrollable conversation list -->
-      <div id="conv-list" style="flex:1;overflow-y:auto">
+      <!-- Scrollable session list -->
+      <div id="session-list" style="flex:1;overflow-y:auto">
         <div style="padding:12px 14px;font-size:13px;color:#bbb">Loading…</div>
       </div>
 
-      <!-- Pagination bar (only shown when > 1 page) -->
-      <div id="conv-pagination"></div>
+      <!-- Pagination bar -->
+      <div id="sess-pagination"></div>
 
     </aside>
 
     <main>
       <!-- Chat area -->
       <div id="chat-area" style="flex:1;display:flex;flex-direction:column;overflow:hidden">
-        <div class="chat-title" id="chat-title">Select a conversation</div>
+        <div class="chat-title" id="chat-title">Select a session</div>
         <div id="messages">
-          <div class="placeholder">← choose a conversation</div>
+          <div class="placeholder">← choose a session</div>
         </div>
         <div class="compose">
           <div class="compose-row">
@@ -108,20 +93,20 @@
         </div>
       </div>
 
-      <!-- New Group creation panel (replaces chat area) -->
-      <div id="new-group-panel">
-        <h2>New Group Chat</h2>
-        <label for="group-name-inp">Group name</label>
-        <input type="text" id="group-name-inp" placeholder="e.g. Project Alpha">
+      <!-- New session creation panel -->
+      <div id="new-session-panel">
+        <h2>New Session</h2>
+        <label for="session-name-inp">Session name (optional)</label>
+        <input type="text" id="session-name-inp" placeholder="e.g. Project Alpha">
         <label>Members</label>
         <div class="member-check-list" id="member-check-list">
-          <div style="padding:12px 14px;font-size:13px;color:#bbb">Loading agents…</div>
+          <div style="padding:12px 14px;font-size:13px;color:#bbb">Loading…</div>
         </div>
         <div class="panel-actions">
-          <button class="primary" id="create-group-btn">Create Group</button>
-          <button class="btn-cancel" id="cancel-group-btn">Cancel</button>
+          <button class="primary" id="create-session-btn">Create Session</button>
+          <button class="btn-cancel" id="cancel-session-btn">Cancel</button>
         </div>
-        <div id="create-group-err" class="err" style="display:none"></div>
+        <div id="create-session-err" class="err" style="display:none"></div>
       </div>
     </main>
   </div>
@@ -130,7 +115,7 @@
 
 {% block scripts %}
 <script>
-const P  = {{ prefix       | tojson }};
+const P  = {{ prefix        | tojson }};
 const AP = {{ agents_prefix | tojson }};
 
 let myId   = localStorage.getItem('inact_agent_id') || '';
@@ -144,10 +129,13 @@ async function ensureId() {
   try {
     const text = await fetch(AP + '/.me', {headers: {'X-Api-Key': myKey}}).then(r => r.text());
     const m = text.match(/^id\s*=\s*(\d+)/m);
-    const n = (text.match(/^name\s*=\s*"([^"]*)"/m) || [])[1] || '';
+    const n = (text.match(/^name\s*=\s*"([^"]*)"/m)  || [])[1] || '';
+    const k = (text.match(/^kind\s*=\s*"([^"]*)"/m)  || [])[1] || 'agent';
     if (m) {
       myId   = m[1];
-      myName = n || ('Agent #' + myId);
+      const fallback = k === 'human' ? 'Human #' + myId : 'Agent #' + myId;
+      myName = n || fallback;
+      agentKindCache[myId] = k;
       localStorage.setItem('inact_agent_id', myId);
       localStorage.setItem('inact_name',     myName);
     }
@@ -155,13 +143,13 @@ async function ensureId() {
 }
 
 // ── state ──────────────────────────────────────────────────────────────────
-let selId = null, selName = '', selType = 'dm';
+let selId = null, selName = '';
 let msgTimer = null;
-let convPage = 1;
-const CONV_PER_PAGE = 20;
+let sessPage = 1;
+const SESS_PER_PAGE = 20;
 let shownIds = new Set();
-const sentBodies    = {};
 const agentNameCache = {};
+const agentKindCache = {};
 let allAgents = [];
 
 // ── helpers ────────────────────────────────────────────────────────────────
@@ -189,152 +177,137 @@ async function getAgentName(id) {
   try {
     const text = await fetch(AP + '/' + id, {headers: authHeaders()}).then(r => r.text());
     const m = text.match(/^name\s*=\s*"([^"]*)"/m);
-    const name = m ? m[1] : ('Agent #' + id);
+    const k = (text.match(/^kind\s*=\s*"([^"]*)"/m) || [])[1] || 'agent';
+    agentKindCache[id] = k;
+    const fallback = k === 'human' ? 'Human #' + id : 'Agent #' + id;
+    const name = m ? m[1] : fallback;
     agentNameCache[id] = name;
     return name;
-  } catch (_) { return 'Agent #' + id; }
+  } catch (_) { return agentKindCache[id] === 'human' ? 'Human #' + id : 'Agent #' + id; }
 }
 
 function esc(s) {
   return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
-// ── load agents (for DM picker + group member picker) ──────────────────────
+// ── load agents for member picker ──────────────────────────────────────────
 async function loadAllAgents() {
   try {
     const text = await fetch(AP + '/', {headers: authHeaders()}).then(r => r.text());
     allAgents = parseBlocks(text, 'agents');
-    allAgents.forEach(a => { if (a.name) agentNameCache[a.id] = a.name; });
+    allAgents.forEach(a => {
+      if (a.name) agentNameCache[a.id] = a.name;
+      if (a.kind) agentKindCache[a.id] = a.kind;
+    });
   } catch (_) {}
 }
 
-// ── conversation list ──────────────────────────────────────────────────────
-async function loadConversations(page) {
-  convPage = page || convPage;
+// ── session display name ───────────────────────────────────────────────────
+function sessionDisplayName(sess) {
+  if (sess.name) return sess.name;
+  const others = (sess.member_ids || '').split(',').filter(id => id && id !== String(myId));
+  if (!others.length) return 'Session ' + sess.id.slice(0, 6);
+  const names = others.slice(0, 3).map(id => agentNameCache[id] || ('#' + id));
+  return names.join(', ') + (others.length > 3 ? ', …' : '');
+}
+
+// ── session list ───────────────────────────────────────────────────────────
+async function loadSessions(page) {
+  sessPage = page || sessPage;
   try {
     const text = await fetch(
-      P + '/conversations?per_page=' + CONV_PER_PAGE + '&page=' + convPage,
+      P + '/sessions?per_page=' + SESS_PER_PAGE + '&page=' + sessPage,
       {headers: authHeaders()}
     ).then(r => r.text());
 
     const pm = text.match(/# page (\d+) of (\d+)/);
     const totalPages = pm ? parseInt(pm[2]) : 1;
 
-    const convs = parseBlocks(text, 'conversations');
-    await renderConvList(convs);
-    renderPagination(convPage, totalPages);
+    const sessions = parseBlocks(text, 'sessions');
+
+    // Pre-warm name cache for all member IDs so display names are ready
+    const toLoad = new Set();
+    sessions.forEach(s => {
+      (s.member_ids || '').split(',').forEach(id => { if (id && !agentNameCache[id]) toLoad.add(id); });
+    });
+    await Promise.all([...toLoad].map(id => getAgentName(id)));
+
+    renderSessionList(sessions);
+    renderPagination(sessPage, totalPages);
   } catch (_) {
-    document.getElementById('conv-list').innerHTML =
-      '<div style="padding:8px 14px;font-size:13px;color:#bbb">Could not load conversations.</div>';
+    document.getElementById('session-list').innerHTML =
+      '<div style="padding:8px 14px;font-size:13px;color:#bbb">Could not load sessions.</div>';
   }
 }
 
-async function renderConvList(convs) {
-  const list = document.getElementById('conv-list');
+function renderSessionList(sessions) {
+  const list = document.getElementById('session-list');
   list.innerHTML = '';
-  if (!convs.length) {
+  if (!sessions.length) {
     list.innerHTML =
       '<div style="padding:10px 14px;font-size:13px;color:#bbb">' +
-      'No conversations yet.<br>Use + DM or + Group to start one.</div>';
+      'No sessions yet.<br>Use + New to start one.</div>';
     return;
   }
-  for (const c of convs) {
-    const isGroup = c.type === 'group';
-    const name = isGroup
-      ? (c.name || ('Group ' + c.id.slice(0, 8)))
-      : (agentNameCache[c.id] || await getAgentName(c.id));
-    const unread = parseInt(c.unread || '0', 10);
+  for (const s of sessions) {
+    const name   = sessionDisplayName(s);
+    const unread = parseInt(s.unread || '0', 10);
+    const others = (s.member_ids || '').split(',').filter(id => id && id !== String(myId));
+    const isDM   = others.length === 1;
+
+    let kindBadge = '';
+    if (isDM) {
+      const k = agentKindCache[others[0]] || 'agent';
+      kindBadge = k === 'human'
+        ? '<span class="kind-human">human</span>'
+        : '<span class="kind-agent">bot</span>';
+    }
 
     const btn = document.createElement('button');
     btn.className = 'agent-btn';
-    btn.dataset.id    = c.id;
-    btn.dataset.ctype = c.type;
-
-    const tag = isGroup ? '<span class="conv-type-tag">#</span>' : '';
-    btn.innerHTML = tag + esc(name) +
-      (unread > 0 ? `<span class="group-unread">${unread}</span>` : '');
-
-    btn.addEventListener('click', () => isGroup ? selectGroup(c.id, name) : select(c.id, name));
-
-    if (String(c.id) === String(selId) && c.type === selType) {
-      btn.classList.add('active');
-    }
+    btn.dataset.id = s.id;
+    btn.innerHTML = esc(name) + kindBadge +
+      (unread > 0 ? `<span class="unread-badge">${unread}</span>` : '');
+    btn.addEventListener('click', () => selectSession(s.id, name));
+    if (String(s.id) === String(selId)) btn.classList.add('active');
     list.appendChild(btn);
   }
 }
 
 function renderPagination(page, totalPages) {
-  const pag = document.getElementById('conv-pagination');
+  const pag = document.getElementById('sess-pagination');
   pag.innerHTML = '';
   if (totalPages <= 1) return;
-
   const row = document.createElement('div');
   row.className = 'pag-row';
-
   const prev = document.createElement('button');
-  prev.className = 'pag-btn';
-  prev.textContent = '←';
+  prev.className = 'pag-btn'; prev.textContent = '←';
   if (page <= 1) prev.setAttribute('disabled', '');
-  prev.addEventListener('click', () => { if (page > 1) loadConversations(page - 1); });
-
+  prev.addEventListener('click', () => { if (page > 1) loadSessions(page - 1); });
   const info = document.createElement('span');
-  info.className = 'pag-info';
-  info.textContent = page + ' / ' + totalPages;
-
+  info.className = 'pag-info'; info.textContent = page + ' / ' + totalPages;
   const next = document.createElement('button');
-  next.className = 'pag-btn';
-  next.textContent = '→';
+  next.className = 'pag-btn'; next.textContent = '→';
   if (page >= totalPages) next.setAttribute('disabled', '');
-  next.addEventListener('click', () => { if (page < totalPages) loadConversations(page + 1); });
-
-  row.appendChild(prev);
-  row.appendChild(info);
-  row.appendChild(next);
+  next.addEventListener('click', () => { if (page < totalPages) loadSessions(page + 1); });
+  row.appendChild(prev); row.appendChild(info); row.appendChild(next);
   pag.appendChild(row);
 }
 
-// ── DM picker ─────────────────────────────────────────────────────────────
-function showDMPicker() {
-  const picker = document.getElementById('dm-picker');
-  if (picker.style.display !== 'none') { picker.style.display = 'none'; return; }
-
-  const list = document.getElementById('dm-picker-list');
-  list.innerHTML = '';
-  const others = allAgents.filter(a => String(a.id) !== String(myId));
-  if (!others.length) {
-    list.innerHTML = '<div style="padding:8px 14px;font-size:13px;color:#bbb">No other agents.</div>';
-  } else {
-    others.forEach(a => {
-      const name = agentNameCache[a.id] || a.name || ('Agent #' + a.id);
-      const btn = document.createElement('button');
-      btn.className = 'agent-btn';
-      btn.style.fontSize = '13px';
-      btn.textContent = name;
-      btn.addEventListener('click', () => {
-        picker.style.display = 'none';
-        select(a.id, name);
-        loadConversations(1);   // bring new DM to top of list
-      });
-      list.appendChild(btn);
-    });
-  }
-  picker.style.display = 'block';
-}
-
-// ── select conversation ────────────────────────────────────────────────────
+// ── select session ─────────────────────────────────────────────────────────
 function clearActive() {
   document.querySelectorAll('.agent-btn').forEach(b => b.classList.remove('active'));
 }
 
 function hidePanels() {
   document.getElementById('chat-area').style.display = 'flex';
-  document.getElementById('new-group-panel').style.display = 'none';
+  document.getElementById('new-session-panel').style.display = 'none';
 }
 
-function select(id, name) {
-  selId = id; selName = name; selType = 'dm';
+function selectSession(id, name) {
+  selId = id; selName = name;
   clearActive();
-  const btn = document.querySelector(`.agent-btn[data-id="${id}"][data-ctype="dm"]`);
+  const btn = document.querySelector(`.agent-btn[data-id="${id}"]`);
   if (btn) btn.classList.add('active');
   document.getElementById('chat-title').textContent = name;
   document.getElementById('inp').disabled      = false;
@@ -343,131 +316,18 @@ function select(id, name) {
   document.getElementById('messages').innerHTML = '';
   hidePanels();
   if (msgTimer) clearInterval(msgTimer);
-  poll();
-  msgTimer = setInterval(poll, 3000);
+  pollSession();
+  msgTimer = setInterval(pollSession, 3000);
 }
 
-function selectGroup(id, name) {
-  selId = id; selName = name; selType = 'group';
-  clearActive();
-  const btn = document.querySelector(`.agent-btn[data-id="${id}"][data-ctype="group"]`);
-  if (btn) btn.classList.add('active');
-  document.getElementById('chat-title').textContent = '# ' + name;
-  document.getElementById('inp').disabled      = false;
-  document.getElementById('send-btn').disabled = false;
-  shownIds.clear();
-  document.getElementById('messages').innerHTML = '';
-  hidePanels();
-  if (msgTimer) clearInterval(msgTimer);
-  pollGroup();
-  msgTimer = setInterval(pollGroup, 3000);
-}
-
-// ── new group panel ────────────────────────────────────────────────────────
-function showNewGroupPanel() {
-  if (msgTimer) clearInterval(msgTimer);
-  clearActive();
-  document.getElementById('chat-area').style.display   = 'none';
-  document.getElementById('new-group-panel').style.display = 'flex';
-  document.getElementById('group-name-inp').value = '';
-  document.getElementById('create-group-err').style.display = 'none';
-  populateMemberList();
-}
-
-function populateMemberList() {
-  const container = document.getElementById('member-check-list');
-  const others = allAgents.filter(a => String(a.id) !== String(myId));
-  if (!others.length) {
-    container.innerHTML =
-      '<div style="padding:12px 14px;font-size:13px;color:#bbb">No other agents available.</div>';
-    return;
-  }
-  container.innerHTML = '';
-  others.forEach(a => {
-    const label = agentNameCache[a.id] || a.name || ('Agent #' + a.id);
-    const item  = document.createElement('label');
-    item.className = 'member-check-item';
-    item.innerHTML = `<input type="checkbox" value="${a.id}"><span>${esc(label)}</span>`;
-    container.appendChild(item);
-  });
-}
-
-async function createGroup() {
-  const name  = document.getElementById('group-name-inp').value.trim();
-  const errEl = document.getElementById('create-group-err');
-  if (!name) { errEl.textContent = 'Please enter a group name.'; errEl.style.display = 'block'; return; }
-  const checked = [...document.querySelectorAll('#member-check-list input[type=checkbox]:checked')];
-  if (!checked.length) { errEl.textContent = 'Select at least one member.'; errEl.style.display = 'block'; return; }
-  const members = checked.map(cb => cb.value);
-  const btn = document.getElementById('create-group-btn');
-  btn.disabled = true; btn.textContent = 'Creating…'; errEl.style.display = 'none';
-  const res = await fetch(P + '/groups', {
-    method: 'POST',
-    headers: authHeaders({'Content-Type': 'application/json'}),
-    body: JSON.stringify({name, created_by: myId, members})
-  }).then(r => r.text()).catch(() => '');
-  btn.disabled = false; btn.textContent = 'Create Group';
-  const idMatch = res.match(/^id\s*=\s*"([^"]+)"/m);
-  if (!idMatch) {
-    errEl.textContent = 'Failed to create group. Please try again.';
-    errEl.style.display = 'block';
-    return;
-  }
-  await loadConversations(1);
-  selectGroup(idMatch[1], name);
-}
-
-// ── poll DM ────────────────────────────────────────────────────────────────
-async function poll() {
-  if (!selId || selType !== 'dm') return;
-  const [inbRes, sntRes] = await Promise.all([
-    fetch(P + '/inbox', {headers: authHeaders()}).catch(() => null),
-    fetch(P + '/sent',  {headers: authHeaders()}).catch(() => null),
-  ]);
-  if (inbRes && (inbRes.status === 401 || inbRes.status === 403)) {
-    document.getElementById('messages').innerHTML =
-      '<div class="placeholder" style="color:#cc0000">⚠ API key rejected (' + inbRes.status + '). '
-      + '<a href="/_human' + AP + '" style="color:#cc0000">Re-register</a></div>';
-    return;
-  }
-  const inbTxt = inbRes ? await inbRes.text() : '';
-  const sntTxt = sntRes ? await sntRes.text() : '';
-  const recv = parseBlocks(inbTxt, 'messages').filter(m => m.from === String(selId)).map(m => ({...m, _dir: 'recv'}));
-  const sent = parseBlocks(sntTxt, 'messages').filter(m => m.to   === String(selId)).map(m => ({...m, _dir: 'sent'}));
-  const all  = [...recv, ...sent].filter(m => m.id && !shownIds.has(m.id))
-                                  .sort((a, b) => a.date > b.date ? 1 : -1);
-  const box  = document.getElementById('messages');
-  let added  = 0;
-  for (const m of all) {
-    shownIds.add(m.id);
-    let body = '';
-    if (m._dir === 'sent') {
-      body = sentBodies[m.id] || m.body || '';
-    } else {
-      body = await fetch(P + '/inbox/' + m.id, {headers: authHeaders()})
-        .then(r => r.text())
-        .then(t => (t.split('\n---\n\n')[1] || '').trim())
-        .catch(() => '');
-    }
-    const wrap = document.createElement('div');
-    wrap.className = 'wrap-msg ' + m._dir;
-    const ts = m.date ? new Date(m.date).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'}) : '';
-    wrap.innerHTML =
-      '<div class="bubble">' + esc(body) + '</div>' +
-      '<div class="msg-meta">' + (m._dir === 'recv' ? esc(selName) : 'You') + (ts ? ' · ' + ts : '') + '</div>';
-    box.appendChild(wrap);
-    added++;
-  }
-  if (added) box.scrollTop = box.scrollHeight;
-}
-
-// ── poll group ─────────────────────────────────────────────────────────────
-async function pollGroup() {
-  if (!selId || selType !== 'group') return;
+// ── poll ───────────────────────────────────────────────────────────────────
+async function pollSession() {
+  if (!selId) return;
   const text = await fetch(
-    P + '/groups/' + selId + '/messages?per_page=100',
+    P + '/sessions/' + selId + '/messages?per_page=100',
     {headers: authHeaders()}
   ).then(r => r.text()).catch(() => '');
+
   const msgs = parseBlocks(text, 'messages').filter(m => m.id && !shownIds.has(m.id));
   const box  = document.getElementById('messages');
   let added  = 0;
@@ -475,12 +335,18 @@ async function pollGroup() {
     shownIds.add(m.id);
     const isMe = m.from === String(myId);
     const senderName = isMe ? 'You' : (agentNameCache[m.from] || await getAgentName(m.from));
+    const fromKind   = m.from_kind || agentKindCache[m.from] || 'agent';
+    const kindBadge  = !isMe
+      ? (fromKind === 'human'
+          ? '<span class="kind-human">human</span>'
+          : '<span class="kind-agent">bot</span>')
+      : '';
     const wrap = document.createElement('div');
     wrap.className = 'wrap-msg ' + (isMe ? 'sent' : 'recv');
     const ts = m.date ? new Date(m.date).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'}) : '';
     wrap.innerHTML =
       '<div class="bubble">' + esc(m.body || '') + '</div>' +
-      '<div class="msg-meta">' + esc(senderName) + (ts ? ' · ' + ts : '') + '</div>';
+      '<div class="msg-meta">' + esc(senderName) + kindBadge + (ts ? ' · ' + ts : '') + '</div>';
     box.appendChild(wrap);
     added++;
   }
@@ -489,34 +355,83 @@ async function pollGroup() {
 
 // ── send ───────────────────────────────────────────────────────────────────
 async function send() {
-  if (selType === 'group') { await sendGroup(); return; }
   const inp  = document.getElementById('inp');
   const body = inp.value.trim();
   if (!body || !selId) return;
   inp.value = ''; inp.disabled = true; document.getElementById('send-btn').disabled = true;
-  const res = await fetch(P + '/send', {
-    method: 'POST',
-    headers: authHeaders({'Content-Type': 'application/json'}),
-    body: JSON.stringify({from: myId, to: selId, body})
-  }).then(r => r.text()).catch(() => '');
-  const idMatch = res.match(/^id\s*=\s*"([^"]+)"/m);
-  if (idMatch) sentBodies[idMatch[1]] = body;
-  await poll();
-  inp.disabled = false; document.getElementById('send-btn').disabled = false; inp.focus();
-}
-
-async function sendGroup() {
-  const inp  = document.getElementById('inp');
-  const body = inp.value.trim();
-  if (!body || !selId) return;
-  inp.value = ''; inp.disabled = true; document.getElementById('send-btn').disabled = true;
-  await fetch(P + '/groups/' + selId + '/send', {
+  await fetch(P + '/sessions/' + selId + '/send', {
     method: 'POST',
     headers: authHeaders({'Content-Type': 'application/json'}),
     body: JSON.stringify({from: myId, body})
   }).catch(() => {});
-  await pollGroup();
+  await pollSession();
   inp.disabled = false; document.getElementById('send-btn').disabled = false; inp.focus();
+}
+
+// ── new session panel ──────────────────────────────────────────────────────
+function showNewSessionPanel() {
+  if (msgTimer) clearInterval(msgTimer);
+  clearActive();
+  document.getElementById('chat-area').style.display        = 'none';
+  document.getElementById('new-session-panel').style.display = 'flex';
+  document.getElementById('session-name-inp').value = '';
+  document.getElementById('create-session-err').style.display = 'none';
+  populateMemberList();
+}
+
+function populateMemberList() {
+  const container = document.getElementById('member-check-list');
+  const others = allAgents.filter(a => String(a.id) !== String(myId));
+  if (!others.length) {
+    container.innerHTML =
+      '<div style="padding:12px 14px;font-size:13px;color:#bbb">No other participants available.</div>';
+    return;
+  }
+  container.innerHTML = '';
+  others.forEach(a => {
+    const kind  = agentKindCache[a.id] || a.kind || 'agent';
+    const label = agentNameCache[a.id] || a.name || (kind === 'human' ? 'Human #' + a.id : 'Agent #' + a.id);
+    const badge = kind === 'human'
+      ? '<span class="kind-human">human</span>'
+      : '<span class="kind-agent">bot</span>';
+    const item = document.createElement('label');
+    item.className = 'member-check-item';
+    item.innerHTML = `<input type="checkbox" value="${a.id}"><span>${esc(label)}</span>${badge}`;
+    container.appendChild(item);
+  });
+}
+
+async function createSession() {
+  const name   = document.getElementById('session-name-inp').value.trim();
+  const errEl  = document.getElementById('create-session-err');
+  const checked = [...document.querySelectorAll('#member-check-list input[type=checkbox]:checked')];
+  if (!checked.length) {
+    errEl.textContent = 'Select at least one member.';
+    errEl.style.display = 'block';
+    return;
+  }
+  const members = checked.map(cb => cb.value);
+  const btn = document.getElementById('create-session-btn');
+  btn.disabled = true; btn.textContent = 'Creating…'; errEl.style.display = 'none';
+
+  const res = await fetch(P + '/sessions', {
+    method: 'POST',
+    headers: authHeaders({'Content-Type': 'application/json'}),
+    body: JSON.stringify({name, created_by: myId, members})
+  }).then(r => r.text()).catch(() => '');
+  btn.disabled = false; btn.textContent = 'Create Session';
+
+  const idMatch = res.match(/^id\s*=\s*"([^"]+)"/m);
+  if (!idMatch) {
+    errEl.textContent = 'Failed to create session. Please try again.';
+    errEl.style.display = 'block';
+    return;
+  }
+  await loadSessions(1);
+  const displayName = name ||
+    members.slice(0, 2).map(id => agentNameCache[id] || ('#' + id)).join(', ') +
+    (members.length > 2 ? ', …' : '');
+  selectSession(idMatch[1], displayName);
 }
 
 // ── event listeners ────────────────────────────────────────────────────────
@@ -524,31 +439,22 @@ document.getElementById('send-btn').addEventListener('click', send);
 document.getElementById('inp').addEventListener('keydown', e => {
   if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); }
 });
-document.getElementById('new-dm-btn').addEventListener('click', showDMPicker);
-document.getElementById('close-dm-btn').addEventListener('click', () => {
-  document.getElementById('dm-picker').style.display = 'none';
-});
-document.getElementById('new-group-btn').addEventListener('click', showNewGroupPanel);
-document.getElementById('create-group-btn').addEventListener('click', createGroup);
-document.getElementById('cancel-group-btn').addEventListener('click', () => {
+document.getElementById('new-session-btn').addEventListener('click', showNewSessionPanel);
+document.getElementById('create-session-btn').addEventListener('click', createSession);
+document.getElementById('cancel-session-btn').addEventListener('click', () => {
   hidePanels();
   if (selId) {
-    // restore previously selected conversation
-    if (selType === 'group') {
-      document.getElementById('chat-title').textContent = '# ' + selName;
-    } else {
-      document.getElementById('chat-title').textContent = selName;
-    }
+    document.getElementById('chat-title').textContent = selName;
     document.getElementById('inp').disabled      = false;
     document.getElementById('send-btn').disabled = false;
     if (msgTimer) clearInterval(msgTimer);
-    if (selType === 'group') { pollGroup(); msgTimer = setInterval(pollGroup, 3000); }
-    else                     { poll();      msgTimer = setInterval(poll,      3000); }
-    const btn = document.querySelector(`.agent-btn[data-id="${selId}"][data-ctype="${selType}"]`);
+    pollSession();
+    msgTimer = setInterval(pollSession, 3000);
+    const btn = document.querySelector(`.agent-btn[data-id="${selId}"]`);
     if (btn) btn.classList.add('active');
   } else {
-    document.getElementById('chat-title').textContent = 'Select a conversation';
-    document.getElementById('messages').innerHTML = '<div class="placeholder">← choose a conversation</div>';
+    document.getElementById('chat-title').textContent = 'Select a session';
+    document.getElementById('messages').innerHTML = '<div class="placeholder">← choose a session</div>';
     document.getElementById('inp').disabled      = true;
     document.getElementById('send-btn').disabled = true;
   }
@@ -557,9 +463,8 @@ document.getElementById('cancel-group-btn').addEventListener('click', () => {
 // ── init ───────────────────────────────────────────────────────────────────
 ensureId().then(async () => {
   await loadAllAgents();
-  await loadConversations(1);
-  // Periodically refresh conversation list to update unread counts + new chats
-  setInterval(() => loadConversations(convPage), 10000);
+  await loadSessions(1);
+  setInterval(() => loadSessions(sessPage), 10000);
 });
 </script>
 {% endblock %}

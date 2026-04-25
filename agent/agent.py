@@ -312,7 +312,13 @@ def _agent_loop() -> None:
         log.info("trigger: %s", user_msg[:200])
         _conversation.append({"role": "user", "content": user_msg})
 
-        output = _run_llm()
+        try:
+            output = _run_llm()
+        except Exception as exc:
+            log.error("LLM error: %s", exc, exc_info=True)
+            # Remove the user message we just appended so the conversation stays consistent
+            _conversation.pop()
+            continue
 
         reply = output.partition("MEMORY:")[0].strip() if "MEMORY:" in output else output.strip()
         log.info("reply: %s", reply)

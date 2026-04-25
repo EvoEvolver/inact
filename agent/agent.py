@@ -404,6 +404,9 @@ def main() -> None:
         except Exception as exc:
             print(f"[agent] WARNING: could not register callback: {exc}", file=sys.stderr)
 
+    print("[agent] checking for pending messages...")
+    handle_notification(None)
+
     threading.Thread(target=revival_loop, args=(INTERVAL,), daemon=True).start()
 
     print(f"""

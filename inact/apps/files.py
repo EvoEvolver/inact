@@ -596,6 +596,12 @@ def mount_files(
         help_text += f"  POST {p}/<file>/.replace   overwrite file\n"
     inact_app._app_mounts.append((prefix, help_text))
 
+    # Store local path when backed by a real directory (useful for code-server)
+    if isinstance(folder_or_fs, str):
+        if not hasattr(inact_app, "fs_local_paths"):
+            inact_app.fs_local_paths = {}
+        inact_app.fs_local_paths[prefix] = os.path.abspath(folder_or_fs)
+
     def _human(path: str):
         from inact.render import render_template, workspace_nav
         from inact.utils import html_response

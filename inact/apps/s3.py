@@ -1,177 +1,190 @@
 """
-S3 FileSystem backend for inact.
+S3 FileSystem backend for inact — mounts an S3 bucket to a local directory
+via rclone, then serves it with :func:`~inact.apps.files.mount_files`.
 
-mount_s3(inact_app, prefix, s3_url, ...) mounts an S3 bucket/prefix using
-the same route surface as :func:`~inact.apps.files.mount_files`.
+Because the bucket is a real local path, code-server (or any other tool)
+can open it directly.
 
-Requires: pip install boto3
+Requires: rclone installed and available in PATH.
+Install: https://rclone.org/install/
 
 Examples::
 
-    mount_s3(app, "/reports", "s3://my-bucket/reports/")
+    mount_s3(app, "/files", "s3://my-bucket/prefix/",
+             mount_dir="./data/s3_mount")
 
-    # MinIO / LocalStack
-    mount_s3(app, "/data", "s3://mybucket",
+    # MinIO / LocalStack / any S3-compatible
+    mount_s3(app, "/files", "s3://mybucket",
              endpoint_url="http://localhost:9000",
              aws_access_key_id="minioadmin",
-             aws_secret_access_key="minioadmin")
+             aws_secret_access_key="minioadmin",
+             mount_dir="./data/s3_mount",
+             editable=True)
 
-    # With CSV pagination
-    from inact import CSVHandler
-    mount_s3(app, "/data", "s3://mybucket/prefix/", handlers=[CSVHandler()])
+Credentials are read from constructor kwargs first, then from the standard
+environment variables AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY /
+AWS_ENDPOINT_URL / AWS_DEFAULT_REGION.
+
+The local mount path is stored in ``inact_app.fs_local_paths[prefix]`` so
+you can point code-server (or anything else) at the right directory.
 """
 
 from __future__ import annotations
 
+import atexit
+import logging
 import os
+import platform
+import subprocess
 import tempfile
+import time
 from urllib.parse import urlparse
 
-from .files import FileSystem, mount_files
+from .files import mount_files
+
+log = logging.getLogger(__name__)
 
 
-class S3FS(FileSystem):
-    """S3-backed :class:`~inact.apps.files.FileSystem`."""
+# ---------------------------------------------------------------------------
+# rclone helpers
+# ---------------------------------------------------------------------------
 
-    def __init__(self, bucket: str, prefix: str, client):
-        self.bucket = bucket
-        self.prefix = prefix.strip("/")
-        self._s3 = client
+def _write_rclone_config(
+    name: str,
+    bucket: str,
+    endpoint_url: str,
+    access_key: str,
+    secret_key: str,
+    region: str,
+) -> str:
+    lines = [
+        f"[{name}]",
+        "type = s3",
+        f"provider = {'Other' if endpoint_url else 'AWS'}",
+    ]
+    if access_key:
+        lines.append(f"access_key_id = {access_key}")
+    if secret_key:
+        lines.append(f"secret_access_key = {secret_key}")
+    if endpoint_url:
+        lines.append(f"endpoint = {endpoint_url}")
+    if region:
+        lines.append(f"region = {region}")
+    lines.append("no_check_bucket = true")
 
-    def _key(self, subpath: str) -> str:
-        subpath = subpath.strip("/")
-        return (self.prefix + "/" + subpath) if self.prefix else subpath
+    cfg = tempfile.mktemp(suffix=".conf")
+    with open(cfg, "w") as f:
+        f.write("\n".join(lines) + "\n")
+    return cfg
 
-    def _dir_prefix(self, subpath: str) -> str:
-        base = self._key(subpath)
-        return (base.rstrip("/") + "/") if base else ""
 
-    def list(self, subpath: str = "") -> tuple[list[str], list[dict]]:
-        dir_prefix = self._dir_prefix(subpath)
-        paginator = self._s3.get_paginator("list_objects_v2")
-        subdirs, files = [], []
-        for page in paginator.paginate(
-            Bucket=self.bucket, Prefix=dir_prefix, Delimiter="/"
-        ):
-            for cp in page.get("CommonPrefixes", []):
-                name = cp["Prefix"][len(dir_prefix):].rstrip("/")
-                if name:
-                    subdirs.append(name)
-            for obj in page.get("Contents", []):
-                key = obj["Key"]
-                if key.endswith("/"):
-                    continue
-                name = key[len(dir_prefix):]
-                if name:
-                    files.append({
-                        "name": name,
-                        "size": obj["Size"],
-                        "last_modified": str(obj["LastModified"]),
-                    })
-        return sorted(subdirs), sorted(files, key=lambda x: x["name"])
+def _unmount(path: str) -> None:
+    try:
+        if platform.system() == "Darwin":
+            subprocess.run(["umount", path], check=False, capture_output=True)
+        else:
+            subprocess.run(["fusermount", "-u", path], check=False, capture_output=True)
+    except Exception:
+        pass
 
-    def get_bytes(self, subpath: str) -> bytes:
-        obj = self._s3.get_object(Bucket=self.bucket, Key=self._key(subpath))
-        return obj["Body"].read()
 
-    def put(self, subpath: str, data: bytes) -> None:
-        self._s3.put_object(Bucket=self.bucket, Key=self._key(subpath), Body=data)
-
-    def head(self, subpath: str) -> dict:
-        r = self._s3.head_object(Bucket=self.bucket, Key=self._key(subpath))
-        return {
-            "size": r["ContentLength"],
-            "last_modified": str(r["LastModified"]),
-            "content_type": r.get("ContentType", "application/octet-stream"),
-            "s3_key": self._key(subpath),
-        }
-
-    def exists(self, subpath: str) -> bool:
-        try:
-            self._s3.head_object(Bucket=self.bucket, Key=self._key(subpath))
+def _wait_for_mount(path: str, timeout: float = 15.0) -> bool:
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if os.path.ismount(path):
             return True
-        except Exception:
-            return False
+        time.sleep(0.2)
+    return False
 
-    def download_to_temp(self, subpath: str) -> tuple[str, bool]:
-        content = self.get_bytes(subpath)
-        suffix = os.path.splitext(subpath)[1]
-        f = tempfile.NamedTemporaryFile(suffix=suffix, delete=False)
-        f.write(content)
-        f.close()
-        return f.name, True  # temp file — caller must unlink
 
-    def label(self) -> str:
-        return f"s3://{self.bucket}/{self.prefix}" if self.prefix else f"s3://{self.bucket}"
-
+# ---------------------------------------------------------------------------
+# Public mount function
+# ---------------------------------------------------------------------------
 
 def mount_s3(
     inact_app,
     prefix: str,
     s3_url: str,
-    handlers=None,
-    region_name: str | None = None,
+    mount_dir: str | None = None,
     endpoint_url: str | None = None,
     aws_access_key_id: str | None = None,
     aws_secret_access_key: str | None = None,
-) -> None:
+    region_name: str | None = None,
+    handlers=None,
+    editable: bool = False,
+    rclone_extra_args: list[str] | None = None,
+) -> str:
     """
-    Mount an S3 bucket/prefix at *prefix*.
+    Mount an S3 bucket/prefix to a local directory via rclone, then serve
+    it with mount_files. Returns the local mount path.
 
-    Thin wrapper around :func:`~inact.apps.files.mount_files` with an
-    :class:`S3FS` backend — identical route surface and handler support.
+    *mount_dir*  — local directory for the FUSE mount (auto temp dir if None).
+                   Pass a stable path (e.g. ``./data/s3_mount``) so code-server
+                   can be pointed at it persistently.
     """
-    try:
-        import boto3
-    except ImportError:
-        raise RuntimeError("boto3 is required: pip install boto3")
-
     parsed = urlparse(s3_url)
-    bucket = parsed.netloc
+    bucket     = parsed.netloc
     key_prefix = parsed.path.strip("/")
 
-    kwargs: dict = {}
-    if region_name:
-        kwargs["region_name"] = region_name
-    if endpoint_url:
-        kwargs["endpoint_url"] = endpoint_url
-    if aws_access_key_id:
-        kwargs["aws_access_key_id"] = aws_access_key_id
-    if aws_secret_access_key:
-        kwargs["aws_secret_access_key"] = aws_secret_access_key
+    # Resolve credentials: kwargs > env vars
+    access_key = aws_access_key_id  or os.environ.get("AWS_ACCESS_KEY_ID",      "")
+    secret_key = aws_secret_access_key or os.environ.get("AWS_SECRET_ACCESS_KEY", "")
+    endpoint   = endpoint_url        or os.environ.get("AWS_ENDPOINT_URL",       "")
+    region     = region_name         or os.environ.get("AWS_DEFAULT_REGION",     "us-east-1")
 
-    client = boto3.client("s3", **kwargs)
-    fs = S3FS(bucket, key_prefix, client)
-    mount_files(inact_app, prefix, fs, handlers=handlers)
+    # Local mount point
+    if mount_dir is None:
+        mount_dir = tempfile.mkdtemp(prefix="inact_s3_")
+    else:
+        os.makedirs(mount_dir, exist_ok=True)
 
-    # Append S3 setup docs to the help entry just registered by mount_files().
-    # Agents reading <prefix>/.help will see both the route surface and how to
-    # reproduce this mount in their own code.
-    p = prefix.rstrip("/") or "/"
-    cred_example = ""
-    if aws_access_key_id:
-        cred_example = (
-            f'\n             aws_access_key_id="{aws_access_key_id}",'
-            f'\n             aws_secret_access_key="<secret>",'
+    # Write rclone config
+    remote_name = "s3remote"
+    cfg_path = _write_rclone_config(remote_name, bucket, endpoint, access_key, secret_key, region)
+
+    # Build rclone remote path
+    remote = f"{remote_name}:{bucket}"
+    if key_prefix:
+        remote += f"/{key_prefix}"
+
+    # Build command
+    cmd = [
+        "rclone", "mount", remote, mount_dir,
+        "--config",        cfg_path,
+        "--vfs-cache-mode", "writes",   # read-through, cache writes locally
+        "--dir-cache-time", "10s",
+        "--allow-non-empty",
+        "--no-modtime",
+    ]
+    if platform.system() != "Darwin":
+        cmd.append("--allow-other")
+    if rclone_extra_args:
+        cmd.extend(rclone_extra_args)
+
+    log.info("s3: mounting %s → %s", remote, mount_dir)
+    proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+
+    # Wait for FUSE mount to become active
+    if not _wait_for_mount(mount_dir):
+        err = proc.stderr.read().decode(errors="replace") if proc.stderr else ""
+        raise RuntimeError(
+            f"rclone failed to mount {s3_url} at {mount_dir} within 15 s.\n"
+            f"rclone stderr: {err}\n"
+            f"Check that rclone is installed and credentials are correct."
         )
-    endpoint_example = f'\n             endpoint_url="{endpoint_url}",' if endpoint_url else ""
-    region_example = f'\n             region_name="{region_name}",' if region_name else ""
-    s3_doc = (
-        f"\n  --- How to mount this S3 filesystem in your own code ---\n"
-        f"  pip install boto3 inact\n\n"
-        f"  from inact import mount_s3\n"
-        f"  mount_s3(app, \"{p}\", \"{s3_url}\","
-        f"{region_example}{endpoint_example}{cred_example})\n\n"
-        f"  Key parameters:\n"
-        f"    s3_url              s3://bucket or s3://bucket/prefix\n"
-        f"    region_name         AWS region (or set AWS_DEFAULT_REGION)\n"
-        f"    endpoint_url        MinIO / LocalStack / S3-compatible endpoint\n"
-        f"    aws_access_key_id   explicit credentials (or use env vars /\n"
-        f"    aws_secret_access_key  ~/.aws/credentials / IAM role)\n"
-        f"    handlers            list of FileHandler instances (e.g. CSVHandler)\n\n"
-        f"  Env vars boto3 picks up automatically:\n"
-        f"    AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_DEFAULT_REGION\n"
-    )
-    if inact_app._app_mounts:
-        mp, ht = inact_app._app_mounts[-1]
-        inact_app._app_mounts[-1] = (mp, ht + s3_doc)
+
+    log.info("s3: %s ready at %s", s3_url, mount_dir)
+
+    # Unmount on exit
+    atexit.register(_unmount, mount_dir)
+    atexit.register(proc.terminate)
+
+    # Serve with mount_files — same routes as local files
+    mount_files(inact_app, prefix, mount_dir, handlers=handlers, editable=editable)
+
+    # Store local path so code-server (or anything else) can find it
+    if not hasattr(inact_app, "fs_local_paths"):
+        inact_app.fs_local_paths = {}
+    inact_app.fs_local_paths[prefix] = os.path.abspath(mount_dir)
+
+    return os.path.abspath(mount_dir)

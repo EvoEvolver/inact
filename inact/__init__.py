@@ -12,7 +12,7 @@ from .apps.mcp import McpClient, StdioMcpClient, mount_mcp, mount_mcp_npx, mount
 from .apps.workspace.message import MessageStore, mount_message
 from .pages import MdContent, TomlContent
 from .apps.workspace.register import AgentRegistry, mount_register
-from .apps.s3 import mount_s3, S3FS
+from .apps.s3 import mount_s3
 from .apps.sql import mount_sql, SQLConnector
 from .apps.files import FileSystem, LocalFS
 from .apps.search import mount_search
@@ -60,7 +60,6 @@ __all__ = [
     "mount_search",
     "mount_sql",
     "SQLConnector",
-    "S3FS",
     "mount_todo",
     "mount_website",
     "server_base",

@@ -10,7 +10,13 @@ def html_response(body: str, status: int = 200) -> tuple:
 
 
 def toml_str(s: str) -> str:
-    return '"' + s.replace("\\", "\\\\").replace('"', '\\"') + '"'
+    return ('"' + s
+            .replace("\\", "\\\\")
+            .replace('"',  '\\"')
+            .replace("\n", "\\n")
+            .replace("\r", "\\r")
+            .replace("\t", "\\t")
+            + '"')
 
 
 def server_base() -> str:

@@ -44,7 +44,9 @@ function parseBlocks(text, tag) {
     const o = {};
     b.split('\n').forEach(l => {
       const m = l.match(/^(\w+)\s*=\s*"([^"]*)"/) || l.match(/^(\w+)\s*=\s*(\S+)/);
-      if (m) o[m[1]] = m[2];
+      if (m) o[m[1]] = m[2]
+        .replace(/\\n/g, '\n').replace(/\\r/g, '\r')
+        .replace(/\\t/g, '\t').replace(/\\"/g, '"').replace(/\\\\/g, '\\');
     });
     return o;
   }).filter(o => o.id);

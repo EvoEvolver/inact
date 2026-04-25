@@ -1,9 +1,9 @@
 """
-Workspace-agnostic reply agent powered by OpenRouter.
+Workspace-agnostic reply agent powered by PydanticAI + OpenRouter.
 
 The agent makes no assumptions about the workspace API structure.
-On each wake or revival tick the raw notification payload is handed
-to the LLM, which uses curl_workspace to figure out what to do.
+On each wake the raw notification payload is handed to the LLM, which
+uses curl_workspace to figure out what to do.
 
 Usage:
     OPENROUTER_API_KEY=sk-... python agent/agent.py
@@ -20,10 +20,12 @@ import sys
 import threading
 import time
 
-import openai
 import requests as http
 from flask import Flask, jsonify
 from flask import request as freq
+from pydantic_ai import Agent
+from pydantic_ai.models.openai import OpenAIChatModel
+from pydantic_ai.providers.openai import OpenAIProvider
 
 logging.basicConfig(
     level=logging.INFO,
@@ -45,15 +47,8 @@ CALLBACK_URL    = os.environ.get("CALLBACK_URL", f"https://{_railway_domain}/wak
 PORT            = int(os.environ.get("PORT",              "7779"))
 MEMORY_DIR      = os.environ.get("MEMORY_DIR",           "./memory")
 MODEL           = os.environ.get("MODEL",                "openai/gpt-4o-mini")
-# Seconds before the agent consolidates memory and resets the conversation (0 = never)
 SESSION_TIMEOUT = int(os.environ.get("SESSION_TIMEOUT",  "600"))
-# Path the workspace exposes for callback registration (empty = skip registration)
 NOTIFY_REGISTER = os.environ.get("NOTIFY_REGISTER_PATH", "/notify/register")
-
-_client = openai.OpenAI(
-    api_key=os.environ.get("OPENROUTER_API_KEY", ""),
-    base_url="https://openrouter.ai/api/v1",
-)
 
 
 def _headers(extra: dict | None = None) -> dict:
@@ -162,217 +157,32 @@ def apply_memory(memory_block: str) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Tools
+# PydanticAI agent
 # ---------------------------------------------------------------------------
 
-_TOOLS: list[dict] = [
-    {
-        "type": "function",
-        "function": {
-            "name": "Bash",
-            "description": "Execute a bash command and return its stdout/stderr.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "command": {"type": "string", "description": "Shell command to execute"}
-                },
-                "required": ["command"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "curl_workspace",
-            "description": (
-                "Make an HTTP request to the workspace server. "
-                "The base URL, X-Agent-Id, and X-Api-Key headers are added automatically. "
-                "Use this for all workspace API calls."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "method": {
-                        "type": "string",
-                        "enum": ["GET", "POST", "PATCH", "DELETE"],
-                        "description": "HTTP method",
-                    },
-                    "path": {
-                        "type": "string",
-                        "description": "API path, e.g. /msg/inbox or /agents/",
-                    },
-                    "body": {
-                        "type": "object",
-                        "description": "Optional JSON request body (for POST/PATCH)",
-                    },
-                },
-                "required": ["method", "path"],
-            },
-        },
-    },
-]
+_model = OpenAIChatModel(
+    MODEL,
+    provider=OpenAIProvider(
+        base_url="https://openrouter.ai/api/v1",
+        api_key=os.environ.get("OPENROUTER_API_KEY", ""),
+    ),
+)
+_agent: Agent[None, str] = Agent(_model)
 
 
-def _run_tool(name: str, inputs: dict) -> str:
-    if name == "Bash":
-        try:
-            result = subprocess.run(
-                inputs["command"],
-                shell=True,
-                capture_output=True,
-                text=True,
-                timeout=60,
-            )
-            out = result.stdout
-            if result.stderr:
-                out += f"\nSTDERR:\n{result.stderr}"
-            return out or "(no output)"
-        except subprocess.TimeoutExpired:
-            return "ERROR: command timed out after 60s"
-        except Exception as exc:
-            return f"ERROR: {exc}"
-
-    if name == "curl_workspace":
-        method = inputs["method"].upper()
-        path = inputs.get("path", "/")
-        body = inputs.get("body")
-        try:
-            r = http.request(
-                method,
-                WORKSPACE_HOST + path,
-                headers=_headers({"Content-Type": "application/json"} if body else None),
-                json=body,
-                timeout=10,
-            )
-            return r.text[:4000]
-        except Exception as exc:
-            return f"ERROR: {exc}"
-
-    return f"Unknown tool: {name}"
-
-
-# ---------------------------------------------------------------------------
-# LLM loop + persistent conversation
-# ---------------------------------------------------------------------------
-
-# Single persistent conversation shared across all notifications.
-# Initialised in main() once AGENT_ID is resolved.
-_conversation: list[dict] = []
-_notification_queue: queue.Queue = queue.Queue()
-
-
-def _run_llm() -> str:
-    """Advance _conversation by one LLM turn (including any tool calls). Returns final text."""
-    call = 0
-    while True:
-        call += 1
-        log.info("thinking (call #%d)...", call)
-        response = _client.chat.completions.create(
-            model=MODEL,
-            max_tokens=8096,
-            messages=_conversation,
-            tools=_TOOLS,
-        )
-
-        choice = response.choices[0]
-        message = choice.message
-        _conversation.append(message)
-
-        if choice.finish_reason != "tool_calls" or not message.tool_calls:
-            return message.content or ""
-
-        for tc in message.tool_calls:
-            inputs = json.loads(tc.function.arguments)
-            args_preview = ", ".join(f"{k}={json.dumps(v)[:60]}" for k, v in inputs.items())
-            log.info("tool: %s(%s)", tc.function.name, args_preview)
-            result = _run_tool(tc.function.name, inputs)
-            log.info("  ↳ %s", result.replace("\n", " ")[:120])
-            _conversation.append({"role": "tool", "tool_call_id": tc.id, "content": result})
-
-
-_session_start: float = 0.0
-
-
-def _reset_session() -> None:
-    global _session_start
-    log.info("session timeout — consolidating memory and resetting conversation")
-    _conversation.append({"role": "user", "content": (
-        "Session timeout reached. Save everything worth keeping from this conversation "
-        "to long-term memory using the MEMORY section format, then confirm with one sentence."
-    )})
-    try:
-        output = _run_llm()
-        if "MEMORY:" in output:
-            _, _, mem = output.partition("MEMORY:")
-            apply_memory(mem.strip())
-    except Exception as exc:
-        log.error("consolidation error: %s", exc, exc_info=True)
-
-    _conversation.clear()
-    _conversation.append({"role": "system", "content": _system_prompt()})
-    _session_start = time.time()
-    log.info("conversation reset")
-
-
-def _agent_loop() -> None:
-    """Single worker thread: dequeues notifications and runs the LLM sequentially."""
-    while True:
-        # Block until at least one notification arrives
-        payload = _notification_queue.get()
-
-        if SESSION_TIMEOUT > 0 and time.time() - _session_start > SESSION_TIMEOUT:
-            _reset_session()
-
-        # Drain any that piled up while we were busy so they land in one user turn
-        batch = [payload]
-        while not _notification_queue.empty():
-            try:
-                batch.append(_notification_queue.get_nowait())
-            except queue.Empty:
-                break
-
-        parts = []
-        for p in batch:
-            if p is None:
-                parts.append("Revival tick: check for any unread messages and reply to them.")
-            else:
-                parts.append(f"Notification received:\n{json.dumps(p, indent=2)}")
-
-        user_msg = "\n\n".join(parts)
-        log.info("trigger: %s", user_msg[:200])
-        _conversation.append({"role": "user", "content": user_msg})
-
-        try:
-            output = _run_llm()
-        except Exception as exc:
-            log.error("LLM error: %s", exc, exc_info=True)
-            # Remove the user message we just appended so the conversation stays consistent
-            _conversation.pop()
-            continue
-
-        reply = output.partition("MEMORY:")[0].strip() if "MEMORY:" in output else output.strip()
-        log.info("reply: %s", reply)
-
-        if "MEMORY:" in output:
-            _, _, mem = output.partition("MEMORY:")
-            try:
-                apply_memory(mem.strip())
-            except Exception as exc:
-                log.error("memory error: %s", exc)
-
-
+@_agent.system_prompt
 def _system_prompt() -> str:
     memory = load_memory()
     lines = [
         f"You are AI agent #{AGENT_ID} connected to a workspace at {WORKSPACE_HOST}.",
         "Use curl_workspace to interact with the workspace API.",
-        "Use Bash for local shell tasks.",
+        "Use bash for local shell tasks.",
     ]
     if memory:
         lines += [
             "",
             "## Your long-term memory",
-            "(MEMORY.md index — use Bash to cat referenced files for details)",
+            "(MEMORY.md index — use bash to cat referenced files for details)",
             memory,
         ]
     lines += [
@@ -390,6 +200,126 @@ def _system_prompt() -> str:
         "(repeat for each file, max 3; omit the section entirely if nothing is worth saving)",
     ]
     return "\n".join(lines)
+
+
+@_agent.tool_plain
+def bash(command: str) -> str:
+    """Execute a bash command and return its stdout/stderr."""
+    log.info("tool: bash(%s)", command[:80])
+    try:
+        result = subprocess.run(
+            command, shell=True, capture_output=True, text=True, timeout=60
+        )
+        out = result.stdout
+        if result.stderr:
+            out += f"\nSTDERR:\n{result.stderr}"
+        output = out or "(no output)"
+    except subprocess.TimeoutExpired:
+        output = "ERROR: command timed out after 60s"
+    except Exception as exc:
+        output = f"ERROR: {exc}"
+    log.info("  ↳ %s", output.replace("\n", " ")[:120])
+    return output
+
+
+@_agent.tool_plain
+def curl_workspace(method: str, path: str, body: dict | None = None) -> str:
+    """Make an HTTP request to the workspace server. Base URL and auth headers are added automatically."""
+    log.info("tool: curl_workspace(%s %s)", method, path)
+    try:
+        r = http.request(
+            method.upper(),
+            WORKSPACE_HOST + path,
+            headers=_headers({"Content-Type": "application/json"} if body else None),
+            json=body,
+            timeout=10,
+        )
+        output = r.text[:4000]
+    except Exception as exc:
+        output = f"ERROR: {exc}"
+    log.info("  ↳ %s", output.replace("\n", " ")[:120])
+    return output
+
+
+# ---------------------------------------------------------------------------
+# Conversation state + LLM runner
+# ---------------------------------------------------------------------------
+
+_history: list = []
+_session_start: float = 0.0
+
+
+def _run_llm(user_msg: str) -> str:
+    global _history
+    result = _agent.run_sync(user_msg, message_history=_history)
+    _history = list(result.all_messages())
+    return result.output
+
+
+def _reset_session() -> None:
+    global _history, _session_start
+    log.info("session timeout — consolidating memory and resetting conversation")
+    try:
+        output = _run_llm(
+            "Session timeout reached. Save everything worth keeping from this conversation "
+            "to long-term memory using the MEMORY section format, then confirm with one sentence."
+        )
+        if "MEMORY:" in output:
+            _, _, mem = output.partition("MEMORY:")
+            apply_memory(mem.strip())
+    except Exception as exc:
+        log.error("consolidation error: %s", exc, exc_info=True)
+    _history = []
+    _session_start = time.time()
+    log.info("conversation reset")
+
+
+# ---------------------------------------------------------------------------
+# Notification queue + agent loop
+# ---------------------------------------------------------------------------
+
+_notification_queue: queue.Queue = queue.Queue()
+
+
+def _agent_loop() -> None:
+    while True:
+        payload = _notification_queue.get()
+
+        batch = [payload]
+        while not _notification_queue.empty():
+            try:
+                batch.append(_notification_queue.get_nowait())
+            except queue.Empty:
+                break
+
+        if SESSION_TIMEOUT > 0 and time.time() - _session_start > SESSION_TIMEOUT:
+            _reset_session()
+
+        parts = []
+        for p in batch:
+            if p is None:
+                parts.append("Revival tick: check for any unread messages and reply to them.")
+            else:
+                parts.append(f"Notification received:\n{json.dumps(p, indent=2)}")
+
+        user_msg = "\n\n".join(parts)
+        log.info("trigger: %s", user_msg[:200])
+
+        try:
+            output = _run_llm(user_msg)
+        except Exception as exc:
+            log.error("LLM error: %s", exc, exc_info=True)
+            continue
+
+        reply = output.partition("MEMORY:")[0].strip() if "MEMORY:" in output else output.strip()
+        log.info("reply: %s", reply)
+
+        if "MEMORY:" in output:
+            _, _, mem = output.partition("MEMORY:")
+            try:
+                apply_memory(mem.strip())
+            except Exception as exc:
+                log.error("memory error: %s", exc)
 
 
 # ---------------------------------------------------------------------------
@@ -417,14 +347,14 @@ def health():
 # ---------------------------------------------------------------------------
 
 def main() -> None:
-    global WORKSPACE_HOST, AGENT_ID, PORT, INTERVAL, CALLBACK_URL, AGENT_KEY
+    global WORKSPACE_HOST, AGENT_ID, PORT, CALLBACK_URL, AGENT_KEY, _session_start
 
     parser = argparse.ArgumentParser(description="Inact reply agent")
     parser.add_argument("--workspace",  default=None, help="override WORKSPACE_HOST env var")
-    parser.add_argument("--agent-id",  default=None, help="agent id (resolved from key if omitted)")
-    parser.add_argument("--agent-key", default=None, help="override AGENT_KEY env var")
-    parser.add_argument("--port",      default=None, type=int)
-    parser.add_argument("--callback",  default=None)
+    parser.add_argument("--agent-id",   default=None, help="agent id (resolved from key if omitted)")
+    parser.add_argument("--agent-key",  default=None, help="override AGENT_KEY env var")
+    parser.add_argument("--port",       default=None, type=int)
+    parser.add_argument("--callback",   default=None)
     args = parser.parse_args()
 
     if args.workspace:  WORKSPACE_HOST = args.workspace.rstrip("/")
@@ -449,7 +379,6 @@ def main() -> None:
         except Exception as exc:
             log.warning("could not register callback: %s", exc)
 
-    _conversation.append({"role": "system", "content": _system_prompt()})
     _session_start = time.time()
     threading.Thread(target=_agent_loop, daemon=True).start()
 

@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/usr/bin/env bash
 set -e
 
 CODE_SERVER_PORT=${CODE_SERVER_PORT:-0}

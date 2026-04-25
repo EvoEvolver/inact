@@ -51,6 +51,7 @@ SESSION_TIMEOUT = int(os.environ.get("SESSION_TIMEOUT",  "600"))
 # Periodic self-check interval in seconds — safety net for missed push notifications (0 = off)
 POLL_INTERVAL   = int(os.environ.get("POLL_INTERVAL",    "30"))
 NOTIFY_REGISTER = os.environ.get("NOTIFY_REGISTER_PATH", "/notify/register")
+NOTIFY_INBOX    = os.environ.get("NOTIFY_INBOX_PATH",    "/notify/inbox")
 
 
 def _headers(extra: dict | None = None) -> dict:
@@ -412,16 +413,17 @@ def main() -> None:
             while True:
                 time.sleep(POLL_INTERVAL)
                 try:
-                    r = http.get(
-                        f"{WORKSPACE_HOST}/msg/sessions",
+                    resp = http.get(
+                        f"{WORKSPACE_HOST}{NOTIFY_INBOX}",
                         headers=_headers(),
+                        params={"unread": "1"},
                         timeout=5,
                     )
-                    has_unread = bool(re.search(r"unread\s*=\s*[1-9]", r.text))
+                    has_unread = "[[notifications]]" in resp.text
                 except Exception:
-                    has_unread = True  # assume unread on error so we don't miss messages
+                    has_unread = True  # wake on error so we don't miss messages
                 if has_unread:
-                    log.info("poll — unread sessions found, queuing check")
+                    log.info("poll — unread notifications found, queuing check")
                     _notification_queue.put(None)
         threading.Thread(target=_poll_loop, daemon=True).start()
 

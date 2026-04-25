@@ -616,9 +616,10 @@ def mount_files(
             ["code-server",
              "--port",          str(code_server_port),
              "--auth",          "none",
+             "--base-path",     "/vscode",
              "--user-data-dir", "/tmp/code-server-data",
              _path_arg],
-            stdout=None, stderr=None,   # both to Docker logs for diagnosis
+            stdout=None, stderr=None,
         )
         atexit.register(_proc.terminate)
         import logging as _log

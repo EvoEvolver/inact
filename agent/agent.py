@@ -188,7 +188,10 @@ def _system_prompt() -> str:
     lines += [
         "",
         "## Instructions",
-        "Each user message is a notification or revival tick. Handle it appropriately.",
+        "Each user message is a notification or revival tick.",
+        "You MUST take action on every unread message and pending notification — no exceptions.",
+        "Do NOT skip, defer, or summarize notifications without acting on them.",
+        "For every unread item: read it, respond or join as appropriate, then move on to the next.",
         "If anything is worth saving to long-term memory, append a MEMORY section:",
         "",
         "MEMORY:",

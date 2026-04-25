@@ -49,7 +49,7 @@ MEMORY_DIR      = os.environ.get("MEMORY_DIR",           "./memory")
 MODEL           = os.environ.get("MODEL",                "openai/gpt-4o-mini")
 SESSION_TIMEOUT = int(os.environ.get("SESSION_TIMEOUT",  "600"))
 # Periodic self-check interval in seconds — safety net for missed push notifications (0 = off)
-POLL_INTERVAL   = int(os.environ.get("POLL_INTERVAL",    "120"))
+POLL_INTERVAL   = int(os.environ.get("POLL_INTERVAL",    "30"))
 NOTIFY_REGISTER = os.environ.get("NOTIFY_REGISTER_PATH", "/notify/register")
 
 
@@ -411,8 +411,18 @@ def main() -> None:
         def _poll_loop() -> None:
             while True:
                 time.sleep(POLL_INTERVAL)
-                log.info("poll — queuing self-check")
-                _notification_queue.put(None)
+                try:
+                    r = http.get(
+                        f"{WORKSPACE_HOST}/msg/sessions",
+                        headers=_headers(),
+                        timeout=5,
+                    )
+                    has_unread = bool(re.search(r"unread\s*=\s*[1-9]", r.text))
+                except Exception:
+                    has_unread = True  # assume unread on error so we don't miss messages
+                if has_unread:
+                    log.info("poll — unread sessions found, queuing check")
+                    _notification_queue.put(None)
         threading.Thread(target=_poll_loop, daemon=True).start()
 
     log.info("checking for pending messages...")

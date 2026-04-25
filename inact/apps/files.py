@@ -604,29 +604,35 @@ def mount_files(
             inact_app.fs_local_paths = {}
         inact_app.fs_local_paths[prefix] = local_path
 
-    # Start code-server if a port is configured
-    _cs_url: str | None = None
-    if code_server_port is not None:
+    # Start code-server if a port is configured.
+    # nginx proxies /_vscode → code-server so the iframe is same-origin.
+    _vscode_enabled = code_server_port is not None
+    if _vscode_enabled:
         import atexit, subprocess as _sp
         _path_arg = local_path or "."
         _proc = _sp.Popen(
-            ["code-server", "--port", str(code_server_port),
-             "--auth", "none", _path_arg],
+            ["code-server",
+             "--port",      str(code_server_port),
+             "--auth",      "none",
+             "--base-path", "/_vscode",
+             _path_arg],
             stdout=_sp.DEVNULL, stderr=_sp.DEVNULL,
         )
         atexit.register(_proc.terminate)
-        _cs_url = f"http://localhost:{code_server_port}/"
         import logging as _log
         _log.getLogger(__name__).info(
-            "code-server started on :%d for %s", code_server_port, _path_arg
+            "code-server started on :%d for %s (base /_vscode)", code_server_port, _path_arg
         )
 
     def _human(path: str):
-        if _cs_url:
-            from flask import redirect
-            return redirect(_cs_url)
         from inact.render import render_template, workspace_nav
         from inact.utils import html_response
+        if _vscode_enabled:
+            return html_response(render_template("vscode_embed.html",
+                title="Files",
+                vscode_src="/_vscode/",
+                workspace_links=workspace_nav("/_human/files/"),
+                show_identity=True))
         return html_response(render_template("files_human.html",
             title="Files", prefix=prefix, nav="", pills=[],
             workspace_links=workspace_nav("/_human/files/"),

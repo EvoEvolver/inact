@@ -1,0 +1,15 @@
+{% extends "base.html" %}
+{% block body_wrap %}
+<style>
+  .vscode-frame {
+    display: block;
+    width: 100%;
+    height: calc(100vh - 45px);
+    border: none;
+  }
+</style>
+<iframe class="vscode-frame"
+        src="{{ vscode_src }}"
+        allow="clipboard-read; clipboard-write">
+</iframe>
+{% endblock %}

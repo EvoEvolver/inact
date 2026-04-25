@@ -4,7 +4,7 @@ FROM ghcr.io/astral-sh/uv:python3.13-bookworm-slim
 # fuse3: required for rclone mount
 # curl/ca-certificates: needed by rclone + code-server install scripts
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        curl ca-certificates fuse3 bash unzip \
+        curl ca-certificates fuse3 bash unzip nginx \
     && rm -rf /var/lib/apt/lists/*
 
 # Allow non-root FUSE mounts (needed for rclone --allow-other)
@@ -32,22 +32,18 @@ RUN uv pip install --system --no-cache ./inact/.. --no-deps
 
 # ── Workspace server ──────────────────────────────────────────────────────────
 COPY workspace/server.py .
+COPY workspace/start.sh .
+RUN chmod +x start.sh
 
 ENV DATA_DIR=/data
 
-# inact HTTP / embedded SMTP / code-server
+# nginx (public) / inact (internal 5051) / SMTP / code-server
 EXPOSE 5050
 EXPOSE 2525
-EXPOSE 8080
 
-# NOTE: rclone mount requires FUSE. Run the container with:
+# NOTE: rclone mount requires FUSE. Run with:
 #   --device /dev/fuse --cap-add SYS_ADMIN
-# or on Railway/Render set privileged mode.
+# or enable privileged mode on Railway/Render.
 
-# One worker: aiosmtpd + rclone subprocesses cannot be shared across workers
-CMD exec gunicorn server:wsgi \
-        --bind "0.0.0.0:${PORT:-5050}" \
-        --workers 1 \
-        --timeout 120 \
-        --access-logfile - \
-        --error-logfile -
+# nginx forwards to gunicorn on :5051; code-server on :${CODE_SERVER_PORT}
+CMD ["./start.sh"]

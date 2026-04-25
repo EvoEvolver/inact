@@ -112,6 +112,7 @@ def mount_s3(
     region_name: str | None = None,
     handlers=None,
     editable: bool = False,
+    code_server_port: int | None = None,
     rclone_extra_args: list[str] | None = None,
 ) -> str:
     """
@@ -180,7 +181,8 @@ def mount_s3(
     atexit.register(proc.terminate)
 
     # Serve with mount_files — same routes as local files
-    mount_files(inact_app, prefix, mount_dir, handlers=handlers, editable=editable)
+    mount_files(inact_app, prefix, mount_dir, handlers=handlers, editable=editable,
+                code_server_port=code_server_port)
 
     # Store local path so code-server (or anything else) can find it
     if not hasattr(inact_app, "fs_local_paths"):

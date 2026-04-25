@@ -529,6 +529,7 @@ def mount_files(
     folder_or_fs,
     handlers=None,
     editable=False,
+    code_server_port: int | None = None,
 ) -> None:
     """
     Mount a directory (or any :class:`FileSystem` backend) at *prefix*.
@@ -597,12 +598,33 @@ def mount_files(
     inact_app._app_mounts.append((prefix, help_text))
 
     # Store local path when backed by a real directory (useful for code-server)
-    if isinstance(folder_or_fs, str):
+    local_path = os.path.abspath(folder_or_fs) if isinstance(folder_or_fs, str) else None
+    if local_path:
         if not hasattr(inact_app, "fs_local_paths"):
             inact_app.fs_local_paths = {}
-        inact_app.fs_local_paths[prefix] = os.path.abspath(folder_or_fs)
+        inact_app.fs_local_paths[prefix] = local_path
+
+    # Start code-server if a port is configured
+    _cs_url: str | None = None
+    if code_server_port is not None:
+        import atexit, subprocess as _sp
+        _path_arg = local_path or "."
+        _proc = _sp.Popen(
+            ["code-server", "--port", str(code_server_port),
+             "--auth", "none", _path_arg],
+            stdout=_sp.DEVNULL, stderr=_sp.DEVNULL,
+        )
+        atexit.register(_proc.terminate)
+        _cs_url = f"http://localhost:{code_server_port}/"
+        import logging as _log
+        _log.getLogger(__name__).info(
+            "code-server started on :%d for %s", code_server_port, _path_arg
+        )
 
     def _human(path: str):
+        if _cs_url:
+            from flask import redirect
+            return redirect(_cs_url)
         from inact.render import render_template, workspace_nav
         from inact.utils import html_response
         return html_response(render_template("files_human.html",

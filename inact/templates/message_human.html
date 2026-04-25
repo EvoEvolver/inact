@@ -255,12 +255,22 @@ async function loadAllAgents() {
   } catch (_) {}
 }
 
+// ── parse "Alice#1, Bot#2" → [{name, id}] ─────────────────────────────────
+function parseMembersList(membersStr) {
+  if (!membersStr) return [];
+  return membersStr.split(', ').map(entry => {
+    const m = entry.match(/^(.*?)#(\d+)$/);
+    return m ? {name: m[1], id: m[2]} : null;
+  }).filter(Boolean);
+}
+
 // ── session display name ───────────────────────────────────────────────────
 function sessionDisplayName(sess) {
   if (sess.name) return sess.name;
-  const others = (sess.member_ids || '').split(',').filter(id => id && id !== String(myId));
-  if (!others.length) return 'Session ' + sess.id.slice(0, 6);
-  const names = others.slice(0, 3).map(id => agentNameCache[id] || ('#' + id));
+  const members = parseMembersList(sess.members);
+  const others  = members.filter(m => m.id !== String(myId));
+  if (!others.length) return 'Session ' + sess.id;
+  const names = others.slice(0, 3).map(m => m.name || agentNameCache[m.id] || ('#' + m.id));
   return names.join(', ') + (others.length > 3 ? ', …' : '');
 }
 
@@ -278,9 +288,13 @@ async function loadSessions(page) {
 
     const sessions = parseBlocks(text, 'sessions');
 
+    // Pre-warm name cache from the members string, then fetch kinds for badges
     const toLoad = new Set();
     sessions.forEach(s => {
-      (s.member_ids || '').split(',').forEach(id => { if (id && !agentNameCache[id]) toLoad.add(id); });
+      parseMembersList(s.members).forEach(({name, id}) => {
+        if (name && !agentNameCache[id]) agentNameCache[id] = name;
+        if (!agentKindCache[id]) toLoad.add(id);
+      });
     });
     await Promise.all([...toLoad].map(id => getAgentName(id)));
 
@@ -304,12 +318,12 @@ function renderSessionList(sessions) {
   for (const s of sessions) {
     const name   = sessionDisplayName(s);
     const unread = parseInt(s.unread || '0', 10);
-    const others = (s.member_ids || '').split(',').filter(id => id && id !== String(myId));
+    const others = parseMembersList(s.members).filter(m => m.id !== String(myId));
     const isDM   = others.length === 1;
 
     let kindBadge = '';
     if (isDM) {
-      const k = agentKindCache[others[0]] || 'agent';
+      const k = agentKindCache[others[0].id] || 'agent';
       kindBadge = k === 'human'
         ? '<span class="kind-human">human</span>'
         : '<span class="kind-agent">bot</span>';
@@ -497,7 +511,7 @@ async function createSession() {
   }).then(r => r.text()).catch(() => '');
   btn.disabled = false; btn.textContent = 'Create Session';
 
-  const idMatch = res.match(/^id\s*=\s*"([^"]+)"/m);
+  const idMatch = res.match(/^id\s*=\s*"?(\w+)"?/m);
   if (!idMatch) {
     errEl.textContent = 'Failed to create session. Please try again.';
     errEl.style.display = 'block';

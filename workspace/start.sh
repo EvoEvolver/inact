@@ -51,7 +51,7 @@ if cs_port:
     # If code-server doesn't support a base path flag, we rewrite /vscode/* to /
     # and also proxy common absolute asset paths to code-server to keep the app working.
     if cs_mode in ("base-path", "server-base-path"):
-        cs_block = f"""
+        cs_block = fr"""
             # Ensure trailing slash path works consistently
             location = /vscode {{ return 301 /vscode/; }}
             # WebSocket + long-poll/SSE friendly proxying
@@ -72,7 +72,7 @@ if cs_port:
             }}
         """
     else:
-        cs_block = f"""
+        cs_block = fr"""
             # Health check endpoint (return immediately so iframe can detect readiness)
             location = /vscode/healthz {{ return 204; }}
             # Redirect bare /vscode to /vscode/

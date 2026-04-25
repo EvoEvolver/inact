@@ -30,20 +30,20 @@ from ...utils import text_response, html_response, toml_str
 
 _DDL = [
     """CREATE TABLE IF NOT EXISTS sessions (
-        id         TEXT    PRIMARY KEY,
+        id         INTEGER PRIMARY KEY,
         name       TEXT    NOT NULL DEFAULT '',
         created_by TEXT    NOT NULL DEFAULT '',
         created_at BIGINT  NOT NULL
     )""",
     """CREATE TABLE IF NOT EXISTS session_members (
-        session_id TEXT    NOT NULL,
+        session_id INTEGER NOT NULL,
         agent_id   TEXT    NOT NULL,
         joined_at  BIGINT  NOT NULL,
         PRIMARY KEY (session_id, agent_id)
     )""",
     """CREATE TABLE IF NOT EXISTS session_messages (
         id         TEXT    PRIMARY KEY,
-        session_id TEXT    NOT NULL,
+        session_id INTEGER NOT NULL,
         from_id    TEXT    NOT NULL,
         body       TEXT    NOT NULL DEFAULT '',
         created_at BIGINT  NOT NULL
@@ -90,12 +90,11 @@ class SessionStore:
         self._s = storage
         self._s.init(_DDL)
 
-    def create(self, name: str, created_by: str, member_ids: list) -> str:
-        session_id = str(uuid.uuid4())
+    def create(self, name: str, created_by: str, member_ids: list) -> int:
         ts = int(time.time())
-        self._s.execute(
-            "INSERT INTO sessions VALUES (?, ?, ?, ?)",
-            (session_id, name, created_by, ts),
+        session_id = self._s.insert(
+            "INSERT INTO sessions (name, created_by, created_at) VALUES (?, ?, ?)",
+            (name, created_by, ts),
         )
         for agent_id in list({str(m) for m in member_ids} | {str(created_by)}):
             try:
@@ -219,7 +218,7 @@ MessageStore = SessionStore
 
 def attach_message(inact_app, prefix: str, store: SessionStore,
                    agents_prefix: str = "/agents",
-                   notify_fn=None, kind_fn=None) -> None:
+                   notify_fn=None, kind_fn=None, member_fn=None) -> None:
     prefix = "/" + prefix.strip("/")
     ep = "_inact_msg_" + prefix.replace("/", "__")
     flask_app = inact_app.app
@@ -263,15 +262,15 @@ def attach_message(inact_app, prefix: str, store: SessionStore,
                 )
             session_id = store.create(name, created_by, members)
             if notify_fn:
-                label = name or session_id[:8]
+                label = name or str(session_id)
                 for member_id in members:
                     if str(member_id) != str(created_by):
                         notify_fn(str(member_id), created_by,
                                   f"[session:{session_id}] You were added to '{label}'")
             return text_response(
                 f"OK\n"
-                f"id   = {toml_str(session_id)}\n"
-                f"url  = {toml_str(prefix + '/sessions/' + session_id)}\n"
+                f"id   = {session_id}\n"
+                f"url  = {toml_str(prefix + '/sessions/' + str(session_id))}\n"
             )
 
         # GET — list sessions for this agent
@@ -294,15 +293,21 @@ def attach_message(inact_app, prefix: str, store: SessionStore,
             "\n",
         ]
         for s in page_sessions:
+            member_parts = []
+            for mid in (s["member_ids"].split(",") if s["member_ids"] else []):
+                info = member_fn(mid) if member_fn else {"name": "", "kind": "agent"}
+                display = info["name"] or (
+                    "Human #" + mid if info["kind"] == "human" else "Agent #" + mid
+                )
+                member_parts.append(f"{display}#{mid}")
             lines.append("[[sessions]]\n")
-            lines.append(f"id         = {toml_str(s['id'])}\n")
+            lines.append(f"id        = {s['id']}\n")
             if s["name"]:
-                lines.append(f"name       = {toml_str(s['name'])}\n")
-            lines.append(f"member_ids = {toml_str(s['member_ids'])}\n")
-            lines.append(f"members    = {s['member_count']}\n")
-            lines.append(f"unread     = {s['unread']}\n")
-            lines.append(f"last_date  = {toml_str(_fmt_ts(s['last_ts']))}\n")
-            lines.append(f"url        = {toml_str(prefix + '/sessions/' + s['id'])}\n")
+                lines.append(f"name      = {toml_str(s['name'])}\n")
+            lines.append(f"members   = {toml_str(', '.join(member_parts))}\n")
+            lines.append(f"unread    = {s['unread']}\n")
+            lines.append(f"last_date = {toml_str(_fmt_ts(s['last_ts']))}\n")
+            lines.append(f"url       = {toml_str(prefix + '/sessions/' + str(s['id']))}\n")
             lines.append("\n")
         return text_response("".join(lines))
 
@@ -312,8 +317,8 @@ def attach_message(inact_app, prefix: str, store: SessionStore,
             return text_response("ERROR 404: session not found\n", 404)
         members = store.get_members(session_id)
         lines = [
-            f"# Session: {s['name'] or session_id[:8]}\n\n",
-            f"id           = {toml_str(s['id'])}\n",
+            f"# Session: {s['name'] or session_id}\n\n",
+            f"id           = {s['id']}\n",
             f"created_by   = {toml_str(s['created_by'])}\n",
             f"created_at   = {toml_str(_fmt_ts(s['created_at']))}\n",
             f"member_count = {len(members)}\n",
@@ -324,11 +329,17 @@ def attach_message(inact_app, prefix: str, store: SessionStore,
         if s["name"]:
             lines.insert(2, f"name         = {toml_str(s['name'])}\n")
         for m in members:
-            fk = kind_fn(m) if kind_fn else ""
-            line = f"[[members]]\nagent_id = {toml_str(m)}\n"
-            if fk:
-                line += f"kind     = {toml_str(fk)}\n"
-            lines.append(line + "\n")
+            info = member_fn(m) if member_fn else {"name": "", "kind": kind_fn(m) if kind_fn else "agent"}
+            display = info["name"] or (
+                "Human #" + m if info["kind"] == "human" else "Agent #" + m
+            )
+            lines.append(
+                f"[[members]]\n"
+                f"id   = {m}\n"
+                f"name = {toml_str(display)}\n"
+                f"kind = {toml_str(info['kind'])}\n"
+                "\n"
+            )
         return text_response("".join(lines))
 
     def _session_send(session_id: str):
@@ -454,9 +465,10 @@ def mount_message(inact_app, prefix: str, storage,
     p = "/" + prefix.strip("/")
     backend = make_storage(storage) if isinstance(storage, str) else storage
 
-    # kind_fn looks up agent kind; same storage works when agents table is co-located
+    # Build kind_fn and member_fn from the registry when available
     _reg_source = registry if registry is not None else storage
     kind_fn = None
+    member_fn = None
     if _reg_source is not None:
         from .register import AgentRegistry
         _reg = _reg_source if isinstance(_reg_source, AgentRegistry) \
@@ -471,6 +483,17 @@ def mount_message(inact_app, prefix: str, storage,
             except Exception:
                 return "agent"
 
+        def member_fn(agent_id: str, _r=_reg) -> dict:
+            if not agent_id:
+                return {"name": "", "kind": "agent"}
+            try:
+                row = _r.get(int(agent_id))
+                if row:
+                    return {"name": row.get("name", "") or "", "kind": row.get("kind", "agent") or "agent"}
+            except Exception:
+                pass
+            return {"name": "", "kind": "agent"}
+
     notify_fn = None
     if notify_storage is not None:
         from ..notify import NotifyStore, _push
@@ -484,7 +507,7 @@ def mount_message(inact_app, prefix: str, storage,
 
     attach_message(inact_app, p, SessionStore(backend),
                    agents_prefix="/" + agents_prefix.strip("/"),
-                   notify_fn=notify_fn, kind_fn=kind_fn)
+                   notify_fn=notify_fn, kind_fn=kind_fn, member_fn=member_fn)
     inact_app._app_mounts.append((p, (
         f"\nSession messaging: {p}\n"
         f'  POST   {p}/sessions                    create session  body: {{"name":"opt","members":["1","2"]}}\n'

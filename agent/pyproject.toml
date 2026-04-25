@@ -1,10 +1,10 @@
 [project]
 name = "inact-agent"
 version = "0.1.0"
-description = "Inact reply agent — auto-replies to messages using claude"
+description = "Inact reply agent — auto-replies to messages using OpenRouter"
 requires-python = ">=3.11"
 dependencies = [
-    "anthropic>=0.40",
+    "openai>=1.0",
     "flask>=3.0",
     "requests>=2.31",
     "gunicorn>=21.0",

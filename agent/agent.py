@@ -44,6 +44,8 @@ CALLBACK_URL    = os.environ.get("CALLBACK_URL", f"https://{_railway_domain}/wak
 PORT            = int(os.environ.get("PORT",              "7779"))
 MEMORY_DIR      = os.environ.get("MEMORY_DIR",           "./memory")
 MODEL           = os.environ.get("MODEL",                "openai/gpt-4o-mini")
+# Seconds before the agent consolidates memory and resets the conversation (0 = never)
+SESSION_TIMEOUT = int(os.environ.get("SESSION_TIMEOUT",  "600"))
 # Path the workspace exposes for callback registration (empty = skip registration)
 NOTIFY_REGISTER = os.environ.get("NOTIFY_REGISTER_PATH", "/notify/register")
 
@@ -287,11 +289,38 @@ def _run_llm() -> str:
             _conversation.append({"role": "tool", "tool_call_id": tc.id, "content": result})
 
 
+_session_start: float = 0.0
+
+
+def _reset_session() -> None:
+    global _session_start
+    log.info("session timeout — consolidating memory and resetting conversation")
+    _conversation.append({"role": "user", "content": (
+        "Session timeout reached. Save everything worth keeping from this conversation "
+        "to long-term memory using the MEMORY section format, then confirm with one sentence."
+    )})
+    try:
+        output = _run_llm()
+        if "MEMORY:" in output:
+            _, _, mem = output.partition("MEMORY:")
+            apply_memory(mem.strip())
+    except Exception as exc:
+        log.error("consolidation error: %s", exc, exc_info=True)
+
+    _conversation.clear()
+    _conversation.append({"role": "system", "content": _system_prompt()})
+    _session_start = time.time()
+    log.info("conversation reset")
+
+
 def _agent_loop() -> None:
     """Single worker thread: dequeues notifications and runs the LLM sequentially."""
     while True:
         # Block until at least one notification arrives
         payload = _notification_queue.get()
+
+        if SESSION_TIMEOUT > 0 and time.time() - _session_start > SESSION_TIMEOUT:
+            _reset_session()
 
         # Drain any that piled up while we were busy so they land in one user turn
         batch = [payload]
@@ -420,6 +449,7 @@ def main() -> None:
             log.warning("could not register callback: %s", exc)
 
     _conversation.append({"role": "system", "content": _system_prompt()})
+    _session_start = time.time()
     threading.Thread(target=_agent_loop, daemon=True).start()
 
     log.info("checking for pending messages...")

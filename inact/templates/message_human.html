@@ -448,13 +448,22 @@ async function send() {
   const body = inp.value.trim();
   if (!body || !selId) return;
   inp.value = ''; inp.disabled = true; document.getElementById('send-btn').disabled = true;
-  await fetch(P + '/sessions/' + selId + '/send', {
-    method: 'POST',
-    headers: authHeaders({'Content-Type': 'application/json'}),
-    body: JSON.stringify({from: myId, body})
-  }).catch(() => {});
-  await pollSession();
-  inp.disabled = false; document.getElementById('send-btn').disabled = false; inp.focus();
+  try {
+    const res = await fetch(P + '/sessions/' + selId + '/send', {
+      method: 'POST',
+      headers: authHeaders({'Content-Type': 'application/json'}),
+      body: JSON.stringify({from: String(myId), body})
+    }).then(r => r.text()).catch(() => '');
+    if (res.startsWith('OK')) {
+      await pollSession();
+    } else {
+      // Put the text back so the user doesn't lose it
+      inp.value = body;
+      console.error('send failed:', res);
+    }
+  } finally {
+    inp.disabled = false; document.getElementById('send-btn').disabled = false; inp.focus();
+  }
 }
 
 // ── new session panel ──────────────────────────────────────────────────────

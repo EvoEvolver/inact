@@ -49,7 +49,7 @@ MEMORY_DIR      = os.environ.get("MEMORY_DIR",           "./memory")
 MODEL           = os.environ.get("MODEL",                "openai/gpt-4o-mini")
 SESSION_TIMEOUT = int(os.environ.get("SESSION_TIMEOUT",  "600"))
 # Periodic self-check interval in seconds — safety net for missed push notifications (0 = off)
-POLL_INTERVAL   = int(os.environ.get("POLL_INTERVAL",    "30"))
+POLL_INTERVAL   = int(os.environ.get("POLL_INTERVAL",    "5"))
 NOTIFY_REGISTER = os.environ.get("NOTIFY_REGISTER_PATH", "/notify/register")
 NOTIFY_INBOX    = os.environ.get("NOTIFY_INBOX_PATH",    "/notify/inbox")
 

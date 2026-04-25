@@ -17,6 +17,7 @@ import re
 import subprocess
 import sys
 import threading
+import time
 
 import openai
 import requests as http
@@ -250,9 +251,16 @@ _conversation: list[dict] = []
 _notification_queue: queue.Queue = queue.Queue()
 
 
+def _ts() -> str:
+    return time.strftime("%H:%M:%S")
+
+
 def _run_llm() -> str:
     """Advance _conversation by one LLM turn (including any tool calls). Returns final text."""
+    call = 0
     while True:
+        call += 1
+        print(f"[{_ts()}] thinking (call #{call})...")
         response = _client.chat.completions.create(
             model=MODEL,
             max_tokens=8096,
@@ -269,8 +277,11 @@ def _run_llm() -> str:
 
         for tc in message.tool_calls:
             inputs = json.loads(tc.function.arguments)
+            args_preview = ", ".join(f"{k}={json.dumps(v)[:60]}" for k, v in inputs.items())
+            print(f"[{_ts()}] tool: {tc.function.name}({args_preview})")
             result = _run_tool(tc.function.name, inputs)
-            print(f"[tool:{tc.function.name}] {tc.function.arguments[:80]} → {result[:80]}")
+            result_preview = result.replace("\n", " ")[:120]
+            print(f"[{_ts()}]    ↳ {result_preview}")
             _conversation.append({"role": "tool", "tool_call_id": tc.id, "content": result})
 
 
@@ -294,17 +305,22 @@ def _agent_loop() -> None:
                 parts.append("Revival tick: check for any unread messages and reply to them.")
             else:
                 parts.append(f"Notification received:\n{json.dumps(p, indent=2)}")
-        _conversation.append({"role": "user", "content": "\n\n".join(parts)})
+
+        user_msg = "\n\n".join(parts)
+        print(f"\n[{_ts()}] trigger: {user_msg[:200]}")
+        _conversation.append({"role": "user", "content": user_msg})
 
         output = _run_llm()
-        print(f"[agent] {output[:300]}")
+
+        reply = output.partition("MEMORY:")[0].strip() if "MEMORY:" in output else output.strip()
+        print(f"[{_ts()}] reply: {reply}")
 
         if "MEMORY:" in output:
             _, _, mem = output.partition("MEMORY:")
             try:
                 apply_memory(mem.strip())
             except Exception as exc:
-                print(f"[memory] error: {exc}", file=sys.stderr)
+                print(f"[{_ts()}] memory error: {exc}", file=sys.stderr)
 
 
 def _system_prompt() -> str:
@@ -348,7 +364,7 @@ agent_app = Flask("reply-agent")
 @agent_app.route("/wake", methods=["POST"])
 def wake():
     payload = freq.get_json(force=True, silent=True) or {}
-    print(f"\n[wake] {payload.get('type', 'notification')} — queued")
+    print(f"[{_ts()}] wake: {payload.get('type', 'notification')} — queued")
     _notification_queue.put(payload)
     return jsonify({"status": "ok"})
 

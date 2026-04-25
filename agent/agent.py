@@ -12,6 +12,7 @@ Usage:
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 import threading
@@ -28,8 +29,10 @@ from flask import request as freq
 
 WORKSPACE_HOST  = os.environ.get("WORKSPACE_HOST",       "http://localhost:5050").rstrip("/")
 AGENT_KEY       = os.environ.get("AGENT_KEY",            "")
-AGENT_ID        = os.environ.get("AGENT_ID",             "1")
-CALLBACK_URL    = os.environ.get("CALLBACK_URL",         "")
+AGENT_ID        = os.environ.get("AGENT_ID",             "")   # resolved from key if blank
+AGENT_ME_PATH   = os.environ.get("AGENT_ME_PATH",        "/agents/.me")
+_railway_domain = os.environ.get("RAILWAY_PRIVATE_DOMAIN", "")
+CALLBACK_URL    = os.environ.get("CALLBACK_URL", f"https://{_railway_domain}/wake" if _railway_domain else "")
 PORT            = int(os.environ.get("PORT",              "7779"))
 INTERVAL        = int(os.environ.get("REVIVAL_INTERVAL", "600"))
 MEMORY_DIR      = os.environ.get("MEMORY_DIR",           "./memory")
@@ -44,12 +47,36 @@ _client = openai.OpenAI(
 
 
 def _headers(extra: dict | None = None) -> dict:
-    h = {"X-Agent-Id": AGENT_ID}
+    h = {}
+    if AGENT_ID:
+        h["X-Agent-Id"] = AGENT_ID
     if AGENT_KEY:
         h["X-Api-Key"] = AGENT_KEY
     if extra:
         h.update(extra)
     return h
+
+
+def _resolve_agent_id() -> None:
+    global AGENT_ID
+    if AGENT_ID:
+        return
+    if not AGENT_KEY:
+        raise RuntimeError("Set AGENT_ID or AGENT_KEY so the agent can identify itself")
+    try:
+        r = http.get(
+            f"{WORKSPACE_HOST}{AGENT_ME_PATH}",
+            headers={"X-Api-Key": AGENT_KEY},
+            timeout=5,
+        )
+        r.raise_for_status()
+        m = re.search(r"^id\s*=\s*(\S+)", r.text, re.MULTILINE)
+        if not m:
+            raise ValueError(f"no id field in response: {r.text[:200]}")
+        AGENT_ID = m.group(1).strip('"')
+        print(f"[agent] resolved id={AGENT_ID} from api key")
+    except Exception as exc:
+        raise RuntimeError(f"could not resolve agent id: {exc}") from exc
 
 
 # ---------------------------------------------------------------------------
@@ -338,7 +365,7 @@ def main() -> None:
 
     parser = argparse.ArgumentParser(description="Inact reply agent")
     parser.add_argument("--workspace",  default=None, help="override WORKSPACE_HOST env var")
-    parser.add_argument("--agent-id",  default=None, help="override AGENT_ID env var")
+    parser.add_argument("--agent-id",  default=None, help="agent id (resolved from key if omitted)")
     parser.add_argument("--agent-key", default=None, help="override AGENT_KEY env var")
     parser.add_argument("--port",      default=None, type=int)
     parser.add_argument("--interval",  default=None, type=int)
@@ -351,6 +378,8 @@ def main() -> None:
     if args.port:       PORT           = args.port
     if args.interval:   INTERVAL       = args.interval
     if args.callback:   CALLBACK_URL   = args.callback
+
+    _resolve_agent_id()
 
     callback_url = CALLBACK_URL or f"http://localhost:{PORT}/wake"
 

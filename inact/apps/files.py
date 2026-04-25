@@ -240,7 +240,8 @@ def serve_ls(fs: FileSystem, prefix: str, subpath: str,
     lines = [
         f"# Directory listing: {url_base}\n",
         f"# {total} entries\n",
-        "# tip: append /.download to any file path to get the raw file\n\n",
+        "# tip: append /.download to any file path to get the raw file\n",
+        f"# WebDAV mount: GET {prefix}/dav/  — mount with rclone/davfs2 for native fs access\n\n",
     ]
     for name in subdirs:
         path = (prefix + "/" + subpath + "/" + name).replace("//", "/")

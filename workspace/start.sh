@@ -96,6 +96,7 @@ import os
 port     = int(os.environ.get('PORT', 5050))
 internal = 5051
 cs_port  = int(os.environ.get('CODE_SERVER_PORT', 0) or 0)
+dav_port = 8083  # WebDAV always on this internal port
 wc       = int(os.environ.get('NGINX_WORKER_CONNECTIONS', 16384) or 16384)
 wp       = os.environ.get('NGINX_WORKER_PROCESSES', 'auto') or 'auto'
 cs_mode  = os.environ.get('CS_PATH_MODE', '')
@@ -197,6 +198,19 @@ http {{
         listen {port};
         client_max_body_size 100M;
 {cs_block}
+        # WebDAV — agents can mount this as a local filesystem
+        location /files/dav/ {{
+            proxy_pass         http://127.0.0.1:{dav_port}/;
+            proxy_http_version 1.1;
+            proxy_set_header   Host              $host;
+            proxy_set_header   X-Real-IP         $remote_addr;
+            proxy_set_header   Destination       $http_destination;
+            proxy_set_header   Overwrite         $http_overwrite;
+            proxy_request_buffering off;
+            proxy_buffering         off;
+            client_max_body_size    0;
+        }}
+
         location / {{
             proxy_pass         http://127.0.0.1:{internal};
             proxy_http_version 1.1;
@@ -214,6 +228,18 @@ with open('/tmp/nginx.conf', 'w') as f:
     f.write(cfg)
 print(f"nginx: :{port} -> inact:{internal}" + (f"  /vscode -> code-server:{cs_port}" if cs_port else ""))
 PYEOF
+
+# ── WebDAV filesystem server ──────────────────────────────────────────────────
+# Serves FILES_DIR over WebDAV so agents can mount it as a local filesystem.
+# Always enabled; internal port 8083 (not exposed externally — nginx proxies it).
+DAV_PORT=8083
+echo "Starting WebDAV for ${FILES_DIR} on :${DAV_PORT} ..."
+rclone serve webdav "${FILES_DIR}" \
+    --addr "127.0.0.1:${DAV_PORT}" \
+    --vfs-cache-mode writes \
+    --no-modtime \
+    &
+echo "WebDAV pid=$!"
 
 nginx -c /tmp/nginx.conf -g "daemon off;" &
 

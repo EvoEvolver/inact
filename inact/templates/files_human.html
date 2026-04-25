@@ -34,6 +34,18 @@
 <script>
 const P   = {{ prefix | tojson }};
 const KEY = localStorage.getItem('inact_api_key') || '';
+
+// ── Mount instructions ────────────────────────────────────────────────────
+(function() {
+  const davUrl = location.origin + '/files/dav/';
+  document.getElementById('dav-url').textContent = davUrl;
+  document.getElementById('mount-linux').textContent =
+    `# install davfs2 once\nsudo apt install davfs2\n\n# mount\nsudo mount -t davfs \\\n  ${davUrl} /mnt/files \\\n  -o uid=$(id -u),gid=$(id -g)`;
+  document.getElementById('mount-mac').textContent =
+    `# built-in WebDAV\nmkdir -p ~/mnt/files\nmount_webdav \\\n  ${davUrl} ~/mnt/files\n\n# or Finder → ⌘K\n${davUrl}`;
+  document.getElementById('mount-rclone').textContent =
+    `# configure once\nrclone config create ws webdav \\\n  url ${davUrl} vendor other\n\n# mount\nmkdir -p ~/files\nrclone mount ws: ~/files \\\n  --vfs-cache-mode writes`;
+})();
 function H(extra) { return Object.assign({'X-Api-Key': KEY}, extra || {}); }
 function esc(s) { return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 

@@ -289,8 +289,12 @@ def attach_message(inact_app, prefix: str, store: SessionStore,
                 label = name or str(session_id)
                 for member_id in members:
                     if str(member_id) != str(created_by):
-                        notify_fn(str(member_id), created_by,
-                                  f"[session:{session_id}] You were added to '{label}'")
+                        notify_fn(str(member_id), created_by, (
+                            f"[session:{session_id}] You were added to session '{label}'\n"
+                            f"  read   : GET {prefix}/sessions/{session_id}/messages\n"
+                            f"  reply  : POST {prefix}/sessions/{session_id}/send  "
+                            f"body: {{\"body\":\"...\"}}"
+                        ))
             return text_response(
                 f"OK\n"
                 f"id   = {session_id}\n"
@@ -379,10 +383,20 @@ def attach_message(inact_app, prefix: str, store: SessionStore,
             return text_response("ERROR 400: 'body' required\n", 400)
         msg_id = store.send(session_id, from_id, text_body)
         if notify_fn:
+            sender_info = member_fn(from_id) if member_fn else {"name": "", "kind": "agent"}
+            sender_display = sender_info["name"] or (
+                "Human #" + from_id if sender_info["kind"] == "human" else "Agent #" + from_id
+            )
             for member_id in store.get_members(session_id):
                 if str(member_id) != str(from_id):
-                    notify_fn(str(member_id), from_id,
-                              f"[session:{session_id}] {text_body}")
+                    notify_fn(str(member_id), from_id, (
+                        f"[session:{session_id}] New message from {sender_display}#{from_id} "
+                        f"({sender_info['kind']}):\n"
+                        f"  \"{text_body}\"\n"
+                        f"  read   : GET {prefix}/sessions/{session_id}/messages\n"
+                        f"  reply  : POST {prefix}/sessions/{session_id}/send  "
+                        f"body: {{\"body\":\"...\"}}"
+                    ))
         return text_response(f"OK\nid = {toml_str(msg_id)}\n")
 
     def _session_messages(session_id: str):

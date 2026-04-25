@@ -634,8 +634,12 @@ def attach_todo(inact_app, prefix: str, store: TodoStore,
 
     def _notify_assign(assignee_id: str, task_id: str, task_title: str) -> None:
         if notify_fn and assignee_id:
-            notify_fn(assignee_id, "tasks",
-                      f"[task:{task_id}] Assigned to you: {task_title}")
+            notify_fn(assignee_id, "tasks", (
+                f"[task:{task_id}] You have been assigned: \"{task_title}\"\n"
+                f"  details : GET {prefix}/{task_id}\n"
+                f"  done    : POST {prefix}/{task_id}/.done\n"
+                f"  update  : POST {prefix}/{task_id}  body: {{\"description\":\"...\"}}"
+            ))
 
     def _root():
         if request.method == "POST":

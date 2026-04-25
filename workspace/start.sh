@@ -10,9 +10,10 @@ cs_port  = int(os.environ.get('CODE_SERVER_PORT', 0) or 0)
 
 cs_block = ""
 if cs_port:
+    # proxy_pass with trailing slash strips /vscode/ prefix before forwarding
     cs_block = f"""
-        location /vscode {{
-            proxy_pass             http://127.0.0.1:{cs_port};
+        location /vscode/ {{
+            proxy_pass             http://127.0.0.1:{cs_port}/;
             proxy_http_version     1.1;
             proxy_set_header       Upgrade    $http_upgrade;
             proxy_set_header       Connection upgrade;
@@ -20,9 +21,6 @@ if cs_port:
             proxy_set_header       X-Real-IP  $remote_addr;
             proxy_read_timeout     86400;
             proxy_connect_timeout  30s;
-            proxy_next_upstream    error timeout http_502 http_503;
-            proxy_next_upstream_tries 5;
-            proxy_next_upstream_timeout 60s;
         }}
 """
 

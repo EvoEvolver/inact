@@ -616,10 +616,9 @@ def mount_files(
             ["code-server",
              "--port",          str(code_server_port),
              "--auth",          "none",
-             "--base-path",     "/vscode",
              "--user-data-dir", "/tmp/code-server-data",
              _path_arg],
-            stdout=_sp.DEVNULL, stderr=None,
+            stdout=None, stderr=None,   # both to Docker logs for diagnosis
         )
         atexit.register(_proc.terminate)
         import logging as _log
@@ -634,6 +633,7 @@ def mount_files(
             return html_response(render_template("vscode_embed.html",
                 title="Files",
                 vscode_src="/vscode/",
+                vscode_health="/vscode/healthz",
                 workspace_links=workspace_nav("/_human/files/"),
                 show_identity=True))
         return html_response(render_template("files_human.html",

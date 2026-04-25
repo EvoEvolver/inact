@@ -39,30 +39,29 @@
 </div>
 
 <script>
-const VSCODE_SRC = {{ vscode_src | tojson }};
-const frame     = document.getElementById('vscode-frame');
-const loading   = document.getElementById('vscode-loading');
-const msg       = document.getElementById('loading-msg');
-let   attempts  = 0;
+const VSCODE_SRC    = {{ vscode_src    | tojson }};
+const VSCODE_HEALTH = {{ vscode_health | tojson }};
+const frame   = document.getElementById('vscode-frame');
+const loading = document.getElementById('vscode-loading');
+const msg     = document.getElementById('loading-msg');
+let   attempt = 0;
 
 function tryLoad() {
-  attempts++;
-  msg.textContent = attempts > 1
-    ? `Starting VS Code… (attempt ${attempts})`
-    : 'Starting VS Code…';
-  fetch(VSCODE_SRC, {method: 'HEAD', cache: 'no-store'})
+  attempt++;
+  msg.textContent = `Starting VS Code… (${attempt})`;
+  fetch(VSCODE_HEALTH, {method: 'GET', cache: 'no-store'})
     .then(r => {
-      if (r.ok) {
+      if (r.ok || r.status === 404) {  // 404 means server is up, path just wrong
         frame.src = VSCODE_SRC;
         frame.onload = () => {
           loading.style.display = 'none';
           frame.style.visibility = 'visible';
         };
       } else {
-        setTimeout(tryLoad, 2000);
+        setTimeout(tryLoad, 3000);
       }
     })
-    .catch(() => setTimeout(tryLoad, 2000));
+    .catch(() => setTimeout(tryLoad, 3000));
 }
 
 tryLoad();

@@ -241,11 +241,11 @@ def serve_ls(fs: FileSystem, prefix: str, subpath: str,
         f"# Directory listing: {url_base}\n",
         f"# {total} entries\n",
         "# tip: append /.download to any file path to get the raw file\n",
-        f"# File access (no FUSE needed):\n",
-        f"#   read : curl -s {{base}}{prefix}/dav/path/to/file  > local_file\n",
-        f"#   write: curl -s -T local_file {{base}}{prefix}/dav/path/to/file\n",
-        f"#   list : curl -s -X PROPFIND {{base}}{prefix}/dav/\n",
-        f"#   rclone (no mount): rclone copy ws:path/file . --webdav-url {{base}}{prefix}/dav/\n\n",
+        f"# File operations:\n",
+        f"#   read    : GET  {prefix}/path/to/file\n",
+        f"#   overwrite: POST {prefix}/path/to/file/.replace  (raw body)\n",
+        f"#   append  : POST {prefix}/path/to/file/.append   (raw body)\n",
+        f"#   patch   : POST {prefix}/path/to/file/.patch    body: {{\"old\":\"...\",\"new\":\"...\"}}\n\n",
     ]
     for name in subdirs:
         path = (prefix + "/" + subpath + "/" + name).replace("//", "/")
@@ -478,6 +478,45 @@ def serve_replace(fs: FileSystem, prefix: str, subpath: str,
     )
 
 
+def serve_patch(fs: FileSystem, prefix: str, subpath: str,
+                editable_spec=False) -> tuple:
+    """POST /<file>/.patch  body: {"old": "...", "new": "..."}
+    Replaces the first occurrence of *old* with *new* in the file.
+    Returns ERROR 409 if *old* is not found (safe for agents to retry).
+    """
+    if not subpath:
+        return text_response("ERROR 400: /.patch requires a file path\n", 400)
+    if not _is_editable(editable_spec, subpath):
+        return text_response(f"ERROR 403: {subpath} is not editable\n", 403)
+    body = request.get_json(force=True, silent=True) or {}
+    old_str = body.get("old")
+    new_str = body.get("new")
+    if old_str is None or new_str is None:
+        return text_response('ERROR 400: body must be {"old":"...","new":"..."}\n', 400)
+    try:
+        content = fs.get_text(subpath)
+    except FileNotFoundError:
+        return text_response(f"ERROR 404: not found: {subpath}\n", 404)
+    except Exception as exc:
+        return text_response(f"ERROR 500: {exc}\n", 500)
+    if old_str not in content:
+        return text_response(
+            f"ERROR 409: old string not found in {subpath}\n"
+            "  Make sure the old string matches exactly (whitespace, indentation).\n",
+            409,
+        )
+    patched = content.replace(old_str, new_str, 1)
+    try:
+        fs.put(subpath, patched.encode("utf-8"))
+    except Exception as exc:
+        return text_response(f"ERROR 500: {exc}\n", 500)
+    virtual_path = prefix + "/" + subpath
+    return text_response(
+        f"OK\npath = {toml_str(virtual_path)}\n"
+        f"old_len = {len(old_str)}\nnew_len = {len(new_str)}\n"
+    )
+
+
 # ---------------------------------------------------------------------------
 # Mount dispatcher
 # ---------------------------------------------------------------------------
@@ -513,6 +552,9 @@ def handle_mount(fs: FileSystem, inact_app, prefix: str, subpath: str,
         if request.method == "POST":
             return serve_replace(fs, prefix, file_sub, editable_spec)
         return serve_replace_info(fs, prefix, file_sub, editable_spec)
+
+    if subpath.endswith("/.patch") and request.method == "POST":
+        return serve_patch(fs, prefix, subpath[:-7].rstrip("/"), editable_spec)
 
     m = PAGE_RE.match(subpath)
     if m:

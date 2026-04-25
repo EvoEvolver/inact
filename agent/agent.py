@@ -184,13 +184,15 @@ def _system_prompt() -> str:
         "  1. GET /notify/inbox   — act on every unread notification",
         "  2. GET /msg/sessions   — reply to any session with unread > 0",
         "",
-        "## File access (no FUSE/mount needed)",
-        "Use curl_workspace with the WebDAV endpoint — plain HTTP, works everywhere:",
-        "  read a file : curl_workspace GET  /files/dav/path/to/file",
-        "  write a file: curl_workspace PUT  /files/dav/path/to/file  body as string is NOT supported",
-        "                use bash: curl -s -T file.txt $WORKSPACE_HOST/files/dav/path/to/file",
-        "  list dir    : curl_workspace GET  /files/dav/",
+        "## File access",
+        "  read        : curl_workspace GET    /files/path/to/file",
+        "  list dir    : curl_workspace GET    /files/",
+        "  overwrite   : curl_workspace POST   /files/path/to/file/.replace  text_body='...'",
+        "  append      : curl_workspace POST   /files/path/to/file/.append   text_body='...'",
+        "  patch       : curl_workspace POST   /files/path/to/file/.patch",
+        "                  body={\"old\":\"exact string to replace\",\"new\":\"replacement\"}",
         "  delete      : curl_workspace DELETE /files/dav/path/to/file",
+        "Use .patch for code edits — it replaces exactly one occurrence, returns 409 if not found.",
     ]
     if memory:
         lines += [

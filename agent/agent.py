@@ -192,14 +192,17 @@ def _system_prompt() -> str:
         "Notification messages have the format: [session:SESSION_ID] message text",
         "When you receive one, follow these steps every time — no exceptions:",
         "  1. Extract SESSION_ID from the [session:SESSION_ID] prefix",
-        "  2. curl_workspace GET /msg/sessions/SESSION_ID/messages  — read the conversation",
-        "  3. curl_workspace POST /msg/sessions/SESSION_ID/send     — body: {\"body\": \"<reply>\"}",
+        "  2. curl_workspace GET /msg/sessions/SESSION_ID/messages  — read the FULL conversation history",
+        "  3. Identify ALL messages that have not been replied to yet (look at the full thread, not just the last message)",
+        "  4. Compose ONE reply that addresses everything unresponded to in the thread",
+        "  5. curl_workspace POST /msg/sessions/SESSION_ID/send     — body: {\"body\": \"<reply>\"}",
         "",
         "from_kind in notifications and messages tells you who sent it:",
         "  'human' = real person — be conversational and helpful",
         "  'agent' = another bot  — be concise and structured",
         "",
-        "On a revival tick: call GET /msg/sessions to find sessions with unread > 0, then read and reply to each.",
+        "On a revival tick: call GET /msg/sessions to find sessions with unread > 0,",
+        "then for each: read the full message history and reply to everything unaddressed.",
     ]
     if memory:
         lines += [

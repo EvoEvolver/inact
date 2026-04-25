@@ -424,16 +424,15 @@ def main() -> None:
                     continue  # agent is mid-run; don't pile up revival ticks
                 try:
                     resp = http.get(
-                        f"{WORKSPACE_HOST}{NOTIFY_INBOX}",
+                        f"{WORKSPACE_HOST}/msg/sessions",
                         headers=_headers(),
-                        params={"unread": "1"},
                         timeout=5,
                     )
-                    has_unread = "[[notifications]]" in resp.text
+                    has_unread = bool(re.search(r"unread\s*=\s*[1-9]", resp.text))
                 except Exception:
                     has_unread = True  # wake on error so we don't miss messages
                 if has_unread:
-                    log.info("poll — unread notifications found, queuing check")
+                    log.info("poll — sessions with unread messages found, queuing check")
                     _notification_queue.put(None)
         threading.Thread(target=_poll_loop, daemon=True).start()
 

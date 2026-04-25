@@ -4,7 +4,7 @@ FROM ghcr.io/astral-sh/uv:python3.13-bookworm-slim
 # fuse3: required for rclone mount
 # curl/ca-certificates: needed by rclone + code-server install scripts
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        curl ca-certificates fuse3 bash \
+        curl ca-certificates fuse3 bash unzip \
     && rm -rf /var/lib/apt/lists/*
 
 # Allow non-root FUSE mounts (needed for rclone --allow-other)

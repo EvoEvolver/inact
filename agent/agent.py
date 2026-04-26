@@ -88,70 +88,131 @@ def _resolve_agent_id() -> None:
 
 _MEMORY_INDEX = "MEMORY.md"
 
+# Archive hierarchy (finest → coarsest).
+# Each tuple: (pattern that matches an entry name, key_fn that returns its parent bucket).
+# Bucket names double as subdir names, so they must sort lexicographically by time.
+#
+#   YYYY-MM-DD-HH-MM[suffix].md  →  YYYY-MM-DD-HH/   (hour bucket)
+#   YYYY-MM-DD-HH/               →  YYYY-MM-DD/       (day bucket)
+#   YYYY-MM-DD/                  →  YYYY-MM/          (month bucket)
+#   YYYY-MM/                     →  YYYY/             (year bucket)
+_ARCHIVE_LEVELS: list[tuple[re.Pattern, object]] = [
+    (re.compile(r"^\d{4}-\d{2}-\d{2}-\d{2}-\d{2}.*\.md$"), lambda n: n[:13]),
+    (re.compile(r"^\d{4}-\d{2}-\d{2}-\d{2}$"),             lambda n: n[:10]),
+    (re.compile(r"^\d{4}-\d{2}-\d{2}$"),                   lambda n: n[:7]),
+    (re.compile(r"^\d{4}-\d{2}$"),                         lambda n: n[:4]),
+]
+
 
 def _memory_path() -> str:
     os.makedirs(MEMORY_DIR, exist_ok=True)
     return MEMORY_DIR
 
 
+def _bucket(name: str) -> str | None:
+    """Return the parent bucket dir name for a memory entry, or None if ungroupable."""
+    for pat, key_fn in _ARCHIVE_LEVELS:
+        if pat.match(name):
+            return key_fn(name)
+    return None
+
+
+def _compact(dirpath: str) -> None:
+    """
+    Recursively compact dirpath to <= 7 direct children by moving entries
+    into coarser date-bucket subdirs.  The `key == dir_name` guard prevents
+    self-referential moves (e.g. minute files inside their own hour dir).
+    """
+    dir_name = os.path.basename(dirpath)
+    while True:
+        entries = [
+            e for e in os.listdir(dirpath)
+            if not e.startswith(".") and e != _MEMORY_INDEX
+        ]
+        if len(entries) <= 7:
+            break
+        moved = False
+        for name in list(entries):
+            key = _bucket(name)
+            if key is None or key == dir_name:
+                continue
+            subdir = os.path.join(dirpath, key)
+            os.makedirs(subdir, exist_ok=True)
+            os.rename(os.path.join(dirpath, name), os.path.join(subdir, name))
+            logfire.info("memory: {name} → {key}/", name=name, key=key)
+            moved = True
+        if not moved:
+            break
+    for entry in os.listdir(dirpath):
+        full = os.path.join(dirpath, entry)
+        if os.path.isdir(full) and not entry.startswith("."):
+            _compact(full)
+
+
+def _rebuild_memory_index() -> None:
+    """Walk the memory tree and regenerate MEMORY.md (newest first)."""
+    mem_dir = _memory_path()
+    all_files: list[str] = []
+    for root, dirs, files in os.walk(mem_dir):
+        dirs.sort()
+        for fname in sorted(files):
+            if fname.endswith(".md") and fname != _MEMORY_INDEX:
+                rel = os.path.relpath(os.path.join(root, fname), mem_dir)
+                all_files.append(rel)
+    all_files.sort(reverse=True)
+    with open(os.path.join(mem_dir, _MEMORY_INDEX), "w", encoding="utf-8") as fp:
+        for rel in all_files:
+            fp.write(f"- [{rel}]({rel})\n")
+
+
+def archive_if_needed() -> None:
+    """Compact the memory tree if any dir has > 7 entries; rebuild index."""
+    _compact(_memory_path())
+    _rebuild_memory_index()
+
+
+def auto_save_output(output: str) -> None:
+    """Save the agent's final output as a minute-precision dated log, then archive."""
+    from datetime import datetime as _dt
+
+    mem_dir = _memory_path()
+    base = _dt.now().strftime("%Y-%m-%d-%H-%M")   # YYYY-MM-DD-HH-MM
+    path = os.path.join(mem_dir, f"{base}.md")
+    counter = 1
+    while os.path.exists(path):
+        path = os.path.join(mem_dir, f"{base}-{counter}.md")
+        counter += 1
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(output)
+    logfire.info("memory: saved output → {path}", path=path)
+    archive_if_needed()
+
+
 def load_memory() -> str:
-    index = os.path.join(_memory_path(), _MEMORY_INDEX)
-    if not os.path.exists(index):
+    """Return the MEMORY.md index plus the content of the most recent log."""
+    mem_dir = _memory_path()
+    index_path = os.path.join(mem_dir, _MEMORY_INDEX)
+    if not os.path.exists(index_path):
         return ""
     try:
-        return open(index, encoding="utf-8").read().strip()
+        index = open(index_path, encoding="utf-8").read().strip()
     except OSError:
         return ""
+    if not index:
+        return ""
 
+    # Inline the most recent file for immediate context
+    m = re.search(r"\(([^)]+)\)", index.split("\n")[0])
+    recent = ""
+    if m:
+        try:
+            recent = open(os.path.join(mem_dir, m.group(1)), encoding="utf-8").read().strip()
+        except OSError:
+            pass
 
-def save_memory_file(filename: str, content: str) -> str:
-    path = os.path.join(_memory_path(), filename)
-    with open(path, "w", encoding="utf-8") as f:
-        f.write(content)
-    return path
-
-
-def update_memory_index(entries: list[tuple[str, str]]) -> None:
-    index_path = os.path.join(_memory_path(), _MEMORY_INDEX)
-    lines = []
-    if os.path.exists(index_path):
-        lines = open(index_path, encoding="utf-8").readlines()
-        while lines and not lines[-1].strip():
-            lines.pop()
-    for filename, description in entries:
-        lines.append(f"- [{filename}]({filename}) — {description}\n")
-    with open(index_path, "w", encoding="utf-8") as f:
-        f.writelines(lines)
-
-
-def apply_memory(memory_block: str) -> None:
-    if not memory_block or memory_block.startswith("NO_MEMORY"):
-        return
-
-    new_entries: list[tuple[str, str]] = []
-    for block in memory_block.split("==="):
-        block = block.strip()
-        if not block:
-            continue
-        filename = desc = content_start = None
-        block_lines = block.split("\n")
-        for i, line in enumerate(block_lines):
-            if line.startswith("FILE:"):
-                filename = line[5:].strip()
-            elif line.startswith("DESC:"):
-                desc = line[5:].strip()
-            elif line.strip() == "---":
-                content_start = i + 1
-                break
-        if filename and desc and content_start is not None:
-            content = "\n".join(block_lines[content_start:]).strip()
-            save_memory_file(filename, content)
-            new_entries.append((filename, desc))
-            logfire.info("memory: saved {filename} — {desc}", filename=filename, desc=desc)
-
-    if new_entries:
-        update_memory_index(new_entries)
-        logfire.info("memory: MEMORY.md updated ({n} new entries)", n=len(new_entries))
+    if recent:
+        return f"{index}\n\n### Most recent log\n{recent[:3000]}"
+    return index
 
 
 # ---------------------------------------------------------------------------
@@ -208,15 +269,9 @@ def _system_prompt() -> str:
         "You MUST take action on every unread message and pending notification — no exceptions.",
         "Do NOT skip, defer, or summarize notifications without acting on them.",
         "For every unread item: read it, respond or join as appropriate, then move on to the next.",
-        "If anything is worth saving to long-term memory, append a MEMORY section:",
-        "",
-        "MEMORY:",
-        "FILE: <short_name>.md",
-        "DESC: <one-line description>",
-        "---",
-        "<content>",
-        "===",
-        "(repeat for each file, max 3; omit the section entirely if nothing is worth saving)",
+        "Your complete final response is automatically saved as a dated memory log.",
+        "Do NOT output any special MEMORY block — just respond naturally.",
+        "Use bash to cat recent memory files when you need past context.",
     ]
     return "\n".join(lines)
 
@@ -281,16 +336,14 @@ def _run_llm(user_msg: str) -> str:
 
 def _reset_session() -> None:
     global _history, _session_start
-    logfire.info("session timeout — consolidating memory and resetting conversation")
+    logfire.info("session timeout — resetting conversation")
     try:
         output = _run_llm(
-            "Session timeout reached. Save everything worth keeping from this conversation "
-            "to long-term memory using the MEMORY section format, then confirm with one sentence."
+            "Session timeout reached. Write a concise summary of what you've done and any "
+            "important context to carry forward. This will be saved as your memory log."
         )
-        if "MEMORY:" in output:
-            _, _, mem = output.partition("MEMORY:")
-            apply_memory(mem.strip())
-    except Exception as exc:
+        auto_save_output(output)
+    except Exception:
         logfire.exception("consolidation error")
     _history = []
     _session_start = time.time()
@@ -367,15 +420,12 @@ def _agent_loop() -> None:
                 logfire.exception("LLM error")
                 continue
 
-            reply = output.partition("MEMORY:")[0].strip() if "MEMORY:" in output else output.strip()
-            logfire.info("reply: {reply}", reply=reply)
+            logfire.info("reply: {reply}", reply=output.strip()[:300])
 
-            if "MEMORY:" in output:
-                _, _, mem = output.partition("MEMORY:")
-                try:
-                    apply_memory(mem.strip())
-                except Exception:
-                    logfire.exception("memory error")
+            try:
+                auto_save_output(output)
+            except Exception:
+                logfire.exception("memory auto-save error")
 
             _mark_notifications_read(unread_before)
         finally:

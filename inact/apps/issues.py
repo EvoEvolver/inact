@@ -433,18 +433,13 @@ def attach_issues(inact_app, prefix: str, store: IssueStore,
             lines.append(_issue_row_toml(iss, prefix))
         return text_response("".join(lines))
 
-    def _issue(number: str):
-        try:
-            num = int(number)
-        except ValueError:
-            return text_response("ERROR 400: issue number must be an integer\n", 400)
-
+    def _issue(number: int):
         if request.method == "DELETE":
-            ok = store.delete(num)
+            ok = store.delete(number)
             return text_response("OK\n" if ok else "ERROR 404: not found\n", 200 if ok else 404)
 
         if request.method == "POST":
-            issue = store.get(num)
+            issue = store.get(number)
             if not issue:
                 return text_response("ERROR 404: issue not found\n", 404)
             body   = request.get_json(force=True, silent=True) or {}
@@ -474,42 +469,30 @@ def attach_issues(inact_app, prefix: str, store: IssueStore,
                 old_a = issue.get("assignee", "")
                 fields["assignee"] = new_a
                 if new_a and new_a != old_a:
-                    _notify_assign(new_a, num, issue["title"])
-            store.update(num, fields)
+                    _notify_assign(new_a, number, issue["title"])
+            store.update(number, fields)
             return text_response("OK\n")
 
-        issue = store.get(num)
+        issue = store.get(number)
         if not issue:
             return text_response("ERROR 404: issue not found\n", 404)
-        comments = store.list_comments(num)
+        comments = store.list_comments(number)
         return text_response(_issue_detail_toml(issue, comments, prefix))
 
-    def _close(number: str):
-        try:
-            num = int(number)
-        except ValueError:
-            return text_response("ERROR 400: issue number must be an integer\n", 400)
-        if not store.get(num):
+    def _close(number: int):
+        if not store.get(number):
             return text_response("ERROR 404: issue not found\n", 404)
-        store.update(num, {"state": "closed"})
+        store.update(number, {"state": "closed"})
         return text_response("OK\n")
 
-    def _reopen(number: str):
-        try:
-            num = int(number)
-        except ValueError:
-            return text_response("ERROR 400: issue number must be an integer\n", 400)
-        if not store.get(num):
+    def _reopen(number: int):
+        if not store.get(number):
             return text_response("ERROR 404: issue not found\n", 404)
-        store.update(num, {"state": "open"})
+        store.update(number, {"state": "open"})
         return text_response("OK\n")
 
-    def _assign(number: str):
-        try:
-            num = int(number)
-        except ValueError:
-            return text_response("ERROR 400: issue number must be an integer\n", 400)
-        issue = store.get(num)
+    def _assign(number: int):
+        issue = store.get(number)
         if not issue:
             return text_response("ERROR 404: issue not found\n", 404)
         body     = request.get_json(force=True, silent=True) or {}
@@ -528,17 +511,13 @@ def attach_issues(inact_app, prefix: str, store: IssueStore,
                 400,
             )
         old_a = issue.get("assignee", "")
-        store.update(num, {"assignee": assignee})
+        store.update(number, {"assignee": assignee})
         if assignee != old_a:
-            _notify_assign(assignee, num, issue["title"])
+            _notify_assign(assignee, number, issue["title"])
         return text_response(f"OK\nassignee = {toml_str(assignee)}\n")
 
-    def _add_label_route(number: str):
-        try:
-            num = int(number)
-        except ValueError:
-            return text_response("ERROR 400: issue number must be an integer\n", 400)
-        if not store.get(num):
+    def _add_label_route(number: int):
+        if not store.get(number):
             return text_response("ERROR 404: issue not found\n", 404)
         body  = request.get_json(force=True, silent=True) or {}
         label = (body.get("label") or "").strip()
@@ -549,26 +528,18 @@ def attach_issues(inact_app, prefix: str, store: IssueStore,
                 f"Defined labels: GET {prefix}/labels/\n",
                 400,
             )
-        store.add_label(num, label)
+        store.add_label(number, label)
         return text_response(f"OK\nlabel = {toml_str(label)}\n")
 
-    def _remove_label_route(number: str, label_name: str):
-        try:
-            num = int(number)
-        except ValueError:
-            return text_response("ERROR 400: issue number must be an integer\n", 400)
-        if not store.get(num):
+    def _remove_label_route(number: int, label_name: str):
+        if not store.get(number):
             return text_response("ERROR 404: issue not found\n", 404)
-        ok = store.remove_label(num, label_name)
+        ok = store.remove_label(number, label_name)
         return text_response("OK\n" if ok else "ERROR 404: label not on this issue\n",
                              200 if ok else 404)
 
-    def _comments(number: str):
-        try:
-            num = int(number)
-        except ValueError:
-            return text_response("ERROR 400: issue number must be an integer\n", 400)
-        issue = store.get(num)
+    def _comments(number: int):
+        issue = store.get(number)
         if not issue:
             return text_response("ERROR 404: issue not found\n", 404)
 
@@ -583,15 +554,15 @@ def attach_issues(inact_app, prefix: str, store: IssueStore,
                     '  body: {"body":"...","author":"agent_id"}\n',
                     400,
                 )
-            c = store.add_comment(num, cbody, author)
+            c = store.add_comment(number, cbody, author)
             return text_response(
-                f"OK\nid  = {c['id']}\nurl = {toml_str(prefix + '/' + number + '/comments/' + str(c['id']))}\n",
+                f"OK\nid  = {c['id']}\nurl = {toml_str(prefix + '/' + str(number) + '/comments/' + str(c['id']))}\n",
                 201,
             )
 
-        comments = store.list_comments(num)
+        comments = store.list_comments(number)
         lines = [
-            f"# Comments on #{num}: {issue['title']}\n",
+            f"# Comments on #{number}: {issue['title']}\n",
             f"# {len(comments)} comment(s)\n\n",
         ]
         for c in comments:
@@ -601,19 +572,14 @@ def attach_issues(inact_app, prefix: str, store: IssueStore,
                 f"author     = {toml_str(c['author'])}\n",
                 f"body       = {toml_str(c['body'])}\n",
                 f"created_at = {toml_str(_fmt_ts(c['created_at']))}\n",
-                f"delete     = {toml_str(prefix + '/' + number + '/comments/' + str(c['id']))}\n",
+                f"delete     = {toml_str(prefix + '/' + str(number) + '/comments/' + str(c['id']))}\n",
                 "\n",
             ]
         return text_response("".join(lines))
 
-    def _comment(number: str, cid: str):
-        try:
-            int(number)
-            int(cid)
-        except ValueError:
-            return text_response("ERROR 400: invalid id\n", 400)
+    def _comment(number: int, cid: int):
         if request.method == "DELETE":
-            ok = store.delete_comment(int(cid))
+            ok = store.delete_comment(cid)
             return text_response("OK\n" if ok else "ERROR 404: not found\n", 200 if ok else 404)
 
     def _labels_root():
@@ -670,28 +636,28 @@ def attach_issues(inact_app, prefix: str, store: IssueStore,
         prefix + "/labels/<label_name>",
         endpoint=ep + "_label", view_func=_label, methods=["DELETE"])
     flask_app.add_url_rule(
-        prefix + "/<number>",
+        prefix + "/<int:number>",
         endpoint=ep + "_issue", view_func=_issue, methods=["GET", "POST", "DELETE"])
     flask_app.add_url_rule(
-        prefix + "/<number>/.close",
+        prefix + "/<int:number>/.close",
         endpoint=ep + "_close", view_func=_close, methods=["POST"])
     flask_app.add_url_rule(
-        prefix + "/<number>/.reopen",
+        prefix + "/<int:number>/.reopen",
         endpoint=ep + "_reopen", view_func=_reopen, methods=["POST"])
     flask_app.add_url_rule(
-        prefix + "/<number>/.assign",
+        prefix + "/<int:number>/.assign",
         endpoint=ep + "_assign", view_func=_assign, methods=["POST"])
     flask_app.add_url_rule(
-        prefix + "/<number>/.label",
+        prefix + "/<int:number>/.label",
         endpoint=ep + "_add_label", view_func=_add_label_route, methods=["POST"])
     flask_app.add_url_rule(
-        prefix + "/<number>/labels/<label_name>",
+        prefix + "/<int:number>/labels/<label_name>",
         endpoint=ep + "_remove_label", view_func=_remove_label_route, methods=["DELETE"])
     flask_app.add_url_rule(
-        prefix + "/<number>/comments",
+        prefix + "/<int:number>/comments",
         endpoint=ep + "_comments", view_func=_comments, methods=["GET", "POST"])
     flask_app.add_url_rule(
-        prefix + "/<number>/comments/<cid>",
+        prefix + "/<int:number>/comments/<int:cid>",
         endpoint=ep + "_comment", view_func=_comment, methods=["DELETE"])
 
 

@@ -1,11 +1,11 @@
 """
-Workspace — agent identity, messaging, tasks, and email in one mount.
+Workspace — agent identity, messaging, issues, and email in one mount.
 
 mount_workspace(app, storage) mounts:
 
   /agents      agent registry      (mount_register)
   /msg         internal messaging  (mount_message)
-  /tasks       task list           (mount_todo)
+  /issues      issue tracker       (mount_issues)
   /mail        external email      (mount_mailbox, optional — needs SMTP_HOST)
 
 All apps share a single *storage* database.
@@ -34,17 +34,17 @@ import os
 from .register import AgentRegistry, attach_register, mount_register
 from .message  import SessionStore, MessageStore, attach_message, mount_message
 from .mailbox  import MailStore,     attach_mailbox,  mount_mailbox
-from .todo     import TodoStore,     attach_todo,     mount_todo
 from .database import DbStore,       attach_db,       mount_db
+from ..issues  import IssueStore,    attach_issues,   mount_issues
 
 
 __all__ = [
     # stores
-    "AgentRegistry", "SessionStore", "MessageStore", "MailStore", "TodoStore", "DbStore",
+    "AgentRegistry", "SessionStore", "MessageStore", "MailStore", "IssueStore", "DbStore",
     # attach functions
-    "attach_register", "attach_message", "attach_mailbox", "attach_todo", "attach_db",
+    "attach_register", "attach_message", "attach_mailbox", "attach_issues", "attach_db",
     # mount functions
-    "mount_register", "mount_message", "mount_mailbox", "mount_todo", "mount_db",
+    "mount_register", "mount_message", "mount_mailbox", "mount_issues", "mount_db",
     # unified
     "mount_workspace",
 ]
@@ -88,7 +88,7 @@ def mount_workspace(
     p = prefix.rstrip("/")
     agents_prefix = f"{p}/agents"
     msg_prefix    = f"{p}/msg"
-    tasks_prefix  = f"{p}/tasks"
+    issues_prefix = f"{p}/issues"
     mail_prefix   = f"{p}/mail"
 
     mount_register(inact_app, agents_prefix, storage,
@@ -99,10 +99,10 @@ def mount_workspace(
                   notify_storage=notify_storage,
                   registry=storage)
 
-    mount_todo(inact_app, tasks_prefix, storage,
-               agents_prefix=agents_prefix,
-               agents_storage=storage,
-               notify_storage=notify_storage)
+    mount_issues(inact_app, issues_prefix, storage,
+                 agents_prefix=agents_prefix,
+                 agents_storage=storage,
+                 notify_storage=notify_storage)
     mount_db(inact_app, f"{p}/data", storage)
 
     # Email: always mount routes (for human UI); SMTP server only if configured

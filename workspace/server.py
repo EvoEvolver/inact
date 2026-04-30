@@ -1,46 +1,17 @@
 #!/usr/bin/env python3
 """
-Inact Agent Workspace
-=====================
-A ready-to-run multi-agent collaboration server.
-
-Features:
-  /agents/    — register, discover, and authenticate agents
-  /msg/       — agent-to-agent messaging with conversation history
-  /tasks/     — shared task board with priorities and assignees
-  /notify/    — push notifications with callback registration
-  /mail/      — real email (SMTP in/out) if relay is configured
-  /search/    — web search via Tavily (if TAVILY_API_KEY is set)
-  /db/        — shared SQL workspace database
-  /files/     — shared file storage (read/write)
-  /_human/*   — browser UI for humans (register, chat)
-
-Auth:
-  Every request (except /agents/ listing and /_human/*) requires:
-    X-Api-Key: <key received at POST /agents/>
-  Agents include callback= at registration to receive push notifications.
-
-Usage:
-  python agent_workspace.py
-
-  # With email relay
-  SMTP_RELAY_HOST=smtp.example.com \\
-  SMTP_RELAY_USER=user \\
-  SMTP_RELAY_PASSWORD=pw \\
-  python agent_workspace.py
-
-  # With web search
-  TAVILY_API_KEY=tvly-... python agent_workspace.py
+Inact Agent Workspace — multi-agent collaboration server.
 
 Environment variables:
-  PORT                  listen port                  (default: 5050)
-  DATA_DIR              directory for all data files (default: ./workspace_data)
-  SMTP_PORT             embedded inbound SMTP port   (default: 2525)
-  SMTP_RELAY_HOST       outbound relay host
-  SMTP_RELAY_PORT       outbound relay port          (default: 587)
+  PORT                  listen port          (default: 5050)
+  DATA_DIR              data directory       (default: ./workspace_data)
+  SMTP_PORT             inbound SMTP port    (default: 0 = disabled)
+  SMTP_RELAY_HOST       outbound SMTP relay
+  SMTP_RELAY_PORT       relay port           (default: 587)
   SMTP_RELAY_USER       relay auth user
   SMTP_RELAY_PASSWORD   relay auth password
-  TAVILY_API_KEY        Tavily API key for /search
+  TAVILY_API_KEY        enables /search
+  ADMIN_KEY             secret for /_human/agents/.admin
 """
 
 import os
@@ -88,73 +59,47 @@ app = Inact("agent-workspace")
 # Home page
 @app.inact_md("/")
 def home():
-    base  = server_base()   # e.g. https://workspace.up.railway.app — correct in any environment
-    email_status = f"SMTP relay: {RELAY_HOST}" if RELAY_HOST else "email: no relay configured (set SMTP_RELAY_HOST)"
-    search_status = "web search: enabled" if TAVILY_KEY else "web search: disabled (set TAVILY_API_KEY)"
-    return f"""---
-title: Inact Agent Workspace
----
-# Agent Workspace
+    base = server_base()
+    optional = []
+    if TAVILY_KEY:
+        optional.append("| `GET  /search?q=...`  | web search (Tavily) |")
+    if RELAY_HOST or SMTP_PORT:
+        optional.append("| `POST /mail/send`     | send email to humans |")
+        optional.append("| `GET  /mail/inbox`    | received emails |")
+    optional_rows = "\n".join(optional)
+    return f"""# Agent Workspace
 
-A multi-agent collaboration environment. Agents register, message each other,
-manage shared tasks, receive notifications, and communicate with humans via email.
+`{base}`
 
-## Quick start
+## Registration
 
-```bash
-# 1. Register as an agent
-curl -X POST {base}/agents/ \\
-  -H 'Content-Type: application/json' \\
-  -d '{{"name":"my-agent","email":"me@domain.com","callback":"http://my-agent-host/wake"}}'
-
-# 2. Use the returned api_key for all subsequent requests
-export KEY="<api_key from above>"
-
-# 3. Send a message to another agent
-curl -X POST {base}/msg/send \\
-  -H "X-Api-Key: $KEY" \\
-  -H 'Content-Type: application/json' \\
-  -d '{{"from":"1","to":"2","body":"Hello!"}}'
-
-# 4. Create a task
-curl -X POST {base}/tasks/ \\
-  -H "X-Api-Key: $KEY" \\
-  -H 'Content-Type: application/json' \\
-  -d '{{"title":"Build something","priority":"high","assignee":"alice"}}'
 ```
-
-## Human UI
-
-Open in your browser:
-- [{base}/_human/agents/]({base}/_human/agents/) — register as a human, get an API key
-- [{base}/_human/msg/]({base}/_human/msg/) — chat with agents in real time
+POST /agents/
+  body: {{"name":"...", "callback":"http://your-host/wake"}}
+  → returns api_key  (send as X-Api-Key on every request)
+```
 
 ## Services
 
 | Endpoint | Description |
 |---|---|
-| `POST /agents/`       | register (name, email, callback) |
-| `GET  /agents/`       | list all agents |
-| `POST /msg/send`      | send a message |
-| `GET  /msg/inbox`     | your inbox (X-Api-Key) |
-| `POST /tasks/`        | create a task |
-| `GET  /tasks/`        | list tasks |
-| `POST /notify/send`   | push a notification |
-| `GET  /notify/inbox`  | notification inbox |
-| `GET  /db/`           | shared SQL database |
-| `GET  /files/`        | shared files |
-| `GET  /search?q=...`  | web search |
-| `POST /data/`         | create typed table |
-| `GET  /data/{{table}}` | query rows with filter/sort |
-| `POST /mail/send`     | send email to humans |
-| `GET  /mail/inbox`    | received emails |
+| `GET  /agents/`        | list agents and humans |
+| `POST /agents/`        | register |
+| `GET  /msg/sessions`   | your message sessions |
+| `POST /msg/sessions`   | start a session |
+| `GET  /issues/`        | shared issue tracker |
+| `POST /issues/`        | open an issue |
+| `GET  /notify/inbox`   | notification inbox |
+| `POST /notify/send`    | push a notification |
+| `GET  /files/`         | shared file storage |
+| `POST /notify/register`| register push callback |
+| `GET  /db/`            | raw SQL database |
+| `POST /data/`          | typed tables |
+{optional_rows}
 
-## Status
+## Help
 
-- {email_status}
-- {search_status}
-- Data directory: `{DATA_DIR}`
-- SMTP server: localhost:{SMTP_PORT}
+`GET <endpoint>/.help` — full API reference for any service
 """
 
 # ---------------------------------------------------------------------------
@@ -167,8 +112,7 @@ mount_notify(app, "/notify",
              revival_interval=600,
              registry=STORAGE)
 
-# Core workspace: agents + messaging + tasks + email (if explicitly configured)
-# Email is mounted only when a relay is set or SMTP_PORT is explicitly given
+# Core workspace: agents + messaging + issues + email (if explicitly configured)
 _smtp_port = SMTP_PORT or (2525 if RELAY_HOST else None)
 mount_workspace(app,
     storage=STORAGE,
@@ -203,31 +147,24 @@ mount_auth(app, STORAGE)   # uses default public list: /, /.help, /agents/, /_hu
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
-    email_line   = f"  relay:   {RELAY_HOST}:{RELAY_PORT} (user={RELAY_USER})" if RELAY_HOST else "  relay:   none — set SMTP_RELAY_HOST to send real email"
-    search_line  = f"  search:  /search  (Tavily)" if TAVILY_KEY else "  search:  disabled — set TAVILY_API_KEY"
-
     local = f"http://localhost:{PORT}"
-    print(f"""
-┌──────────────────────────────────────────────┐
-│          Inact Agent Workspace               │
-└──────────────────────────────────────────────┘
-
-  {local}/              home + API docs
-  {local}/_human/agents/  register as human
-  {local}/_human/msg/     chat UI
-
-  /agents/   agent registry   /tasks/   task board
-  /msg/      messaging        /notify/  notifications
-  /mail/     email (SMTP)     /db/      shared SQL
-  /files/    file storage     /search/  web search
-
-  SMTP server: {f'0.0.0.0:{_smtp_port}  (inbound, port-forward 25→{_smtp_port})' if _smtp_port else 'disabled — set SMTP_RELAY_HOST to enable email'}
-{email_line}
-{search_line}
-  domain:  {DOMAIN or 'not set (set DOMAIN=agents.example.com for correct Reply-To headers)'}
-
-  data: {DATA_DIR}/
-""")
+    lines = [
+        "",
+        "  Inact Agent Workspace",
+        f"  {local}/",
+        "",
+        "  /agents/   registry     /msg/      messaging",
+        "  /issues/   issues       /notify/   notifications",
+        "  /files/    files        /db/       SQL",
+    ]
+    if TAVILY_KEY:
+        lines.append("  /search    web search")
+    if RELAY_HOST or _smtp_port:
+        smtp_info = f"relay={RELAY_HOST}" if RELAY_HOST else f"inbound port {_smtp_port}"
+        lines.append(f"  /mail/     email ({smtp_info})")
+    lines.append(f"  data: {DATA_DIR}/")
+    lines.append("")
+    print("\n".join(lines))
     app.run(host="0.0.0.0", port=PORT, debug=False)
 
 # gunicorn entry point: gunicorn "server:wsgi"

@@ -5,6 +5,7 @@ from .apps.workspace import mount_workspace
 from .apps.files import mount_files
 from .apps.notify import mount_notify, NotifyStore
 from .apps.jobs import mount_jobs, JobStore
+from .apps.issues import mount_issues, IssueStore
 from .apps.forms import FormStore, mount_forms
 from .apps.workspace.todo import TodoStore, ReminderScheduler, mount_todo
 from .handlers import FileHandler, PDFHandler, CSVHandler
@@ -47,7 +48,9 @@ __all__ = [
     "html_response",
     "make_storage",
     "mount_a2a",
+    "IssueStore",
     "JobStore",
+    "mount_issues",
     "mount_jobs",
     "mount_files",
     "mount_forms",

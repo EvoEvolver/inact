@@ -119,22 +119,25 @@ def _bucket(name: str) -> str | None:
 
 def _compact(dirpath: str) -> None:
     """
-    Recursively compact dirpath to <= 7 direct children by moving entries
-    into coarser date-bucket subdirs.  The `key == dir_name` guard prevents
-    self-referential moves (e.g. minute files inside their own hour dir).
+    Recursively compact dirpath to <= 7 date-named children by moving them
+    into coarser date-bucket subdirs.  Non-date files are permanent residents
+    and are excluded from the count so they never block archiving.
+    The `key == dir_name` guard prevents self-referential moves.
     """
     dir_name = os.path.basename(dirpath)
     while True:
-        entries = [
+        all_entries = [
             e for e in os.listdir(dirpath)
             if not e.startswith(".") and e != _MEMORY_INDEX
         ]
-        if len(entries) <= 7:
+        # Only date-named entries count toward the threshold.
+        date_entries = [e for e in all_entries if _bucket(e) is not None]
+        if len(date_entries) <= 7:
             break
         moved = False
-        for name in list(entries):
+        for name in list(date_entries):
             key = _bucket(name)
-            if key is None or key == dir_name:
+            if key == dir_name:
                 continue
             subdir = os.path.join(dirpath, key)
             os.makedirs(subdir, exist_ok=True)

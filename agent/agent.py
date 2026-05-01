@@ -117,6 +117,71 @@ def _bucket(name: str) -> str | None:
     return None
 
 
+def _unique_path(base: str) -> str:
+    """Return a unique path by appending -N before the extension if needed."""
+    if not os.path.exists(base):
+        return base
+    root, ext = os.path.splitext(base)
+    n = 1
+    while True:
+        cand = f"{root}-{n}{ext}"
+        if not os.path.exists(cand):
+            return cand
+        n += 1
+
+
+def _move_into(src: str, dest_dir: str) -> None:
+    """Move a file or directory into dest_dir, merging if target exists.
+
+    - For files: if a file with the same name exists, append -N before the
+      extension to avoid collisions.
+    - For directories: if the target directory exists, recursively merge the
+      contents then remove the source directory.
+    """
+    os.makedirs(dest_dir, exist_ok=True)
+    name = os.path.basename(src.rstrip(os.sep))
+    dest_path = os.path.join(dest_dir, name)
+    try:
+        if os.path.isdir(src):
+            # If target exists, merge contents; otherwise rename atomically.
+            if not os.path.exists(dest_path):
+                os.rename(src, dest_path)
+                return
+            if os.path.isdir(dest_path):
+                for child in os.listdir(src):
+                    _move_into(os.path.join(src, child), dest_path)
+                try:
+                    os.rmdir(src)
+                except OSError:
+                    pass  # leave if not empty for some reason
+                return
+            # Target exists and is a file — rename the source dir under a unique name
+            dest_path = _unique_path(dest_path)
+            os.rename(src, dest_path)
+            return
+        else:
+            # File: resolve collisions by uniquifying the destination filename
+            dest_path = _unique_path(dest_path)
+            os.rename(src, dest_path)
+            return
+    except OSError:
+        # Last-resort fallback via shutil for cross-device or permission quirks
+        import shutil
+        if os.path.isdir(src):
+            if not os.path.exists(dest_path):
+                shutil.move(src, dest_path)
+            else:
+                # Merge directory contents
+                for child in os.listdir(src):
+                    _move_into(os.path.join(src, child), dest_path)
+                try:
+                    os.rmdir(src)
+                except OSError:
+                    pass
+        else:
+            shutil.move(src, dest_path)
+
+
 def _compact(dirpath: str) -> None:
     """
     Recursively compact dirpath to <= 7 date-named children by moving them
@@ -135,13 +200,17 @@ def _compact(dirpath: str) -> None:
         if len(date_entries) <= 7:
             break
         moved = False
-        for name in list(date_entries):
+        # Process files before directories to reduce intermediate dir churn
+        date_entries_sorted = sorted(
+            date_entries,
+            key=lambda n: (0 if os.path.isfile(os.path.join(dirpath, n)) else 1, n),
+        )
+        for name in list(date_entries_sorted):
             key = _bucket(name)
             if key == dir_name:
                 continue
             subdir = os.path.join(dirpath, key)
-            os.makedirs(subdir, exist_ok=True)
-            os.rename(os.path.join(dirpath, name), os.path.join(subdir, name))
+            _move_into(os.path.join(dirpath, name), subdir)
             logfire.info("memory: {name} → {key}/", name=name, key=key)
             moved = True
         if not moved:

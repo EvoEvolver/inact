@@ -346,6 +346,12 @@ def _system_prompt() -> str:
         "                  body={\"old\":\"exact string to replace\",\"new\":\"replacement\"}",
         "  delete      : curl_workspace DELETE /files/dav/path/to/file",
         "Use .patch for code edits — it replaces exactly one occurrence, returns 409 if not found.",
+        "",
+        "## Context search (recommended)",
+        "Before acting, consider a quick grep for relevant keywords in any local folders you deem relevant ",
+        "(e.g., memory, project repo, notes, or logs). Choose the path based on the task.",
+        f"Examples:",
+        f"  bash(\"grep -Rin \\\"<keyword>\\\" {MEMORY_DIR} | head -n 50\")"
     ]
     if memory:
         lines += [

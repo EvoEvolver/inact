@@ -74,6 +74,19 @@ def _headers(extra: dict | None = None) -> dict:
     return h
 
 
+def _fetch_workspace_index(max_chars: int = 1800) -> str:
+    """Fetch the workspace home page and return a trimmed text snippet.
+
+    Adds auth headers when available. Returns empty string on error.
+    """
+    try:
+        resp = http.get(f"{WORKSPACE_HOST}/", headers=_headers(), timeout=3)
+        text = (resp.text or "").strip()
+        return text[:max_chars]
+    except Exception:
+        return ""
+
+
 def _resolve_agent_id() -> None:
     global AGENT_ID
     if AGENT_ID:
@@ -324,10 +337,14 @@ _agent: Agent[None, str] = Agent(_model)
 @_agent.system_prompt
 def _system_prompt() -> str:
     memory = load_memory()
+    home   = _fetch_workspace_index()
     lines = [
         f"You are AI agent #{AGENT_ID} connected to a workspace at {WORKSPACE_HOST}.",
         "Use curl_workspace to interact with the workspace API.",
         "Use bash for local shell tasks.",
+        "",
+        "## Workspace Home",
+        (home or "(workspace index unavailable)").strip(),
         "",
         "## Acting on notifications",
         "Every notification contains the context and exact API calls you need — read it and act.",
@@ -335,17 +352,15 @@ def _system_prompt() -> str:
         "",
         "On a revival tick:",
         "  1. GET /notify/inbox   — act on every unread notification",
-        "  2. GET /msg/sessions   — reply to any session with unread > 0",
         "",
         "## Documents access",
+        "Place any reference docs or outputs under /documents/ so humans and agents can find them.",
         "  read        : curl_workspace GET    /documents/path/to/file",
         "  list dir    : curl_workspace GET    /documents/",
         "  overwrite   : curl_workspace POST   /documents/path/to/file/.replace  text_body='...'",
         "  append      : curl_workspace POST   /documents/path/to/file/.append   text_body='...'",
         "  patch       : curl_workspace POST   /documents/path/to/file/.patch",
         "                  body={\"old\":\"exact string to replace\",\"new\":\"replacement\"}",
-        "  delete      : use WebDAV mount if configured (see server home)",
-        "Use .patch for code edits — it replaces exactly one occurrence, returns 409 if not found.",
         "",
         "## Context search (recommended)",
         "Before acting, consider a quick grep for relevant keywords in any local folders you deem relevant ",

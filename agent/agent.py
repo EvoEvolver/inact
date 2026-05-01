@@ -274,31 +274,37 @@ def auto_save_output(output: str) -> None:
     archive_if_needed()
 
 
-def load_memory() -> str:
-    """Return the MEMORY.md index plus the content of the most recent log."""
+def load_memory(limit: int = 5, per_file_chars: int = 1500) -> str:
+    """Return the N most recent memory files with their content.
+
+    - Does not include the full index to avoid noise.
+    - Appends a hint telling where the complete memory index is stored.
+    """
     mem_dir = _memory_path()
-    index_path = os.path.join(mem_dir, _MEMORY_INDEX)
-    if not os.path.exists(index_path):
+    all_files: list[str] = []
+    for root, dirs, files in os.walk(mem_dir):
+        dirs.sort()
+        for fname in sorted(files):
+            if fname.endswith(".md") and fname != _MEMORY_INDEX:
+                rel = os.path.relpath(os.path.join(root, fname), mem_dir)
+                all_files.append(rel)
+    if not all_files:
         return ""
-    try:
-        index = open(index_path, encoding="utf-8").read().strip()
-    except OSError:
-        return ""
-    if not index:
-        return ""
+    all_files.sort(reverse=True)
 
-    # Inline the most recent file for immediate context
-    m = re.search(r"\(([^)]+)\)", index.split("\n")[0])
-    recent = ""
-    if m:
+    chunks: list[str] = ["Recent memory (newest first):\n"]
+    for rel in all_files[: max(1, limit)]:
+        path = os.path.join(mem_dir, rel)
         try:
-            recent = open(os.path.join(mem_dir, m.group(1)), encoding="utf-8").read().strip()
+            text = open(path, encoding="utf-8").read().strip()
         except OSError:
-            pass
+            continue
+        snippet = text if len(text) <= per_file_chars else (text[:per_file_chars] + "\n…")
+        chunks.append(f"\n### {rel}\n{snippet}\n")
 
-    if recent:
-        return f"{index}\n\n### Most recent log\n{recent[:3000]}"
-    return index
+    # Hint where to find the full memory index
+    chunks.append(f"\n(Full memory index: {os.path.join(mem_dir, _MEMORY_INDEX)})")
+    return "\n".join(chunks)
 
 
 # ---------------------------------------------------------------------------
@@ -345,7 +351,7 @@ def _system_prompt() -> str:
         lines += [
             "",
             "## Your long-term memory",
-            "(MEMORY.md index — use bash to cat referenced files for details)",
+            "(5 most recent entries shown; full index on disk)",
             memory,
         ]
     lines += [

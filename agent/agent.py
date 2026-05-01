@@ -26,7 +26,21 @@ from pydantic_ai import Agent
 from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.providers.openai import OpenAIProvider
 
-logfire.configure()
+# Configure scrubbing so certain fields are not redacted in logs
+def scrubbing_callback(m: logfire.ScrubMatch):
+    if (
+        m.path == ('attributes', 'tool_arguments', 'path')
+        and m.pattern_match.group(0) == 'session'
+    ):
+        return m.value
+
+    if (
+        m.path == ('attributes', 'tool_response')
+        and m.pattern_match.group(0) == 'Session'
+    ):
+        return m.value
+
+logfire.configure(scrubbing=logfire.ScrubbingOptions(callback=scrubbing_callback))
 logfire.instrument_pydantic_ai()
 
 # ---------------------------------------------------------------------------

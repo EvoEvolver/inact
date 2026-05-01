@@ -588,6 +588,29 @@ def attach_issues(inact_app, prefix: str, store: IssueStore,
                     400,
                 )
             c = store.add_comment(number, cbody, author)
+
+            # Notify assignee and creator on new replies, skipping the commenter themself
+            if notify_fn:
+                title = issue.get("title", "")
+                from_id = author or ""
+                who = _agent_display(from_id) if from_id else "someone"
+                msg = (
+                    f"[issue:#{number}] New reply from {who} on \"{title}\"\n"
+                    f"  details : GET {prefix}/{number}\n"
+                    f"  comment : {cbody[:200]}{'…' if len(cbody) > 200 else ''}"
+                )
+                assignee_id = str(issue.get("assignee") or "").strip()
+                author_id   = str(issue.get("author")   or "").strip()
+                if assignee_id and assignee_id != from_id:
+                    try:
+                        notify_fn(assignee_id, from_id, msg)
+                    except Exception:
+                        pass
+                if author_id and author_id not in (from_id, assignee_id):
+                    try:
+                        notify_fn(author_id, from_id, msg)
+                    except Exception:
+                        pass
             return text_response(
                 f"OK\nid  = {c['id']}\nurl = {toml_str(prefix + '/' + str(number) + '/comments/' + str(c['id']))}\n",
                 201,

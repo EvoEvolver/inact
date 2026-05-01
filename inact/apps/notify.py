@@ -267,7 +267,11 @@ def attach_notify(inact_app, prefix: str, store: NotifyStore,
                     from_email = (email_fn(from_id) or "").strip() if from_id else ""
                     if not from_email:
                         domain = os.environ.get("DOMAIN", "") or "localhost"
-                        from_email = os.environ.get("SMTP_FROM", f"notify@{domain}")
+                        from_email = (
+                            os.environ.get("FROM_EMAIL")
+                            or os.environ.get("SMTP_FROM")
+                            or f"notify@{domain}"
+                        )
 
                     # Build a friendly subject using member_fn if available
                     display_from = f"Agent #{from_id}" if from_id else "Agent"

@@ -12,6 +12,9 @@ Environment variables:
   SMTP_RELAY_PASSWORD   relay auth password
   TAVILY_API_KEY        enables /search
   ADMIN_KEY             secret for /_human/agents/.admin
+  SMTP2GO_API_KEY       use SMTP2GO HTTP API for outbound email
+  FROM_EMAIL            default sender for system emails
+  FRONTEND_URL          optional URL for human UI links in notifications
 """
 
 import os

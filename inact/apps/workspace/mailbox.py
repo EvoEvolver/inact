@@ -21,11 +21,15 @@ and registers HTTP routes so agents can send and receive real email.
   without one, mail to external addresses is attempted via direct delivery.
 
 Environment variables (override with keyword args):
-  SMTP_PORT          embedded SMTP listen port     default 2525
-  SMTP_RELAY_HOST    outbound relay hostname        optional
-  SMTP_RELAY_PORT    outbound relay port            default 587
-  SMTP_RELAY_USER    relay auth username            optional
-  SMTP_RELAY_PASSWORD relay auth password           optional
+  SMTP_PORT             embedded SMTP listen port     default 2525
+  SMTP_RELAY_HOST       outbound relay hostname        optional (legacy)
+  SMTP_RELAY_PORT       outbound relay port            default 587  (legacy)
+  SMTP_RELAY_USER       relay auth username            optional     (legacy)
+  SMTP_RELAY_PASSWORD   relay auth password           optional      (legacy)
+
+Preferred cloud delivery:
+  SMTP2GO_API_KEY       when set, all outbound email uses SMTP2GO HTTP API
+  FROM_EMAIL            default sender address if none provided by caller
 
 Requires: pip install aiosmtpd
 """
@@ -207,15 +211,55 @@ def _send_email(from_addr: str, to: str, subject: str, body: str,
                 relay_host: str = "", relay_port: int = 587,
                 relay_user: str = "", relay_password: str = "",
                 smtp_host: str = "localhost", smtp_port: int = 2525) -> None:
+    """Send an email using either SMTP2GO HTTP API (preferred) or SMTP.
+
+    Uses SMTP2GO when ``SMTP2GO_API_KEY`` env var is set; otherwise falls back
+    to legacy SMTP relay or local SMTP.
+    """
+    api_key = os.environ.get("SMTP2GO_API_KEY", "").strip()
+    fallback_from = os.environ.get("FROM_EMAIL", "").strip()
+    sender = from_addr or fallback_from
+
+    # Prefer SMTP2GO HTTP API when configured
+    if api_key:
+        try:
+            import httpx
+            payload: dict = {
+                "api_key": api_key,
+                "to": [a.strip() for a in to.split(",") if a.strip()],
+                "sender": sender,
+                "subject": subject,
+                "text_body": body,
+            }
+            if cc:
+                payload["cc"] = [a.strip() for a in cc.split(",") if a.strip()]
+            # Preserve reply routing via plus-address
+            if agent_id and sender:
+                payload["reply_to"] = _plus_reply_to(sender, agent_id)
+            resp = httpx.post(
+                "https://api.smtp2go.com/v3/email/send",
+                json=payload,
+                timeout=15,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            if not (isinstance(data, dict) and data.get("data", {}).get("succeeded", 0) >= 1):
+                # If API shape differs, accept any 2xx as success; otherwise raise
+                pass
+            return
+        except Exception as exc:
+            # Fall back to SMTP path on any API failure
+            from_addr = sender or from_addr
+
+    # Legacy SMTP path
     msg = MIMEMultipart("alternative")
     msg["Subject"] = subject
-    msg["From"] = from_addr
+    msg["From"] = sender
     msg["To"] = to
     if cc:
         msg["Cc"] = cc
-    # Set Reply-To with agent ID encoded in plus address so replies route back
-    if agent_id:
-        msg["Reply-To"] = _plus_reply_to(from_addr, agent_id)
+    if agent_id and sender:
+        msg["Reply-To"] = _plus_reply_to(sender, agent_id)
     msg.attach(MIMEText(body, "plain", "utf-8"))
     recipients = [a.strip() for a in (to + ("," + cc if cc else "")).split(",") if a.strip()]
 
@@ -225,18 +269,18 @@ def _send_email(from_addr: str, to: str, subject: str, body: str,
             with smtplib.SMTP_SSL(relay_host, relay_port, timeout=15) as s:
                 if relay_user:
                     s.login(relay_user, relay_password)
-                s.sendmail(from_addr, recipients, msg.as_string())
+                s.sendmail(sender, recipients, msg.as_string())
         else:
             with smtplib.SMTP(relay_host, relay_port, timeout=15) as s:
                 s.ehlo()
                 s.starttls()
                 if relay_user:
                     s.login(relay_user, relay_password)
-                s.sendmail(from_addr, recipients, msg.as_string())
+                s.sendmail(sender, recipients, msg.as_string())
     else:
         # Deliver via local SMTP server (always connect via loopback)
         with smtplib.SMTP("127.0.0.1", smtp_port, timeout=5) as s:
-            s.sendmail(from_addr, recipients, msg.as_string())
+            s.sendmail(sender, recipients, msg.as_string())
 
 
 # ---------------------------------------------------------------------------

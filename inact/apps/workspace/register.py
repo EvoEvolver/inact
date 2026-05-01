@@ -508,6 +508,8 @@ def attach_register(inact_app, prefix: str, registry: AgentRegistry,
         endpoint=ep_admin, view_func=_admin_human, methods=["GET", "POST"])
 
     inact_app._human_views[prefix] = lambda path: _human()
+    inact_app.add_nav_item("agents", "/_human" + prefix + "/")
+    inact_app.add_nav_item("admin",  "/_human" + prefix + "/.admin")
     # Also catch sub-paths under /.admin so the cookie redirect lands correctly
     inact_app.app.add_url_rule(
         "/_human" + prefix + "/.admin/",

@@ -1,0 +1,509 @@
+{% extends "base.html" %}
+{% block content %}
+
+{# ── Issue list view ── #}
+<div id="view-list">
+  <div style="display:flex;align-items:center;gap:10px;margin-bottom:16px;flex-wrap:wrap">
+    <h1 class="page-title" style="margin:0">Issues</h1>
+    <button class="primary" onclick="showNewForm()" style="margin-left:auto">+ New Issue</button>
+  </div>
+
+  {# Filter bar #}
+  <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:14px;align-items:center">
+    <div style="display:flex;border:1px solid #ddd;border-radius:8px;overflow:hidden">
+      <button id="btn-open"   class="state-tab active" onclick="setStateFilter('open')">Open</button>
+      <button id="btn-closed" class="state-tab sep"    onclick="setStateFilter('closed')">Closed</button>
+      <button id="btn-all"    class="state-tab sep"    onclick="setStateFilter('all')">All</button>
+    </div>
+    <select id="filter-label"    onchange="issuePage=1;loadIssues()"
+            style="border:1px solid #ddd;border-radius:8px;padding:7px 10px;font-size:13px">
+      <option value="">All labels</option>
+    </select>
+    <select id="filter-assignee" onchange="issuePage=1;loadIssues()"
+            style="border:1px solid #ddd;border-radius:8px;padding:7px 10px;font-size:13px">
+      <option value="">All assignees</option>
+    </select>
+  </div>
+
+  {# New issue form #}
+  <div id="new-form" hidden
+       style="background:#fff;border:1px solid #e0e0e0;border-radius:10px;padding:20px;margin-bottom:16px">
+    <h3 style="margin:0 0 14px;font-size:16px;font-weight:700">New Issue</h3>
+    <input id="f-title" placeholder="Title *" style="margin-bottom:10px">
+    <textarea id="f-body" placeholder="Description (optional)" rows="4"
+              style="width:100%;border:1px solid #ddd;border-radius:8px;padding:10px 12px;
+                     font-size:14px;font-family:inherit;resize:vertical;margin-bottom:10px"></textarea>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px">
+      <select id="f-assignee"
+              style="flex:1;min-width:140px;border:1px solid #ddd;border-radius:8px;padding:9px 10px;font-size:14px">
+        <option value="">No assignee</option>
+      </select>
+      <input id="f-labels" placeholder="Labels (comma-separated)" style="flex:2;min-width:180px">
+    </div>
+    <div style="display:flex;gap:8px;align-items:center">
+      <button class="primary" onclick="submitNewIssue()">Create Issue</button>
+      <button onclick="hideNewForm()"
+              style="background:none;border:none;cursor:pointer;font-size:13px;color:#888">Cancel</button>
+      <span id="new-err" style="color:#cc0000;font-size:13px"></span>
+    </div>
+  </div>
+
+  <div id="issue-list"></div>
+  <div id="pagination"
+       style="display:flex;gap:8px;justify-content:center;margin-top:16px;align-items:center"></div>
+</div>
+
+{# ── Issue detail view ── #}
+<div id="view-detail" hidden>
+  <div style="margin-bottom:16px">
+    <a href="#" onclick="backToList();return false" style="font-size:13px;color:#555">&larr; Back to issues</a>
+  </div>
+  <div id="detail-content"></div>
+  <div id="comments-section"></div>
+  <div id="reply-form" style="margin-top:20px">
+    <h4 style="font-size:14px;margin:0 0 8px;color:#555">Leave a comment</h4>
+    <textarea id="reply-body" rows="4" placeholder="Write a comment..."
+              style="width:100%;border:1px solid #ddd;border-radius:8px;padding:10px 12px;
+                     font-size:14px;font-family:inherit;resize:vertical;margin-bottom:8px"></textarea>
+    <button class="primary" onclick="submitComment()">Comment</button>
+    <span id="reply-err" style="color:#cc0000;font-size:13px;margin-left:8px"></span>
+  </div>
+</div>
+
+{% endblock %}
+
+{% block scripts %}
+<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/dompurify/dist/purify.min.js"></script>
+<style>
+.state-tab {
+  background: #f6f8fa; border: none; padding: 7px 14px; font-size: 13px;
+  cursor: pointer; color: #555; font-weight: 500;
+}
+.state-tab.sep { border-left: 1px solid #ddd; }
+.state-tab.active { background: #0066cc; color: #fff; font-weight: 600; }
+.state-tab:hover:not(.active) { background: #e8e8e8; }
+.issue-row {
+  background: #fff; border: 1px solid #e0e0e0; border-radius: 8px;
+  padding: 14px 16px; margin-bottom: 8px;
+  display: flex; align-items: flex-start; gap: 12px;
+  cursor: pointer; transition: border-color .12s;
+}
+.issue-row:hover { border-color: #0066cc; }
+.issue-num { color: #888; font-size: 13px; flex-shrink: 0; min-width: 40px; font-family: ui-monospace, monospace; }
+.issue-title-text { font-weight: 600; font-size: 14px; }
+.issue-meta { font-size: 12px; color: #888; margin-top: 4px; }
+.lbadge {
+  display: inline-block; background: #e8f0fe; color: #1a56db;
+  border-radius: 10px; padding: 1px 8px; font-size: 11px; font-weight: 600; margin-right: 3px;
+}
+.sbadge {
+  border-radius: 10px; padding: 2px 10px; font-size: 11px; font-weight: 700; flex-shrink: 0;
+}
+.s-open   { background: #e6f4ea; color: #1e7e34; }
+.s-closed { background: #fde8e8; color: #9e2a2b; }
+.comment-card {
+  background: #fff; border: 1px solid #e0e0e0; border-radius: 8px;
+  padding: 14px 16px; margin-bottom: 10px;
+}
+.comment-header { font-size: 12px; color: #888; margin-bottom: 8px; }
+.comment-body   { font-size: 14px; }
+</style>
+
+<script>
+const P  = {{ prefix        | tojson }};
+const AP = {{ agents_prefix | tojson }};
+const KEY = localStorage.getItem('inact_api_key') || '';
+function H(x) { return Object.assign({'X-Api-Key': KEY}, x || {}); }
+function esc(s) { return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+function md(s) { return DOMPurify.sanitize(marked.parse(String(s||''))); }
+function unesc(s) {
+  return String(s||'')
+    .replace(/\\n/g,'\n').replace(/\\r/g,'\r').replace(/\\t/g,'\t')
+    .replace(/\\"/g,'"').replace(/\\\\/g,'\\');
+}
+
+let stateFilter  = 'open';
+let currentIssue = null;
+let agentMap     = {};
+let allAgents    = [];
+let issuePage    = 1;
+const PER_PAGE   = 20;
+
+function nameFor(id) {
+  if (!id) return '';
+  const s = String(id);
+  if (/^.+#\d+$/.test(s)) return s;
+  return agentMap[s] || '#' + s;
+}
+
+/* ── TOML parsing helpers ── */
+function parseBlocks(text, tag) {
+  return text.split('[[' + tag + ']]').slice(1).map(block => {
+    const o = {};
+    block.split('\n').forEach(l => {
+      const arr = l.match(/^([\w]+)\s*=\s*\[([^\]]*)\]/);
+      if (arr) {
+        o[arr[1]] = arr[2].split(',').map(s => s.trim().replace(/^"|"$/g,'')).filter(Boolean);
+        return;
+      }
+      const m = l.match(/^([\w]+)\s*=\s*"((?:[^"\\]|\\.)*)"/);
+      if (m) { o[m[1]] = unesc(m[2]); return; }
+      const n = l.match(/^([\w]+)\s*=\s*(-?\d+)/);
+      if (n) { o[n[1]] = n[2]; }
+    });
+    return o;
+  }).filter(o => Object.keys(o).length > 0);
+}
+
+function parseScalars(text) {
+  const o = {};
+  text.split('\n').forEach(l => {
+    if (/^\[\[/.test(l.trim())) return;
+    const arr = l.match(/^([\w]+)\s*=\s*\[([^\]]*)\]/);
+    if (arr) {
+      o[arr[1]] = arr[2].split(',').map(s => s.trim().replace(/^"|"$/g,'')).filter(Boolean);
+      return;
+    }
+    const m = l.match(/^([\w]+)\s*=\s*"((?:[^"\\]|\\.)*)"/);
+    if (m) { o[m[1]] = unesc(m[2]); return; }
+    const n = l.match(/^([\w]+)\s*=\s*(-?\d+)/);
+    if (n) { o[n[1]] = n[2]; }
+  });
+  return o;
+}
+
+/* ── Load agents & labels ── */
+async function loadAgents() {
+  try {
+    const text = await fetch(AP + '/', {headers: H()}).then(r => r.text());
+    allAgents = parseBlocks(text, 'agents');
+    agentMap  = {};
+    allAgents.forEach(a => { agentMap[String(a.id)] = a.name || '#' + a.id; });
+  } catch(_) {}
+  const opts = allAgents.map(a =>
+    `<option value="${esc(a.id)}">${esc(a.name || '#' + a.id)}</option>`
+  ).join('');
+  ['filter-assignee','f-assignee'].forEach(id => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.innerHTML = (id === 'filter-assignee'
+      ? '<option value="">All assignees</option>'
+      : '<option value="">No assignee</option>') + opts;
+  });
+}
+
+async function loadLabels() {
+  try {
+    const text = await fetch(P + '/labels/', {headers: H()}).then(r => r.text());
+    const labels = parseBlocks(text, 'labels').map(l => l.name).filter(Boolean);
+    const el = document.getElementById('filter-label');
+    if (el) {
+      el.innerHTML = '<option value="">All labels</option>' +
+        labels.map(l => `<option value="${esc(l)}">${esc(l)}</option>`).join('');
+    }
+  } catch(_) {}
+}
+
+/* ── State filter ── */
+function setStateFilter(s) {
+  stateFilter = s;
+  ['open','closed','all'].forEach(v =>
+    document.getElementById('btn-' + v).classList.toggle('active', v === s)
+  );
+  issuePage = 1;
+  loadIssues();
+}
+
+/* ── Issue list ── */
+async function loadIssues() {
+  const label    = document.getElementById('filter-label').value;
+  const assignee = document.getElementById('filter-assignee').value;
+  const params   = new URLSearchParams({state: stateFilter, per_page: PER_PAGE, page: issuePage});
+  if (label)    params.set('label',    label);
+  if (assignee) params.set('assignee', assignee);
+
+  const text   = await fetch(`${P}/?${params}`, {headers: H()}).then(r => r.text()).catch(() => '');
+  const issues = parseBlocks(text, 'issues');
+
+  let total = issues.length + (issuePage - 1) * PER_PAGE;
+  const tm  = text.match(/\((\d+) total\)/);
+  if (tm) total = parseInt(tm[1]);
+
+  const list = document.getElementById('issue-list');
+  if (!issues.length) {
+    const label = stateFilter === 'all' ? '' : stateFilter + ' ';
+    list.innerHTML = `<p style="color:#aaa;font-size:14px;padding:20px 0">No ${label}issues.</p>`;
+    document.getElementById('pagination').innerHTML = '';
+    return;
+  }
+
+  list.innerHTML = issues.map(iss => {
+    const labels  = Array.isArray(iss.labels) ? iss.labels : [];
+    const lbadges = labels.map(l => `<span class="lbadge">${esc(l)}</span>`).join('');
+    const cls     = iss.state === 'open' ? 's-open' : 's-closed';
+    const author  = nameFor(iss.author);
+    const asignee = iss.assignee ? nameFor(iss.assignee) : '';
+    const when    = (iss.updated_at || '').replace('T',' ').replace('Z','').slice(0,16);
+    return `
+    <div class="issue-row" onclick="openIssue(${esc(iss.id)})">
+      <span class="issue-num">#${esc(iss.id)}</span>
+      <div style="flex:1;min-width:0">
+        <div class="issue-title-text">${esc(iss.title)}</div>
+        <div class="issue-meta">
+          ${lbadges}
+          ${author   ? `by <strong>${esc(author)}</strong>` : ''}
+          ${asignee  ? ` · assigned to <strong>${esc(asignee)}</strong>` : ''}
+          ${when     ? ` · updated ${esc(when)}` : ''}
+        </div>
+      </div>
+      <span class="sbadge ${cls}">${esc(iss.state)}</span>
+    </div>`;
+  }).join('');
+
+  renderPagination(total);
+}
+
+function renderPagination(total) {
+  const totalPages = Math.max(1, Math.ceil(total / PER_PAGE));
+  const pag = document.getElementById('pagination');
+  if (totalPages <= 1) { pag.innerHTML = ''; return; }
+  pag.innerHTML = `
+    <button class="primary" onclick="goPage(${issuePage-1})"
+            ${issuePage <= 1 ? 'disabled' : ''}
+            style="padding:6px 14px;font-size:13px">&#8592; Prev</button>
+    <span style="font-size:13px;color:#888">${issuePage} / ${totalPages} (${total} total)</span>
+    <button class="primary" onclick="goPage(${issuePage+1})"
+            ${issuePage >= totalPages ? 'disabled' : ''}
+            style="padding:6px 14px;font-size:13px">Next &#8594;</button>`;
+}
+
+function goPage(p) { issuePage = p; loadIssues(); window.scrollTo(0, 0); }
+
+/* ── New issue form ── */
+function showNewForm() {
+  ['f-title','f-body','f-labels'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.value = '';
+  });
+  document.getElementById('f-assignee').value = '';
+  document.getElementById('new-err').textContent = '';
+  document.getElementById('new-form').hidden = false;
+  document.getElementById('f-title').focus();
+}
+function hideNewForm() { document.getElementById('new-form').hidden = true; }
+
+async function submitNewIssue() {
+  const title = document.getElementById('f-title').value.trim();
+  const errEl = document.getElementById('new-err');
+  if (!title) { errEl.textContent = 'Title required'; return; }
+  errEl.textContent = '';
+  const payload = {title, body: document.getElementById('f-body').value.trim()};
+  const assignee = document.getElementById('f-assignee').value;
+  if (assignee) payload.assignee = assignee;
+  const rawLabels = document.getElementById('f-labels').value.trim();
+  if (rawLabels) payload.labels = rawLabels.split(',').map(s => s.trim()).filter(Boolean);
+
+  const r = await fetch(P + '/', {
+    method: 'POST',
+    headers: H({'Content-Type': 'application/json'}),
+    body: JSON.stringify(payload),
+  });
+  const text = await r.text();
+  if (!text.startsWith('OK')) { errEl.textContent = text.split('\n')[0]; return; }
+  const nm = text.match(/id\s*=\s*(\d+)/);
+  hideNewForm();
+  if (nm) {
+    await loadIssues();
+    openIssue(parseInt(nm[1]));
+  } else {
+    loadIssues();
+  }
+}
+
+/* ── Issue detail ── */
+async function openIssue(num) {
+  currentIssue = num;
+  const text = await fetch(`${P}/${num}`, {headers: H()}).then(r => r.text()).catch(() => '');
+  if (!text || text.startsWith('ERROR')) { alert('Issue not found'); return; }
+
+  const iss      = parseScalars(text);
+  const comments = parseBlocks(text, 'comments');
+  iss.number     = num;
+
+  document.getElementById('view-list').hidden   = true;
+  document.getElementById('view-detail').hidden = false;
+  window.scrollTo(0, 0);
+
+  const isOpen  = iss.state === 'open';
+  const author  = nameFor(iss.author);
+  const asignee = iss.assignee ? nameFor(iss.assignee) : '';
+  const labels  = Array.isArray(iss.labels) ? iss.labels : [];
+  const lbadges = labels.length
+    ? labels.map(l => `
+        <span class="lbadge" style="margin-right:4px">${esc(l)}
+          <a href="#" onclick="removeLabelFromIssue(${num},'${esc(l)}');return false"
+             style="color:#1a56db;text-decoration:none;margin-left:3px" title="remove">&times;</a>
+        </span>`).join('')
+    : '<span style="color:#aaa;font-size:13px">none</span>';
+  const when = (iss.created_at || '').replace('T',' ').replace('Z','').slice(0,16);
+
+  document.getElementById('detail-content').innerHTML = `
+    <div style="display:flex;align-items:flex-start;gap:12px;margin-bottom:16px;flex-wrap:wrap">
+      <div style="flex:1;min-width:0">
+        <h2 style="margin:0 0 6px;font-size:20px;font-weight:700">
+          ${esc(iss.title)}
+          <span style="color:#888;font-weight:400;font-size:16px"> #${num}</span>
+        </h2>
+        <div style="font-size:13px;color:#888;display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+          <span class="sbadge ${isOpen ? 's-open' : 's-closed'}">${isOpen ? 'Open' : 'Closed'}</span>
+          ${author  ? `by <strong>${esc(author)}</strong>` : ''}
+          ${when    ? `&nbsp;·&nbsp;${esc(when)}` : ''}
+          ${asignee ? `&nbsp;·&nbsp;assigned to <strong>${esc(asignee)}</strong>` : ''}
+        </div>
+      </div>
+      <div style="display:flex;gap:8px;flex-shrink:0;flex-wrap:wrap">
+        ${allAgents.length ? `
+        <select id="assign-select"
+                style="border:1px solid #ddd;border-radius:8px;padding:6px 10px;font-size:13px">
+          <option value="">Assign to…</option>
+          ${allAgents.map(a => `<option value="${esc(a.id)}"${iss.assignee===String(a.id)?' selected':''}>${esc(a.name||'#'+a.id)}</option>`).join('')}
+        </select>
+        <button class="primary" onclick="assignIssue(${num})"
+                style="font-size:13px;padding:7px 14px;background:#555">Assign</button>` : ''}
+        <button class="primary" onclick="toggleState(${num}, '${isOpen ? 'close' : 'reopen'}')"
+                style="background:${isOpen ? '#9e2a2b' : '#1e7e34'};font-size:13px;padding:7px 14px">
+          ${isOpen ? 'Close issue' : 'Reopen issue'}
+        </button>
+      </div>
+    </div>
+
+    ${iss.body ? `
+    <div class="md" style="background:#fff;border:1px solid #e0e0e0;border-radius:8px;
+                padding:16px;margin-bottom:16px;font-size:14px">
+      ${md(iss.body)}
+    </div>` : ''}
+
+    <div style="margin-bottom:16px;display:flex;align-items:center;flex-wrap:wrap;gap:6px">
+      <span style="font-size:12px;color:#888;font-weight:600">Labels:</span>
+      ${lbadges}
+      <span style="color:#ddd;margin:0 4px">|</span>
+      <input id="add-label-input" placeholder="add label"
+             style="width:110px;padding:4px 8px;font-size:12px;border-radius:6px;border:1px solid #ddd"
+             onkeydown="if(event.key==='Enter')addLabelToIssue(${num})">
+      <button onclick="addLabelToIssue(${num})"
+              style="background:#e8f0fe;border:none;border-radius:6px;
+                     padding:4px 10px;font-size:12px;color:#1a56db;cursor:pointer">Add</button>
+    </div>
+    <hr style="border:none;border-top:1px solid #e0e0e0;margin:16px 0">
+  `;
+
+  renderComments(num, comments);
+  document.getElementById('reply-body').value        = '';
+  document.getElementById('reply-err').textContent   = '';
+}
+
+function renderComments(num, comments) {
+  const sec = document.getElementById('comments-section');
+  if (!comments.length) {
+    sec.innerHTML = '<p style="color:#aaa;font-size:13px;margin-bottom:20px">No comments yet.</p>';
+    return;
+  }
+  sec.innerHTML =
+    `<h4 style="font-size:14px;margin:0 0 12px;font-weight:700">
+       ${comments.length} comment${comments.length !== 1 ? 's' : ''}
+     </h4>` +
+    comments.map(c => {
+      const author = nameFor(c.author) || (c.author ? '#' + c.author : 'unknown');
+      const when   = (c.created_at || '').replace('T',' ').replace('Z','').slice(0,16);
+      return `
+      <div class="comment-card">
+        <div class="comment-header">
+          <strong>${esc(author)}</strong>
+          ${when ? ' &nbsp;·&nbsp; ' + esc(when) : ''}
+        </div>
+        <div class="comment-body md">${md(c.body)}</div>
+      </div>`;
+    }).join('');
+}
+
+async function toggleState(num, action) {
+  const r = await fetch(`${P}/${num}/.${action}`, {method: 'POST', headers: H()});
+  const text = await r.text();
+  if (!text.startsWith('OK')) { alert('Error: ' + text.split('\n')[0]); return; }
+  openIssue(num);
+}
+
+async function assignIssue(num) {
+  const sel = document.getElementById('assign-select');
+  if (!sel) return;
+  const assignee = sel.value;
+  const r = await fetch(`${P}/${num}/.assign`, {
+    method: 'POST', headers: H({'Content-Type': 'application/json'}),
+    body: JSON.stringify({assignee}),
+  });
+  const text = await r.text();
+  if (!text.startsWith('OK')) { alert('Error: ' + text.split('\n')[0]); return; }
+  openIssue(num);
+}
+
+async function addLabelToIssue(num) {
+  const input = document.getElementById('add-label-input');
+  const label = (input.value || '').trim();
+  if (!label) return;
+  const r = await fetch(`${P}/${num}/.label`, {
+    method: 'POST', headers: H({'Content-Type': 'application/json'}),
+    body: JSON.stringify({label}),
+  });
+  const text = await r.text();
+  if (!text.startsWith('OK')) { alert('Error: ' + text.split('\n')[0]); return; }
+  input.value = '';
+  openIssue(num);
+}
+
+async function removeLabelFromIssue(num, label) {
+  const r = await fetch(`${P}/${num}/labels/${encodeURIComponent(label)}`,
+    {method: 'DELETE', headers: H()});
+  const text = await r.text();
+  if (!text.startsWith('OK')) { alert('Error: ' + text.split('\n')[0]); return; }
+  openIssue(num);
+}
+
+async function submitComment() {
+  const body  = document.getElementById('reply-body').value.trim();
+  const errEl = document.getElementById('reply-err');
+  if (!body) { errEl.textContent = 'Comment cannot be empty'; return; }
+  errEl.textContent = '';
+  const r = await fetch(`${P}/${currentIssue}/comments`, {
+    method: 'POST', headers: H({'Content-Type': 'application/json'}),
+    body: JSON.stringify({body}),
+  });
+  const text = await r.text();
+  if (!text.startsWith('OK')) { errEl.textContent = text.split('\n')[0]; return; }
+  document.getElementById('reply-body').value = '';
+  // Reload comments without full page re-render
+  const issText  = await fetch(`${P}/${currentIssue}`, {headers: H()}).then(r => r.text()).catch(()=>'');
+  renderComments(currentIssue, parseBlocks(issText, 'comments'));
+  // Scroll to bottom of comments
+  document.getElementById('reply-form').scrollIntoView({behavior:'smooth', block:'nearest'});
+}
+
+function backToList() {
+  currentIssue = null;
+  document.getElementById('view-detail').hidden = true;
+  document.getElementById('view-list').hidden   = false;
+  loadIssues();
+}
+
+/* ── Init ── */
+const INITIAL_ISSUE = {{ initial_issue | tojson }};
+Promise.all([loadAgents(), loadLabels()]).then(() => {
+  if (INITIAL_ISSUE) {
+    loadIssues();
+    openIssue(INITIAL_ISSUE);
+  } else {
+    loadIssues();
+  }
+});
+</script>
+{% endblock %}

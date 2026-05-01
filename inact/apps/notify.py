@@ -20,6 +20,7 @@ offline when a notification arrived are eventually woken up.
 
 from __future__ import annotations
 
+import os
 import threading
 import time
 import uuid
@@ -28,6 +29,7 @@ from flask import request
 
 from ..storage import Storage
 from ..utils import text_response, toml_str
+from ..apps.workspace.mailbox import _send_email
 
 _DDL = [
     """CREATE TABLE IF NOT EXISTS notifications (
@@ -211,7 +213,7 @@ def _start_revival(store: NotifyStore, interval: int) -> None:
 # ---------------------------------------------------------------------------
 
 def attach_notify(inact_app, prefix: str, store: NotifyStore,
-                  kind_fn=None, member_fn=None) -> None:
+                  kind_fn=None, member_fn=None, email_fn=None) -> None:
     prefix = "/" + prefix.strip("/")
     ep = "_inact_notify_" + prefix.replace("/", "__")
     flask_app = inact_app.app
@@ -254,6 +256,49 @@ def attach_notify(inact_app, prefix: str, store: NotifyStore,
             return text_response("ERROR 400: 'message' required\n", 400)
         notif_id = store.send(to_id, message, from_id)
         _push(store, to_id, notif_id, message, from_id)
+
+        # If sending to a human and we have an email address configured,
+        # send an email copy of the notification.
+        try:
+            if kind_fn and email_fn and kind_fn(to_id) == "human":
+                to_email = (email_fn(to_id) or "").strip()
+                if to_email:
+                    # Prefer sender's email if available; otherwise fall back.
+                    from_email = (email_fn(from_id) or "").strip() if from_id else ""
+                    if not from_email:
+                        domain = os.environ.get("DOMAIN", "") or "localhost"
+                        from_email = os.environ.get("SMTP_FROM", f"notify@{domain}")
+
+                    # Build a friendly subject using member_fn if available
+                    display_from = f"Agent #{from_id}" if from_id else "Agent"
+                    if member_fn and from_id:
+                        info = member_fn(from_id) or {"name": "", "kind": "agent"}
+                        name = (info.get("name") or "").strip()
+                        if name:
+                            display_from = name
+                        elif info.get("kind") == "human":
+                            display_from = f"Human #{from_id}"
+
+                    subject = f"New notification from {display_from}"
+                    # Relay/local SMTP settings via env (match mailbox configuration)
+                    r_host = os.environ.get("SMTP_RELAY_HOST", "")
+                    r_port = int(os.environ.get("SMTP_RELAY_PORT", "587") or 587)
+                    r_user = os.environ.get("SMTP_RELAY_USER", "")
+                    r_pass = os.environ.get("SMTP_RELAY_PASSWORD", "")
+                    s_port = int(os.environ.get("SMTP_PORT", "2525") or 2525)
+                    try:
+                        _send_email(
+                            from_email, to_email, subject, message,
+                            relay_host=r_host, relay_port=r_port,
+                            relay_user=r_user, relay_password=r_pass,
+                            smtp_port=s_port,
+                        )
+                    except Exception:
+                        # Email delivery best-effort; ignore failures.
+                        pass
+        except Exception:
+            # Never let email side-effects break the notification API
+            pass
         return text_response(f"OK\nid = {toml_str(notif_id)}\n")
 
     def _inbox():
@@ -375,13 +420,21 @@ def mount_notify(
             except Exception:
                 pass
             return {"name": "", "kind": "agent"}
+
+        def email_fn(agent_id: str, _r=_reg) -> str:
+            try:
+                row = _r._s.fetchone("SELECT email FROM agents WHERE id = ?", (int(agent_id),))
+                return (row["email"] or "") if row else ""
+            except Exception:
+                return ""
     else:
         member_fn = None
+        email_fn  = None
 
     if revival_interval > 0:
         _start_revival(store, revival_interval)
 
-    attach_notify(inact_app, p, store, kind_fn=kind_fn, member_fn=member_fn)
+    attach_notify(inact_app, p, store, kind_fn=kind_fn, member_fn=member_fn, email_fn=email_fn)
     inact_app._app_mounts.append((p, (
         f"\nNotifications: {p}\n"
         f'  POST {p}/register   register callback  body: {{"agent_id":"1","callback":"http://..."}}\n'

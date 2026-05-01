@@ -75,6 +75,11 @@ class Inact:
         """Pass-through to Flask's @app.route."""
         return self.app.route(path, **kwargs)
 
+    def add_nav_item(self, label: str, href: str) -> None:
+        """Register a human-nav entry for a mounted app."""
+        from .render import register_nav_item
+        register_nav_item(label, href)
+
     def run(self, **kwargs):
         self.app.run(**kwargs)
 

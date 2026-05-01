@@ -472,6 +472,7 @@ def attach_message(inact_app, prefix: str, store: SessionStore,
         prefix + "/sessions/<session_id>/members",
         endpoint=ep + "_session_members", view_func=_session_members, methods=["POST"])
     inact_app._human_views[prefix] = lambda path: _human()
+    inact_app.add_nav_item("chat", "/_human" + prefix + "/")
 
 
 def mount_message(inact_app, prefix: str, storage,

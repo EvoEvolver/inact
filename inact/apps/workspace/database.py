@@ -509,6 +509,8 @@ def attach_db(inact_app, prefix: str, store: DbStore) -> None:
             show_identity=True))
 
     inact_app._human_views[prefix] = _human
+    inact_app.add_nav_item(prefix.rsplit("/", 1)[-1] or prefix.strip("/"),
+                           "/_human" + prefix + "/")
 
 
 # ---------------------------------------------------------------------------

@@ -949,6 +949,8 @@ def attach_todo(inact_app, prefix: str, store: TodoStore,
             show_identity=True))
 
     inact_app._human_views[prefix] = _human
+    inact_app.add_nav_item(prefix.rsplit("/", 1)[-1] or prefix.strip("/"),
+                           "/_human" + prefix + "/")
 
 
 def mount_todo(inact_app, prefix: str, storage,

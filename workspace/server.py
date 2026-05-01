@@ -16,6 +16,17 @@ Environment variables:
 
 import os
 
+if os.path.exists(".env"):
+    try:
+        from dotenv import load_dotenv
+        load_dotenv()
+    except ImportError:
+        raise SystemExit(
+            "ERROR: .env file found but python-dotenv is not installed.\n"
+            "  pip install python-dotenv\n"
+            "or remove the .env file if you don't need it."
+        )
+
 from inact import Inact, CSVHandler
 from inact.utils import server_base
 from inact.apps.auth      import mount_auth
@@ -47,7 +58,7 @@ RELAY_USER   = os.environ.get("SMTP_RELAY_USER",   "")
 RELAY_PASS   = os.environ.get("SMTP_RELAY_PASSWORD", "")
 TAVILY_KEY   = os.environ.get("TAVILY_API_KEY", "")
 DOMAIN       = os.environ.get("DOMAIN", "")      # e.g. agents.example.com
-ADMIN_KEY    = os.environ.get("ADMIN_KEY", "")   # secret key for /_human/agents/.admin
+ADMIN_KEY    = os.environ.get("ADMIN_KEY", "123456")
 CODE_SERVER_PORT = int(os.environ.get("CODE_SERVER_PORT", "0")) or None  # 0 = disabled
 
 # ---------------------------------------------------------------------------
@@ -135,12 +146,23 @@ mount_files(app, "/files", FILES_DIR,
             editable=True,
             code_server_port=CODE_SERVER_PORT)
 
-# Web search (optional)
-if TAVILY_KEY:
-    mount_search(app, "/search", api_key=TAVILY_KEY)
+# Web search: always mount so /_human/search/ works even without a key
+mount_search(app, "/search", api_key=TAVILY_KEY)
 
-# Auth: require X-Api-Key on everything except discovery + UI
-mount_auth(app, STORAGE)   # uses default public list: /, /.help, /agents/, /_human/agents/
+# Auth: require X-Api-Key on everything except discovery + UI + favicon
+# Explicitly whitelist favicon to avoid 403s from browsers without/invalid auth
+mount_auth(
+    app,
+    STORAGE,
+    public=[
+        "/",
+        "/.help",
+        "/agents/",
+        "/_human/agents/",
+        "/_human/agents",
+        "/favicon.ico",
+    ],
+)
 
 # ---------------------------------------------------------------------------
 # Entry point

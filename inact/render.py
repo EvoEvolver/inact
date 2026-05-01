@@ -21,23 +21,20 @@ def render_template(name: str, **ctx) -> str:
     return _env.get_template(name).render(**ctx)
 
 
-# Workspace navigation links — label, /_human path, active flag
-_WORKSPACE_PAGES = [
-    ("agents",  "/_human/agents/"),
-    ("chat",    "/_human/msg/"),
-    ("tasks",   "/_human/tasks/"),
-    ("mail",    "/_human/mail/"),
-    ("files",   "/_human/files/"),
-    ("data",    "/_human/data/"),
-    ("search",  "/_human/search/"),
-    ("admin",   "/_human/agents/.admin"),
-]
+# Workspace navigation — populated dynamically as apps are mounted
+_nav_registry: list[tuple[str, str]] = []
+
+
+def register_nav_item(label: str, href: str) -> None:
+    """Register a nav item; no-op if the href is already present."""
+    if not any(h == href for _, h in _nav_registry):
+        _nav_registry.append((label, href))
 
 
 def workspace_nav(current: str) -> list[tuple[str, str, bool]]:
     """Return [(label, href, is_active)] for the workspace top nav."""
     return [(label, href, href.rstrip("/") == current.rstrip("/"))
-            for label, href in _WORKSPACE_PAGES]
+            for label, href in _nav_registry]
 
 
 # ---------------------------------------------------------------------------

@@ -176,7 +176,7 @@ class PostgresStorage(Storage):
     def insert(self, sql: str, params: tuple = ()) -> int:
         with self._conn() as conn:
             with conn.cursor() as cur:
-                cur.execute(self._p(sql) + " RETURNING id", params)
+                cur.execute(self._p(sql) + " RETURNING *", params)
                 row = cur.fetchone()
                 return row[0] if row else 0
 

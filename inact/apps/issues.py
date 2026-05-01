@@ -45,7 +45,7 @@ from ..utils import text_response, toml_str
 
 _DDL = [
     """CREATE TABLE IF NOT EXISTS issues (
-        number     INTEGER PRIMARY KEY,
+        number     INTEGER PRIMARY KEY AUTOINCREMENT,
         title      TEXT    NOT NULL,
         body       TEXT    NOT NULL DEFAULT '',
         state      TEXT    NOT NULL DEFAULT 'open',
@@ -116,6 +116,15 @@ class IssueStore:
     def __init__(self, storage: Storage):
         self._s = storage
         self._s.init(_DDL)
+        # Seed sqlite_sequence so existing databases (created before AUTOINCREMENT was added)
+        # never reuse a previously-assigned issue number.
+        try:
+            self._s.execute(
+                "INSERT OR IGNORE INTO sqlite_sequence (name, seq)"
+                " SELECT 'issues', COALESCE(MAX(number), 0) FROM issues"
+            )
+        except Exception:
+            pass  # Non-SQLite backends or sqlite_sequence not yet created
 
     # --- issues ---
 
@@ -280,17 +289,18 @@ class IssueStore:
 # TOML formatting helpers
 # ---------------------------------------------------------------------------
 
-def _issue_row_toml(issue: dict, prefix: str) -> str:
+def _issue_row_toml(issue: dict, prefix: str, name_for=None) -> str:
+    nf = name_for or (lambda x: x)
     lines = [
         "[[issues]]\n",
-        f"number     = {issue['number']}\n",
+        f"id         = {issue['number']}\n",
         f"title      = {toml_str(issue['title'])}\n",
         f"state      = {toml_str(issue['state'])}\n",
     ]
     if issue.get("author"):
-        lines.append(f"author     = {toml_str(issue['author'])}\n")
+        lines.append(f"author     = {toml_str(nf(issue['author']))}\n")
     if issue.get("assignee"):
-        lines.append(f"assignee   = {toml_str(issue['assignee'])}\n")
+        lines.append(f"assignee   = {toml_str(nf(issue['assignee']))}\n")
     if issue.get("labels"):
         labels_toml = "[" + ", ".join(toml_str(l) for l in issue["labels"]) + "]"
         lines.append(f"labels     = {labels_toml}\n")
@@ -302,20 +312,21 @@ def _issue_row_toml(issue: dict, prefix: str) -> str:
     return "".join(lines)
 
 
-def _issue_detail_toml(issue: dict, comments: list[dict], prefix: str) -> str:
+def _issue_detail_toml(issue: dict, comments: list[dict], prefix: str, name_for=None) -> str:
+    nf = name_for or (lambda x: x)
     n = str(issue["number"])
     lines = [
         f"# #{n} {issue['title']}\n\n",
-        f"number     = {issue['number']}\n",
+        f"id         = {issue['number']}\n",
         f"title      = {toml_str(issue['title'])}\n",
         f"state      = {toml_str(issue['state'])}\n",
     ]
     if issue.get("body"):
         lines.append(f"body       = {toml_str(issue['body'])}\n")
     if issue.get("author"):
-        lines.append(f"author     = {toml_str(issue['author'])}\n")
+        lines.append(f"author     = {toml_str(nf(issue['author']))}\n")
     if issue.get("assignee"):
-        lines.append(f"assignee   = {toml_str(issue['assignee'])}\n")
+        lines.append(f"assignee   = {toml_str(nf(issue['assignee']))}\n")
     if issue.get("labels"):
         labels_toml = "[" + ", ".join(toml_str(l) for l in issue["labels"]) + "]"
         lines.append(f"labels     = {labels_toml}\n")
@@ -333,7 +344,7 @@ def _issue_detail_toml(issue: dict, comments: list[dict], prefix: str) -> str:
             lines += [
                 "[[comments]]\n",
                 f"id         = {c['id']}\n",
-                f"author     = {toml_str(c['author'])}\n",
+                f"author     = {toml_str(nf(c['author']))}\n",
                 f"body       = {toml_str(c['body'])}\n",
                 f"created_at = {toml_str(_fmt_ts(c['created_at']))}\n",
                 f"delete     = {toml_str(prefix + '/' + n + '/comments/' + str(c['id']))}\n",
@@ -348,10 +359,32 @@ def _issue_detail_toml(issue: dict, comments: list[dict], prefix: str) -> str:
 
 def attach_issues(inact_app, prefix: str, store: IssueStore,
                   notify_fn=None, lookup_agent=None,
+                  lookup_agent_by_key=None,
                   agents_prefix: str = "/agents") -> None:
     prefix = "/" + prefix.strip("/")
     ep = "_inact_issues_" + prefix.replace("/", "__")
     flask_app = inact_app.app
+
+    def _agent_display(agent_id: str) -> str:
+        if not agent_id or lookup_agent is None:
+            return agent_id
+        agent = lookup_agent(agent_id)
+        if agent and agent.get("name"):
+            return f"{agent['name']}#{agent_id}"
+        return agent_id
+
+    def _caller_id() -> str:
+        """Resolve the calling agent's id from X-Api-Key / cookie."""
+        if lookup_agent_by_key is None:
+            return ""
+        api_key = (
+            request.headers.get("X-Api-Key", "")
+            or request.cookies.get("_inact_key", "")
+        ).strip()
+        if not api_key:
+            return ""
+        agent = lookup_agent_by_key(api_key)
+        return str(agent["id"]) if agent else ""
 
     def _notify_assign(assignee_id: str, number: int, title: str) -> None:
         if notify_fn and assignee_id:
@@ -375,7 +408,7 @@ def attach_issues(inact_app, prefix: str, store: IssueStore,
                     400,
                 )
             issue_body = (body.get("body") or "").strip()
-            author     = str(body.get("author")   or "").strip()
+            author     = str(body.get("author") or "").strip() or _caller_id()
             assignee   = str(body.get("assignee") or "").strip()
             raw_labels = body.get("labels") or []
             labels = [str(l).strip() for l in raw_labels if str(l).strip()]
@@ -390,8 +423,8 @@ def attach_issues(inact_app, prefix: str, store: IssueStore,
             _notify_assign(assignee, issue["number"], title)
             return text_response(
                 f"OK\n"
-                f"number = {issue['number']}\n"
-                f"url    = {toml_str(prefix + '/' + str(issue['number']))}\n",
+                f"id  = {issue['number']}\n"
+                f"url = {toml_str(prefix + '/' + str(issue['number']))}\n",
                 201,
             )
 
@@ -416,21 +449,21 @@ def attach_issues(inact_app, prefix: str, store: IssueStore,
         lines  = [f"# Issues ({state_f})\n", _page_header(page, per_page, total)]
         lines.append("# tip: ?state=open|closed|all  ?label=bug  ?assignee=id  ?author=id\n\n")
         for iss in issues:
-            lines.append(_issue_row_toml(iss, prefix))
+            lines.append(_issue_row_toml(iss, prefix, _agent_display))
         return text_response("".join(lines))
 
     def _open_issues():
         issues = store.list_issues(1, _MAX_PER_PAGE, state="open")
         lines  = [f"# Open issues ({len(issues)})\n\n"]
         for iss in issues:
-            lines.append(_issue_row_toml(iss, prefix))
+            lines.append(_issue_row_toml(iss, prefix, _agent_display))
         return text_response("".join(lines))
 
     def _closed_issues():
         issues = store.list_issues(1, _MAX_PER_PAGE, state="closed")
         lines  = [f"# Closed issues ({len(issues)})\n\n"]
         for iss in issues:
-            lines.append(_issue_row_toml(iss, prefix))
+            lines.append(_issue_row_toml(iss, prefix, _agent_display))
         return text_response("".join(lines))
 
     def _issue(number: int):
@@ -477,7 +510,7 @@ def attach_issues(inact_app, prefix: str, store: IssueStore,
         if not issue:
             return text_response("ERROR 404: issue not found\n", 404)
         comments = store.list_comments(number)
-        return text_response(_issue_detail_toml(issue, comments, prefix))
+        return text_response(_issue_detail_toml(issue, comments, prefix, _agent_display))
 
     def _close(number: int):
         if not store.get(number):
@@ -546,7 +579,7 @@ def attach_issues(inact_app, prefix: str, store: IssueStore,
         if request.method == "POST":
             body   = request.get_json(force=True, silent=True) or {}
             cbody  = (body.get("body") or "").strip()
-            author = str(body.get("author") or "").strip()
+            author = str(body.get("author") or "").strip() or _caller_id()
             if not cbody:
                 return text_response(
                     "ERROR 400: 'body' required\n"
@@ -569,7 +602,7 @@ def attach_issues(inact_app, prefix: str, store: IssueStore,
             lines += [
                 "[[comments]]\n",
                 f"id         = {c['id']}\n",
-                f"author     = {toml_str(c['author'])}\n",
+                f"author     = {toml_str(_agent_display(c['author']))}\n",
                 f"body       = {toml_str(c['body'])}\n",
                 f"created_at = {toml_str(_fmt_ts(c['created_at']))}\n",
                 f"delete     = {toml_str(prefix + '/' + str(number) + '/comments/' + str(c['id']))}\n",
@@ -660,6 +693,28 @@ def attach_issues(inact_app, prefix: str, store: IssueStore,
         prefix + "/<int:number>/comments/<int:cid>",
         endpoint=ep + "_comment", view_func=_comment, methods=["DELETE"])
 
+    def _human(path: str):
+        from ..render import render_template, workspace_nav
+        from ..utils import html_response
+        import re as _re
+        sub = path[len(prefix):].lstrip("/")
+        m = _re.match(r"^(\d+)$", sub)
+        initial_issue = int(m.group(1)) if m else None
+        html = render_template(
+            "issues_human.html",
+            title="Issues",
+            prefix=prefix,
+            agents_prefix=agents_prefix,
+            workspace_links=workspace_nav("/_human" + prefix + "/"),
+            show_identity=True,
+            initial_issue=initial_issue,
+        )
+        return html_response(html)
+
+    inact_app._human_views[prefix] = _human
+    inact_app.add_nav_item(prefix.rsplit("/", 1)[-1] or prefix.strip("/"),
+                           "/_human" + prefix + "/")
+
 
 # ---------------------------------------------------------------------------
 # Mount function
@@ -693,6 +748,7 @@ def mount_issues(
     store = IssueStore(backend)
 
     lookup_agent = None
+    lookup_agent_by_key = None
     if agents_storage is not None:
         from .workspace.register import AgentRegistry
         ag_back = make_storage(agents_storage) if isinstance(agents_storage, str) else agents_storage
@@ -702,6 +758,8 @@ def mount_issues(
                 return ag_reg.get(int(agent_id))
             except (ValueError, TypeError):
                 return None
+        def lookup_agent_by_key(api_key: str) -> dict | None:
+            return ag_reg.get_by_key(api_key)
 
     notify_fn = None
     if notify_storage is not None:
@@ -716,6 +774,7 @@ def mount_issues(
     attach_issues(inact_app, p, store,
                   notify_fn=notify_fn,
                   lookup_agent=lookup_agent,
+                  lookup_agent_by_key=lookup_agent_by_key,
                   agents_prefix=ap)
     inact_app._app_mounts.append((p, (
         f"\nIssues: {p}\n"

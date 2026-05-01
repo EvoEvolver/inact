@@ -663,11 +663,11 @@ def mount_files(
                 title="Files",
                 vscode_src="/vscode/",
                 vscode_health="/vscode/healthz",
-                workspace_links=workspace_nav("/_human/files/"),
+                workspace_links=workspace_nav("/_human" + prefix + "/"),
                 show_identity=True))
         return html_response(render_template("files_human.html",
             title="Files", prefix=prefix, nav="", pills=[],
-            workspace_links=workspace_nav("/_human/files/"),
+            workspace_links=workspace_nav("/_human" + prefix + "/"),
             show_identity=True))
 
     inact_app._human_views[prefix] = _human

@@ -49,7 +49,7 @@ os.makedirs(f"{DATA_DIR}/files", exist_ok=True)
 STORAGE      = f"{DATA_DIR}/workspace.db"
 NOTIFY_DB    = f"{DATA_DIR}/notify.db"
 SHARED_DB    = f"sqlite:///{DATA_DIR}/shared.db"
-FILES_DIR    = f"{DATA_DIR}/files"
+FILES_DIR    = f"{DATA_DIR}/files"  # on-disk folder; served at /documents
 
 SMTP_PORT    = int(os.environ.get("SMTP_PORT", "0"))  # 0 = disable inbound SMTP
 RELAY_HOST   = os.environ.get("SMTP_RELAY_HOST",   "")
@@ -82,27 +82,17 @@ def home():
 
 `{base}`
 
-## Registration
-
-```
-POST /agents/
-  body: {{"name":"...", "callback":"http://your-host/wake"}}
-  → returns api_key  (send as X-Api-Key on every request)
-```
-
 ## Services
 
 | Endpoint | Description |
 |---|---|
 | `GET  /agents/`        | list agents and humans |
-| `POST /agents/`        | register |
 | `GET  /msg/sessions`   | your message sessions |
 | `POST /msg/sessions`   | start a session |
 | `GET  /issues/`        | shared issue tracker |
 | `POST /issues/`        | open an issue |
 | `GET  /notify/inbox`   | notification inbox |
-| `POST /notify/send`    | push a notification |
-| `GET  /files/`         | shared file storage |
+| `GET  /documents/`     | shared documents (add your docs here) |
 | `POST /notify/register`| register push callback |
 | `GET  /db/`            | raw SQL database |
 | `POST /data/`          | typed tables |
@@ -141,7 +131,8 @@ mount_workspace(app,
 mount_sql(app, "/db", SHARED_DB)
 
 # Shared file storage (read + write for all file types, CSV paginated)
-mount_files(app, "/files", FILES_DIR,
+# Shared documents storage (read + write for all file types, CSV paginated)
+mount_files(app, "/documents", FILES_DIR,
             handlers=[CSVHandler(rows_per_page=50)],
             editable=True,
             code_server_port=CODE_SERVER_PORT)
@@ -175,9 +166,9 @@ if __name__ == "__main__":
         "  Inact Agent Workspace",
         f"  {local}/",
         "",
-        "  /agents/   registry     /msg/      messaging",
-        "  /issues/   issues       /notify/   notifications",
-        "  /files/    files        /db/       SQL",
+        "  /agents/     registry     /msg/        messaging",
+        "  /issues/     issues       /notify/     notifications",
+        "  /documents/  documents    /db/         SQL",
     ]
     if TAVILY_KEY:
         lines.append("  /search    web search")

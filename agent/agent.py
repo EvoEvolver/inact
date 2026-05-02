@@ -194,20 +194,17 @@ def bash(command: str) -> str:
 
 
 @_agent.tool_plain
-def codex(task: str, working_dir: str | None = None) -> str:
+def run_codex_agent(task: str, working_dir: str = ".") -> str:
     """Delegate a hard programming task to the Codex AI coding subagent.
 
     Codex autonomously reads and writes files and runs shell commands to
     implement the task end-to-end.  Use it for complex multi-file features,
     large refactors, or anything that requires iterative code editing.
 
-    working_dir: path to scope the work (defaults to the current directory).
+    working_dir: directory to scope the work (default: current directory).
     Requires OPENAI_API_KEY in the environment; optionally set OPENAI_BASE_URL
     to route through OpenRouter or another provider.
     """
-    import shutil
-    if not shutil.which("codex"):
-        return "ERROR: codex CLI not found; install with: npm install -g @openai/codex"
     try:
         result = subprocess.run(
             ["codex", "--approval-mode", "full-auto", "-q", task],
@@ -220,6 +217,8 @@ def codex(task: str, working_dir: str | None = None) -> str:
         if result.stderr:
             out += f"\nSTDERR:\n{result.stderr}"
         return out or "(no output)"
+    except FileNotFoundError:
+        return "ERROR: codex CLI not found; install with: npm install -g @openai/codex"
     except subprocess.TimeoutExpired:
         return "ERROR: codex timed out after 5 minutes"
     except Exception as exc:

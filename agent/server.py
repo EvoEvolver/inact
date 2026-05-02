@@ -206,6 +206,26 @@ def main() -> None:
         except Exception as exc:
             logfire.warning("could not register callback: {exc}", exc=exc)
 
+    # Start Flask in a background thread so we can wait for it to be ready
+    # before queuing the first revival tick.  The agent calls back to /memory
+    # in its system prompt, so Flask must be listening first.
+    flask_thread = threading.Thread(
+        target=lambda: app.run(host="0.0.0.0", port=PORT, debug=False,
+                               use_reloader=False, threaded=True),
+        daemon=True,
+    )
+    flask_thread.start()
+
+    # Poll until Flask is accepting connections (up to 10 s)
+    for _ in range(100):
+        try:
+            http.get(f"http://localhost:{PORT}/health", timeout=0.2)
+            break
+        except Exception:
+            time.sleep(0.1)
+
+    logfire.info("callback server on :{port}", port=PORT)
+
     ag._session_start = time.time()
     threading.Thread(target=_agent_loop, daemon=True).start()
 
@@ -241,8 +261,7 @@ def main() -> None:
         callback=callback_url,
         model=ag.MODEL,
     )
-    logfire.info("callback server on :{port}", port=PORT)
-    app.run(host="0.0.0.0", port=PORT, debug=False, use_reloader=False, threaded=True)
+    flask_thread.join()
 
 
 if __name__ == "__main__":

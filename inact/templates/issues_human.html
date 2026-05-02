@@ -110,19 +110,14 @@
 .comment-body   { font-size: 14px; }
 </style>
 
-<script>
+<script type="module">
+import { parse as parseTOML } from 'https://esm.sh/smol-toml';
 const P  = {{ prefix        | tojson }};
 const AP = {{ agents_prefix | tojson }};
 const KEY = localStorage.getItem('inact_api_key') || '';
 function H(x) { return Object.assign({'X-Api-Key': KEY}, x || {}); }
 function esc(s) { return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 function md(s) { return DOMPurify.sanitize(marked.parse(String(s||''))); }
-function unesc(s) {
-  return String(s||'')
-    .replace(/\\n/g,'\n').replace(/\\r/g,'\r').replace(/\\t/g,'\t')
-    .replace(/\\"/g,'"').replace(/\\\\/g,'\\');
-}
-
 let stateFilter  = 'open';
 let currentIssue = null;
 let agentMap     = {};
@@ -139,38 +134,21 @@ function nameFor(id) {
 
 /* ── TOML parsing helpers ── */
 function parseBlocks(text, tag) {
-  return text.split('[[' + tag + ']]').slice(1).map(block => {
-    const o = {};
-    block.split('\n').forEach(l => {
-      const arr = l.match(/^([\w]+)\s*=\s*\[([^\]]*)\]/);
-      if (arr) {
-        o[arr[1]] = arr[2].split(',').map(s => s.trim().replace(/^"|"$/g,'')).filter(Boolean);
-        return;
-      }
-      const m = l.match(/^([\w]+)\s*=\s*"((?:[^"\\]|\\.)*)"/);
-      if (m) { o[m[1]] = unesc(m[2]); return; }
-      const n = l.match(/^([\w]+)\s*=\s*(-?\d+)/);
-      if (n) { o[n[1]] = n[2]; }
-    });
-    return o;
-  }).filter(o => Object.keys(o).length > 0);
+  try {
+    const v = parseTOML(text)[tag];
+    return Array.isArray(v) ? v : v !== undefined ? [v] : [];
+  } catch (_) { return []; }
 }
 
 function parseScalars(text) {
-  const o = {};
-  text.split('\n').forEach(l => {
-    if (/^\[\[/.test(l.trim())) return;
-    const arr = l.match(/^([\w]+)\s*=\s*\[([^\]]*)\]/);
-    if (arr) {
-      o[arr[1]] = arr[2].split(',').map(s => s.trim().replace(/^"|"$/g,'')).filter(Boolean);
-      return;
+  try {
+    const doc = parseTOML(text);
+    const o = {};
+    for (const [k, v] of Object.entries(doc)) {
+      if (!Array.isArray(v)) o[k] = v;
     }
-    const m = l.match(/^([\w]+)\s*=\s*"((?:[^"\\]|\\.)*)"/);
-    if (m) { o[m[1]] = unesc(m[2]); return; }
-    const n = l.match(/^([\w]+)\s*=\s*(-?\d+)/);
-    if (n) { o[n[1]] = n[2]; }
-  });
-  return o;
+    return o;
+  } catch (_) { return {}; }
 }
 
 /* ── Load agents & labels ── */

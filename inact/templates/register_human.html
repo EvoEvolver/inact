@@ -35,21 +35,16 @@
 {% endblock %}
 
 {% block scripts %}
-<script>
+<script type="module">
+import { parse as parseTOML } from 'https://esm.sh/smol-toml';
 const PREFIX = {{ prefix | tojson }};
 const AGENTS_API = {{ agents_api | tojson }};
 
 function parseBlocks(text, tag) {
-  return text.split('[[' + tag + ']]').slice(1).map(b => {
-    const o = {};
-    b.split('\n').forEach(l => {
-      const m = l.match(/^(\w+)\s*=\s*"([^"]*)"/) || l.match(/^(\w+)\s*=\s*(\S+)/);
-      if (m) o[m[1]] = m[2]
-        .replace(/\\n/g, '\n').replace(/\\r/g, '\r')
-        .replace(/\\t/g, '\t').replace(/\\"/g, '"').replace(/\\\\/g, '\\');
-    });
-    return o;
-  }).filter(o => o.id);
+  try {
+    const v = parseTOML(text)[tag];
+    return Array.isArray(v) ? v : v !== undefined ? [v] : [];
+  } catch (_) { return []; }
 }
 
 function load() {

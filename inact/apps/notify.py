@@ -84,6 +84,7 @@ class NotifyStore:
     def __init__(self, storage: Storage):
         self._s = storage
         self._s.init(_DDL)
+        self._s.execute("DELETE FROM notifications WHERE id = 'none' OR id IS NULL")
 
     # callbacks
 

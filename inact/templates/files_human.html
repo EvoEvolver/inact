@@ -31,7 +31,8 @@
 {% endblock %}
 
 {% block scripts %}
-<script>
+<script type="module">
+import { parse as parseTOML } from 'https://esm.sh/smol-toml';
 const P   = {{ prefix | tojson }};
 const KEY = localStorage.getItem('inact_api_key') || '';
 
@@ -52,14 +53,10 @@ function esc(s) { return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;'
 let currentPath = '';  // sub-path within the mount ('' = root)
 
 function parseBlocks(text, tag) {
-  return text.split('[[' + tag + ']]').slice(1).map(b => {
-    const o = {};
-    b.split('\n').forEach(l => {
-      const m = l.match(/^(\w+)\s*=\s*"([^"]*)"/) || l.match(/^(\w+)\s*=\s*(\S+)/);
-      if (m) o[m[1]] = m[2];
-    });
-    return o;
-  }).filter(o => Object.keys(o).length > 0);
+  try {
+    const v = parseTOML(text)[tag];
+    return Array.isArray(v) ? v : v !== undefined ? [v] : [];
+  } catch (_) { return []; }
 }
 
 /* ── Load directory ── */

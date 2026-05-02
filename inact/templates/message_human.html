@@ -167,7 +167,8 @@
 {% endblock %}
 
 {% block scripts %}
-<script>
+<script type="module">
+import { parse as parseTOML } from 'https://esm.sh/smol-toml';
 const P  = {{ prefix        | tojson }};
 const AP = {{ agents_prefix | tojson }};
 
@@ -215,16 +216,10 @@ function authHeaders(extra) {
 }
 
 function parseBlocks(text, tag) {
-  return text.split('[[' + tag + ']]').slice(1).map(b => {
-    const o = {};
-    b.split('\n').forEach(l => {
-      const m = l.match(/^(\w+)\s*=\s*"([^"]*)"/) || l.match(/^(\w+)\s*=\s*(\S+)/);
-      if (m) o[m[1]] = m[2]
-        .replace(/\\n/g, '\n').replace(/\\r/g, '\r')
-        .replace(/\\t/g, '\t').replace(/\\"/g, '"').replace(/\\\\/g, '\\');
-    });
-    return o;
-  }).filter(o => Object.keys(o).length > 0);
+  try {
+    const v = parseTOML(text)[tag];
+    return Array.isArray(v) ? v : v !== undefined ? [v] : [];
+  } catch (_) { return []; }
 }
 
 async function getAgentName(id) {

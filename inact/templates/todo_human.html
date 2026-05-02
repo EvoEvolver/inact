@@ -351,6 +351,8 @@ document.getElementById('f-title').addEventListener('keydown', e => {
 ['filter-status','filter-priority','filter-assignee'].forEach(id =>
   document.getElementById(id).addEventListener('change', load));
 
+Object.assign(window, { saveEdit, cancelEdit, toggleDone, startEdit, startSub, deleteTask, goPage });
+
 /* ── Init ── */
 loadAgents().then(load);
 </script>

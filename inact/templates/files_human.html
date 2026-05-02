@@ -157,6 +157,8 @@ document.getElementById('upload-btn').addEventListener('click', async () => {
   }
 });
 
+Object.assign(window, { closeViewer, loadDir });
+
 loadDir('');
 </script>
 {% endblock %}

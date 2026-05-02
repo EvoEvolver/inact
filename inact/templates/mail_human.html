@@ -225,6 +225,8 @@ document.getElementById('c-send').addEventListener('click', async () => {
   }
 });
 
+Object.assign(window, { openMsg, closeMsg, openSentMsg, closeSent });
+
 loadInbox();
 </script>
 {% endblock %}

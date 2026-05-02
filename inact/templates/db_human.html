@@ -259,6 +259,8 @@ document.getElementById('q-run').addEventListener('click', async () => {
   result.textContent = text;
 });
 
+Object.assign(window, { closeTable, selectTable, dropTable, startEditRow, deleteRow });
+
 loadTables();
 </script>
 {% endblock %}

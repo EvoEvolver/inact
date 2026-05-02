@@ -15,11 +15,11 @@
       <button id="btn-closed" class="state-tab sep"    onclick="setStateFilter('closed')">Closed</button>
       <button id="btn-all"    class="state-tab sep"    onclick="setStateFilter('all')">All</button>
     </div>
-    <select id="filter-label"    onchange="issuePage=1;loadIssues()"
+    <select id="filter-label"
             style="border:1px solid #ddd;border-radius:8px;padding:7px 10px;font-size:13px">
       <option value="">All labels</option>
     </select>
-    <select id="filter-assignee" onchange="issuePage=1;loadIssues()"
+    <select id="filter-assignee"
             style="border:1px solid #ddd;border-radius:8px;padding:7px 10px;font-size:13px">
       <option value="">All assignees</option>
     </select>
@@ -475,6 +475,16 @@ function backToList() {
 
 /* ── Init ── */
 const INITIAL_ISSUE = {{ initial_issue | tojson }};
+['filter-label', 'filter-assignee'].forEach(id =>
+  document.getElementById(id).addEventListener('change', () => { issuePage = 1; loadIssues(); })
+);
+
+Object.assign(window, {
+  setStateFilter, showNewForm, hideNewForm, submitNewIssue,
+  backToList, submitComment, openIssue, goPage,
+  removeLabelFromIssue, assignIssue, toggleState, addLabelToIssue,
+});
+
 Promise.all([loadAgents(), loadLabels()]).then(() => {
   if (INITIAL_ISSUE) {
     loadIssues();

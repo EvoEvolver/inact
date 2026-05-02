@@ -25,7 +25,6 @@ import html as _html
 import json
 import re
 import time
-import uuid
 
 from flask import make_response, request
 
@@ -36,14 +35,14 @@ _BARE_KEY_RE = re.compile(r"^[a-zA-Z0-9_-]+$")
 
 _DDL = [
     """CREATE TABLE IF NOT EXISTS forms (
-        id          TEXT    PRIMARY KEY,
+        id          INTEGER PRIMARY KEY,
         title       TEXT    NOT NULL,
         description TEXT    NOT NULL DEFAULT '',
         fields_json TEXT    NOT NULL DEFAULT '[]',
         created_at  BIGINT  NOT NULL
     )""",
     """CREATE TABLE IF NOT EXISTS responses (
-        id           TEXT    PRIMARY KEY,
+        id           INTEGER PRIMARY KEY,
         form_id      TEXT    NOT NULL,
         data_json    TEXT    NOT NULL,
         submitted_at BIGINT  NOT NULL,
@@ -57,13 +56,11 @@ class FormStore:
         self._s = storage
         self._s.init(_DDL)
 
-    def create(self, title: str, description: str, fields: list) -> str:
-        form_id = str(uuid.uuid4())
-        self._s.execute(
-            "INSERT INTO forms VALUES (?,?,?,?,?)",
-            (form_id, title, description, json.dumps(fields), int(time.time())),
+    def create(self, title: str, description: str, fields: list) -> int:
+        return self._s.insert(
+            "INSERT INTO forms (title, description, fields_json, created_at) VALUES (?,?,?,?)",
+            (title, description, json.dumps(fields), int(time.time())),
         )
-        return form_id
 
     def list_all(self) -> list[dict]:
         return self._s.fetchall("SELECT * FROM forms ORDER BY created_at DESC")
@@ -75,13 +72,11 @@ class FormStore:
         row["fields"] = json.loads(row.pop("fields_json"))
         return row
 
-    def submit(self, form_id: str, data: dict, submitter: str = "") -> str:
-        resp_id = str(uuid.uuid4())
-        self._s.execute(
-            "INSERT INTO responses VALUES (?,?,?,?,?)",
-            (resp_id, form_id, json.dumps(data), int(time.time()), submitter),
+    def submit(self, form_id, data: dict, submitter: str = "") -> int:
+        return self._s.insert(
+            "INSERT INTO responses (form_id, data_json, submitted_at, submitter) VALUES (?,?,?,?)",
+            (form_id, json.dumps(data), int(time.time()), submitter),
         )
-        return resp_id
 
     def responses(self, form_id: str) -> list[dict]:
         rows = self._s.fetchall(
@@ -276,8 +271,8 @@ def attach_forms(inact_app, prefix: str, store: FormStore) -> None:
             form_id = store.create(title, description, fields)
             return text_response(
                 f"OK\n"
-                f"id  = {toml_str(form_id)}\n"
-                f"url = {toml_str(prefix + '/' + form_id)}\n"
+                f"id  = {form_id}\n"
+                f"url = {toml_str(prefix + '/' + str(form_id))}\n"
             )
 
         forms = store.list_all()
@@ -287,13 +282,13 @@ def attach_forms(inact_app, prefix: str, store: FormStore) -> None:
             n_resp = store.response_count(f["id"])
             lines += [
                 "[[forms]]\n",
-                f"id          = {toml_str(f['id'])}\n",
+                f"id          = {f['id']}\n",
                 f"title       = {toml_str(f['title'])}\n",
                 f"description = {toml_str(f['description'])}\n",
                 f"fields      = {n_fields}\n",
                 f"responses   = {n_resp}\n",
-                f"url         = {toml_str(prefix + '/' + f['id'])}\n",
-                f"submit      = {toml_str(prefix + '/' + f['id'] + '/submit')}\n",
+                f"url         = {toml_str(prefix + '/' + str(f['id']))}\n",
+                f"submit      = {toml_str(prefix + '/' + str(f['id']) + '/submit')}\n",
                 "\n",
             ]
         return text_response("".join(lines))
@@ -319,7 +314,7 @@ def attach_forms(inact_app, prefix: str, store: FormStore) -> None:
         # TOML definition for agents / API clients
         lines = [
             f"# {form['title']}\n\n",
-            f"id          = {toml_str(form['id'])}\n",
+            f"id          = {form['id']}\n",
             f"title       = {toml_str(form['title'])}\n",
             f"description = {toml_str(form['description'])}\n",
             f"created_at  = {toml_str(_fmt_ts(form['created_at']))}\n",
@@ -387,7 +382,7 @@ def attach_forms(inact_app, prefix: str, store: FormStore) -> None:
 
         if is_browser:
             return _html_response(_html_success_page(form))
-        return text_response(f"OK\nid = {toml_str(resp_id)}\n")
+        return text_response(f"OK\nid = {resp_id}\n")
 
     def _responses(form_id: str):
         form = store.get(form_id)
@@ -397,7 +392,7 @@ def attach_forms(inact_app, prefix: str, store: FormStore) -> None:
         lines = [f"# Responses: {form['title']}\n# {len(resps)} response(s)\n\n"]
         for r in resps:
             lines.append("[[responses]]\n")
-            lines.append(f"id           = {toml_str(r['id'])}\n")
+            lines.append(f"id           = {r['id']}\n")
             lines.append(f"submitted_at = {toml_str(_fmt_ts(r['submitted_at']))}\n")
             if r["submitter"]:
                 lines.append(f"submitter    = {toml_str(r['submitter'])}\n")

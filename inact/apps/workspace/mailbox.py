@@ -44,7 +44,6 @@ import re
 import smtplib
 import threading
 import time
-import uuid
 from email.header import decode_header as _decode_header
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
@@ -61,7 +60,7 @@ _MAX_PER_PAGE = 100
 
 _DDL = [
     """CREATE TABLE IF NOT EXISTS mail (
-        id          TEXT    PRIMARY KEY,
+        id          INTEGER PRIMARY KEY,
         folder      TEXT    NOT NULL DEFAULT 'inbox',
         from_addr   TEXT    NOT NULL DEFAULT '',
         to_addr     TEXT    NOT NULL DEFAULT '',
@@ -83,14 +82,11 @@ class MailStore:
         self._s.init(_DDL)
 
     def save(self, folder: str, from_addr: str, to_addr: str,
-             subject: str, body: str) -> str:
-        msg_id = str(uuid.uuid4())
-        self._s.execute(
-            "INSERT INTO mail VALUES (?,?,?,?,?,?,?,?)",
-            (msg_id, folder, from_addr, to_addr, subject, body,
-             int(time.time()), 0),
+             subject: str, body: str) -> int:
+        return self._s.insert(
+            "INSERT INTO mail (folder, from_addr, to_addr, subject, body, received_at, read) VALUES (?,?,?,?,?,?,?)",
+            (folder, from_addr, to_addr, subject, body, int(time.time()), 0),
         )
-        return msg_id
 
     def count(self, folder: str, addr_field: str, addr: str,
               unread_only: bool = False) -> int:
@@ -475,12 +471,12 @@ def attach_mailbox(inact_app, prefix: str, store: MailStore,
         for m in msgs:
             lines += [
                 "[[messages]]\n",
-                f'id      = {toml_str(m["id"])}\n',
+                f'id      = {m["id"]}\n',
                 f'from    = {toml_str(m["from_addr"])}\n',
                 f'subject = {toml_str(m["subject"])}\n',
                 f'date    = {toml_str(_fmt_ts(m["received_at"]))}\n',
                 f'read    = {str(bool(m["read"])).lower()}\n',
-                f'url     = {toml_str(prefix + "/inbox/" + m["id"])}\n',
+                f'url     = {toml_str(prefix + "/inbox/" + str(m["id"]))}\n',
                 "\n",
             ]
         return text_response("".join(lines))
@@ -501,7 +497,7 @@ def attach_mailbox(inact_app, prefix: str, store: MailStore,
             f"from    = {toml_str(m['from_addr'])}\n",
             f"to      = {toml_str(m['to_addr'])}\n",
             f"date    = {toml_str(_fmt_ts(m['received_at']))}\n",
-            f"id      = {toml_str(m['id'])}\n",
+            f"id      = {m['id']}\n",
             "\n---\n\n",
             m["body"] + "\n",
         ]
@@ -528,7 +524,7 @@ def attach_mailbox(inact_app, prefix: str, store: MailStore,
         for m in msgs:
             lines += [
                 "[[messages]]\n",
-                f'id      = {toml_str(m["id"])}\n',
+                f'id      = {m["id"]}\n',
                 f'to      = {toml_str(m["to_addr"])}\n',
                 f'subject = {toml_str(m["subject"])}\n',
                 f'date    = {toml_str(_fmt_ts(m["received_at"]))}\n',

@@ -21,7 +21,6 @@ Identity: X-Agent-Id header or ?agent_id= query param.
 from __future__ import annotations
 
 import time
-import uuid
 
 from flask import request
 
@@ -42,14 +41,14 @@ _DDL = [
         PRIMARY KEY (session_id, agent_id)
     )""",
     """CREATE TABLE IF NOT EXISTS session_messages (
-        id         TEXT    PRIMARY KEY,
+        id         INTEGER PRIMARY KEY,
         session_id INTEGER NOT NULL,
         from_id    TEXT    NOT NULL,
         body       TEXT    NOT NULL DEFAULT '',
         created_at BIGINT  NOT NULL
     )""",
     """CREATE TABLE IF NOT EXISTS session_message_reads (
-        message_id TEXT    NOT NULL,
+        message_id INTEGER NOT NULL,
         agent_id   TEXT    NOT NULL,
         PRIMARY KEY (message_id, agent_id)
     )""",
@@ -92,13 +91,23 @@ class SessionStore:
         self._migrate()
 
     def _migrate(self) -> None:
-        """Drop session tables that still use the old TEXT PRIMARY KEY schema."""
+        """Drop session tables that still use old TEXT PRIMARY KEY schemas."""
         try:
             cols = self._s.fetchall("PRAGMA table_info(sessions)")
             id_col = next((c for c in cols if c["name"] == "id"), None)
             if id_col and id_col["type"].upper() == "TEXT":
                 for t in ("session_message_reads", "session_messages",
                           "session_members", "sessions"):
+                    self._s.execute(f"DROP TABLE IF EXISTS {t}")
+                self._s.init(_DDL)
+                return
+        except Exception:
+            pass
+        try:
+            cols = self._s.fetchall("PRAGMA table_info(session_messages)")
+            id_col = next((c for c in cols if c["name"] == "id"), None)
+            if id_col and id_col["type"].upper() == "TEXT":
+                for t in ("session_message_reads", "session_messages"):
                     self._s.execute(f"DROP TABLE IF EXISTS {t}")
                 self._s.init(_DDL)
         except Exception:
@@ -166,13 +175,11 @@ class SessionStore:
         sessions.sort(key=lambda x: x["last_ts"], reverse=True)
         return sessions
 
-    def send(self, session_id: str, from_id: str, body: str) -> str:
-        msg_id = str(uuid.uuid4())
-        self._s.execute(
-            "INSERT INTO session_messages VALUES (?, ?, ?, ?, ?)",
-            (msg_id, session_id, from_id, body, int(time.time())),
+    def send(self, session_id: str, from_id: str, body: str) -> int:
+        return self._s.insert(
+            "INSERT INTO session_messages (session_id, from_id, body, created_at) VALUES (?, ?, ?, ?)",
+            (session_id, from_id, body, int(time.time())),
         )
-        return msg_id
 
     def count_messages(self, session_id: str, agent_id: str = "",
                        unread_only: bool = False) -> int:
@@ -397,7 +404,7 @@ def attach_message(inact_app, prefix: str, store: SessionStore,
                         f"  reply  : POST {prefix}/sessions/{session_id}/send  "
                         f"body: {{\"body\":\"...\"}}"
                     ))
-        return text_response(f"OK\nid = {toml_str(msg_id)}\n")
+        return text_response(f"OK\nid = {msg_id}\n")
 
     def _session_messages(session_id: str):
         s = store.get(session_id)
@@ -416,7 +423,7 @@ def attach_message(inact_app, prefix: str, store: SessionStore,
         for m in msgs:
             fk = kind_fn(m["from_id"]) if kind_fn else ""
             lines.append("[[messages]]\n")
-            lines.append(f"id        = {toml_str(m['id'])}\n")
+            lines.append(f"id        = {m['id']}\n")
             lines.append(f"from      = {toml_str(_from_str(m['from_id']))}\n")
             if fk:
                 lines.append(f"from_kind = {toml_str(fk)}\n")

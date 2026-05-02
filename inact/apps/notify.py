@@ -23,7 +23,6 @@ from __future__ import annotations
 import os
 import threading
 import time
-import uuid
 
 from flask import request
 
@@ -33,7 +32,7 @@ from ..apps.workspace.mailbox import _send_email
 
 _DDL = [
     """CREATE TABLE IF NOT EXISTS notifications (
-        id         TEXT    PRIMARY KEY,
+        id         INTEGER PRIMARY KEY,
         to_id      TEXT    NOT NULL,
         from_id    TEXT    NOT NULL DEFAULT '',
         message    TEXT    NOT NULL DEFAULT '',
@@ -111,13 +110,11 @@ class NotifyStore:
 
     # notifications
 
-    def send(self, to_id: str, message: str, from_id: str = "") -> str:
-        notif_id = str(uuid.uuid4())
-        self._s.execute(
-            "INSERT INTO notifications VALUES (?, ?, ?, ?, ?, ?)",
-            (notif_id, to_id, from_id, message, 0, int(time.time())),
+    def send(self, to_id: str, message: str, from_id: str = "") -> int:
+        return self._s.insert(
+            "INSERT INTO notifications (to_id, from_id, message, read, created_at) VALUES (?, ?, ?, ?, ?)",
+            (to_id, from_id, message, 0, int(time.time())),
         )
-        return notif_id
 
     def count(self, to_id: str, unread_only: bool = False) -> int:
         q = "SELECT COUNT(*) AS cnt FROM notifications WHERE to_id = ?"
@@ -303,7 +300,7 @@ def attach_notify(inact_app, prefix: str, store: NotifyStore,
         except Exception:
             # Never let email side-effects break the notification API
             pass
-        return text_response(f"OK\nid = {toml_str(notif_id)}\n")
+        return text_response(f"OK\nid = {notif_id}\n")
 
     def _inbox():
         agent_id = (
@@ -317,26 +314,27 @@ def attach_notify(inact_app, prefix: str, store: NotifyStore,
                 "       or set X-Agent-Id header\n",
                 400,
             )
-        unread_only = request.args.get("unread", "0") == "1"
+        show_all = request.args.get("all", "0") == "1"
+        unread_only = not show_all
         page, per_page = _parse_page_params()
         total = store.count(agent_id, unread_only)
         notifs = store.list_inbox(agent_id, page, per_page, unread_only)
         lines = [
             f"# Notifications (agent {agent_id})\n",
             _page_header(page, per_page, total),
-            "# tip: ?unread=1 to filter unread\n\n",
+            "# tip: ?all=1 to include read notifications\n\n",
         ]
         for n in notifs:
             fk = kind_fn(n['from_id']) if kind_fn and n['from_id'] else ""
             lines += ["[[notifications]]\n",
-                      f"id        = {toml_str(n['id'])}\n",
+                      f"id        = {n['id']}\n",
                       f"from      = {toml_str(_from_str(n['from_id']))}\n"]
             if fk:
                 lines.append(f"from_kind = {toml_str(fk)}\n")
             lines += [f"message   = {toml_str(n['message'])}\n",
                       f"date      = {toml_str(_fmt_ts(n['created_at']))}\n",
                       f"read      = {str(bool(n['read'])).lower()}\n",
-                      f"url       = {toml_str(prefix + '/inbox/' + n['id'])}\n",
+                      f"url       = {toml_str(prefix + '/inbox/' + str(n['id']))}\n",
                       "\n"]
         return text_response("".join(lines))
 
@@ -349,7 +347,7 @@ def attach_notify(inact_app, prefix: str, store: NotifyStore,
             return text_response("ERROR 404: notification not found\n", 404)
         fk = kind_fn(n['from_id']) if kind_fn and n['from_id'] else ""
         return text_response(
-            f"id        = {toml_str(n['id'])}\n"
+            f"id        = {n['id']}\n"
             f"from      = {toml_str(_from_str(n['from_id']))}\n"
             + (f"from_kind = {toml_str(fk)}\n" if fk else "")
             + f"to        = {toml_str(n['to_id'])}\n"
@@ -443,7 +441,7 @@ def mount_notify(
         f"\nNotifications: {p}\n"
         f'  POST {p}/register   register callback  body: {{"agent_id":"1","callback":"http://..."}}\n'
         f'  POST {p}/send       send notification  body: {{"to":"1","message":"..."}}\n'
-        f"  GET  {p}/inbox      inbox  (?agent_id=<id>  ?unread=1)\n"
+        f"  GET  {p}/inbox      inbox  unread only by default  (?agent_id=<id>  ?all=1 for all)\n"
         f"  GET  {p}/inbox/{{id}}  read notification\n"
         f"  DELETE {p}/inbox/{{id}} dismiss\n"
         f"  # revival thread fires callbacks every {revival_interval}s for unread\n"

@@ -11,7 +11,7 @@ mount_todo(prefix, storage) registers:
   POST   {prefix}/                          create task
                                             body: {"title":"...","description":"...",
                                                    "priority":"normal","due":"YYYY-MM-DD",
-                                                   "assignee":"...","parent_id":"optional-uuid"}
+                                                   "assignee":"...","parent_id":"optional-id"}
   GET    {prefix}/.today                    due today or overdue, not done (all levels)
   GET    {prefix}/.overdue                  past due, not done (all levels)
   GET    {prefix}/.unassigned               no assignee, not done (all levels)
@@ -650,7 +650,7 @@ def attach_todo(inact_app, prefix: str, store: TodoStore,
                     f"ERROR 400: {result}\n"
                     f"POST {prefix}/\n"
                     '  Body: {"title":"...","description":"...","priority":"normal",\n'
-                    '         "due":"YYYY-MM-DD","assignee":"<agent_id>","parent_id":"optional-uuid"}\n'
+                    '         "due":"YYYY-MM-DD","assignee":"<agent_id>","parent_id":"optional-id"}\n'
                     f"\nPriority: low | normal | high | urgent\n"
                     f"assignee: integer agent id from {agents_prefix}/\n",
                     400,

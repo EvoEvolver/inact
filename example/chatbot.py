@@ -19,10 +19,19 @@ Then exercise it through the inact proxy:
 import sys, os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
+import itertools
+import threading
 import time
-import uuid
 
 from flask import Flask, jsonify, request
+
+_id_lock = threading.Lock()
+_id_counter = itertools.count(1)
+
+
+def _next_id() -> str:
+    with _id_lock:
+        return str(next(_id_counter))
 
 PORT = 5001
 BASE_URL = f"http://localhost:{PORT}"
@@ -62,7 +71,7 @@ def rpc():
 
     if method == "message/send":
         msg = params.get("message", {})
-        context_id = msg.get("contextId") or str(uuid.uuid4())
+        context_id = msg.get("contextId") or _next_id()
 
         time.sleep(20)
 
@@ -70,12 +79,12 @@ def rpc():
             "jsonrpc": "2.0",
             "id": rpc_id,
             "result": {
-                "id": str(uuid.uuid4()),
+                "id": _next_id(),
                 "contextId": context_id,
                 "status": {"state": "completed"},
                 "artifacts": [
                     {
-                        "artifactId": str(uuid.uuid4()),
+                        "artifactId": _next_id(),
                         "parts": [{"kind": "text", "text": "Hello. This is a hard problem"}],
                     }
                 ],

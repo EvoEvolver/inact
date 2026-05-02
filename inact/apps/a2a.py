@@ -8,10 +8,18 @@ A2A protocol specification.  The agent is discovered via its card at
 
 from __future__ import annotations
 
+import itertools
 import threading
-import uuid
 
 import httpx
+
+_id_counter = itertools.count(1)
+_id_lock = threading.Lock()
+
+
+def _next_id() -> str:
+    with _id_lock:
+        return str(next(_id_counter))
 
 
 class A2AClient:
@@ -72,7 +80,7 @@ class A2AClient:
                 "message": {
                     "role": "user",
                     "parts": [{"kind": "text", "text": message}],
-                    "messageId": str(uuid.uuid4()),
+                    "messageId": _next_id(),
                     "contextId": context_id,
                 }
             },
@@ -168,11 +176,11 @@ def attach_a2a(inact_app, prefix: str, client: A2AClient, label: str) -> None:
         lines.append(f"  GET  {prefix}/              this page\n")
         lines.append(f"  GET  {prefix}/.card         agent card (TOML)\n")
         lines.append(f"  GET  {prefix}/chat          list conversations\n")
-        lines.append(f"  GET  {prefix}/chat?context_id=<uuid>  read a conversation\n")
+        lines.append(f"  GET  {prefix}/chat?context_id=<id>  read a conversation\n")
         lines.append(f"  POST {prefix}/chat          send a message\n")
         lines.append("\n## Sending a message\n\n")
         lines.append(f"  POST {prefix}/chat\n")
-        lines.append(f'  Body: {{"message": "hello", "context_id": "<optional>"}}\n\n')
+        lines.append(f'  Body: {{"message": "hello", "context_id": "<optional-id>"}}\n\n')
         lines.append("The response includes a # context_id comment. Pass it back\n")
         lines.append("in subsequent requests to continue the same conversation.\n")
         if skills:
@@ -221,12 +229,12 @@ def attach_a2a(inact_app, prefix: str, client: A2AClient, label: str) -> None:
             return text_response(
                 "ERROR 400: 'message' field required\n"
                 f"Usage: POST {prefix}/chat\n"
-                f'Body: {{"message": "your text", "context_id": "<optional-uuid>"}}\n',
+                f'Body: {{"message": "your text", "context_id": "<optional-id>"}}\n',
                 400,
             )
         context_id = (body.get("context_id") or body.get("contextId") or "").strip()
         if not context_id:
-            context_id = str(uuid.uuid4())
+            context_id = _next_id()
 
         _history.setdefault(context_id, []).append({"role": "user", "text": message})
         try:

@@ -32,7 +32,6 @@ from __future__ import annotations
 import json
 import re
 import time
-import uuid
 
 from flask import request
 
@@ -156,7 +155,7 @@ def _val_toml(value, col_type: str) -> str:
 def _row_to_toml(row: dict, schema: list[dict], prefix: str, table: str) -> str:
     lines = [
         "[[rows]]\n",
-        f"id         = {toml_str(row['id'])}\n",
+        f"id         = {row['id']}\n",
         f"created_at = {toml_str(_fmt_ts(row['created_at']))}\n",
         f"updated_at = {toml_str(_fmt_ts(row['updated_at']))}\n",
     ]
@@ -231,7 +230,7 @@ class DbStore:
                 raise ValueError(f"invalid type {col.get('type')!r}")
         self._s.execute(
             f"CREATE TABLE IF NOT EXISTS {_tbl(name)} "
-            f"(id TEXT PRIMARY KEY, data TEXT NOT NULL DEFAULT '{{}}', "
+            f"(id INTEGER PRIMARY KEY, data TEXT NOT NULL DEFAULT '{{}}', "
             f"created_at BIGINT NOT NULL, updated_at BIGINT NOT NULL)"
         )
         self._s.execute(
@@ -248,14 +247,12 @@ class DbStore:
 
     # -- Row operations --
 
-    def insert(self, name: str, data: dict) -> str:
-        row_id = str(uuid.uuid4())
+    def insert(self, name: str, data: dict) -> int:
         now = int(time.time())
-        self._s.execute(
-            f"INSERT INTO {_tbl(name)} VALUES (?,?,?,?)",
-            (row_id, json.dumps(data), now, now),
+        return self._s.insert(
+            f"INSERT INTO {_tbl(name)} (data, created_at, updated_at) VALUES (?,?,?)",
+            (json.dumps(data), now, now),
         )
-        return row_id
 
     def _deserialize(self, raw) -> dict:
         return {
@@ -415,8 +412,8 @@ def attach_db(inact_app, prefix: str, store: DbStore) -> None:
                 return text_response("ERROR 400: " + "; ".join(errors) + "\n", 400)
             row_id = store.insert(table, data)
             return text_response(
-                f"OK\nid  = {toml_str(row_id)}\n"
-                f"url = {toml_str(prefix + '/' + table + '/' + row_id)}\n"
+                f"OK\nid  = {row_id}\n"
+                f"url = {toml_str(prefix + '/' + table + '/' + str(row_id))}\n"
             )
 
         # GET: list rows

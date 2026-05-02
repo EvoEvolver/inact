@@ -207,7 +207,7 @@ def run_codex_agent(task: str, working_dir: str = ".") -> str:
     """
     try:
         result = subprocess.run(
-            ["codex", "--approval-mode", "full-auto", "-q", task],
+            ["codex", "exec", "--full-auto", "-s", "workspace-write", task],
             capture_output=True,
             text=True,
             timeout=300,

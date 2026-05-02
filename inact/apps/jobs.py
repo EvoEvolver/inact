@@ -21,7 +21,6 @@ from __future__ import annotations
 
 import threading
 import time
-import uuid
 
 from flask import request
 
@@ -30,7 +29,7 @@ from ..utils import text_response, toml_str
 
 _DDL = [
     """CREATE TABLE IF NOT EXISTS jobs (
-        id         TEXT    PRIMARY KEY,
+        id         INTEGER PRIMARY KEY,
         title      TEXT    NOT NULL,
         status     TEXT    NOT NULL DEFAULT 'pending',
         details    TEXT    NOT NULL DEFAULT '',
@@ -83,11 +82,10 @@ class JobStore:
         self._s.init(_DDL)
 
     def create(self, title: str, details: str = "", notify_to: str = "") -> dict:
-        job_id = str(uuid.uuid4())
         now = int(time.time())
-        self._s.execute(
-            "INSERT INTO jobs VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (job_id, title, "pending", details, notify_to, now, now),
+        job_id = self._s.insert(
+            "INSERT INTO jobs (title, status, details, notify_to, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+            (title, "pending", details, notify_to, now, now),
         )
         return self.get(job_id)
 
@@ -180,10 +178,10 @@ def attach_jobs(inact_app, prefix: str, store: JobStore,
             job = store.create(title, details, notify_to)
             return text_response(
                 f"OK\n"
-                f"id         = {toml_str(job['id'])}\n"
+                f"id         = {job['id']}\n"
                 f"title      = {toml_str(job['title'])}\n"
                 f"status     = {toml_str(job['status'])}\n"
-                f"url        = {toml_str(prefix + '/' + job['id'])}\n",
+                f"url        = {toml_str(prefix + '/' + str(job['id']))}\n",
                 201,
             )
         # GET — list (scoped to the requesting agent)
@@ -215,7 +213,7 @@ def attach_jobs(inact_app, prefix: str, store: JobStore,
         for j in jobs:
             lines += [
                 "[[jobs]]\n",
-                f"id         = {toml_str(j['id'])}\n",
+                f"id         = {j['id']}\n",
                 f"title      = {toml_str(j['title'])}\n",
                 f"status     = {toml_str(j['status'])}\n",
             ]
@@ -224,7 +222,7 @@ def attach_jobs(inact_app, prefix: str, store: JobStore,
             lines += [
                 f"created_at = {toml_str(_fmt_ts(j['created_at']))}\n",
                 f"updated_at = {toml_str(_fmt_ts(j['updated_at']))}\n",
-                f"url        = {toml_str(prefix + '/' + j['id'])}\n",
+                f"url        = {toml_str(prefix + '/' + str(j['id']))}\n",
                 "\n",
             ]
         return text_response("".join(lines))
@@ -238,7 +236,7 @@ def attach_jobs(inact_app, prefix: str, store: JobStore,
         if not j:
             return text_response("ERROR 404: job not found\n", 404)
         lines = [
-            f"id         = {toml_str(j['id'])}\n",
+            f"id         = {j['id']}\n",
             f"title      = {toml_str(j['title'])}\n",
             f"status     = {toml_str(j['status'])}\n",
         ]
@@ -279,7 +277,7 @@ def attach_jobs(inact_app, prefix: str, store: JobStore,
             ).start()
         return text_response(
             f"OK\n"
-            f"id     = {toml_str(job['id'])}\n"
+            f"id     = {job['id']}\n"
             f"status = {toml_str(job['status'])}\n"
         )
 

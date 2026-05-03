@@ -336,7 +336,7 @@ def _issue_detail_toml(issue: dict, comments: list[dict], prefix: str, name_for=
     ]
     if issue.get("closed_at"):
         lines.append(f"closed_at  = {toml_str(_fmt_ts(issue['closed_at']))}\n")
-    lines.append(f"comments   = {toml_str(prefix + '/' + n + '/comments')}\n")
+    lines.append(f"comments_url = {toml_str(prefix + '/' + n + '/comments')}\n")
     lines.append("\n")
     if comments:
         lines.append(f"# Comments ({len(comments)})\n\n")

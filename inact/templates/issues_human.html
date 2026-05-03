@@ -307,6 +307,7 @@ async function openIssue(num) {
 
   const iss      = parseScalars(text);
   const comments = parseBlocks(text, 'comments');
+  iss.labels     = parseBlocks(text, 'labels');
   iss.number     = num;
 
   document.getElementById('view-list').hidden   = true;

@@ -1,0 +1,147 @@
+{% extends "base.html" %}
+{% block content %}
+
+<div style="display:flex;align-items:center;gap:10px;margin-bottom:16px;flex-wrap:wrap">
+  <h1 class="page-title" style="margin:0">Notifications</h1>
+  <div style="margin-left:auto;display:flex;gap:8px;align-items:center">
+    <label style="font-size:13px;display:flex;align-items:center;gap:5px;cursor:pointer">
+      <input type="checkbox" id="show-all"> Show read
+    </label>
+    <button class="primary" id="dismiss-all-btn"
+            style="padding:6px 14px;font-size:13px;background:#888">Dismiss all</button>
+  </div>
+</div>
+
+<div id="notif-list"><p style="color:#aaa;font-size:14px">Loading…</p></div>
+<div id="pagination"
+     style="display:flex;gap:8px;justify-content:center;margin-top:16px;align-items:center"></div>
+
+{% endblock %}
+
+{% block scripts %}
+<script type="module">
+import { parse as parseTOML } from 'https://esm.sh/smol-toml';
+const P   = {{ prefix        | tojson }};
+const AP  = {{ agents_prefix | tojson }};
+const KEY = localStorage.getItem('inact_api_key') || '';
+function H(extra) { return Object.assign({'X-Api-Key': KEY}, extra || {}); }
+function esc(s) { return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+
+let myId   = localStorage.getItem('inact_agent_id') || '';
+let page   = 1;
+const PER  = 20;
+
+function parseBlocks(text, tag) {
+  try {
+    const v = parseTOML(text)[tag];
+    return Array.isArray(v) ? v : v !== undefined ? [v] : [];
+  } catch (_) { return []; }
+}
+
+async function ensureId() {
+  if (myId) return;
+  try {
+    const text = await fetch(AP + '/.me', {headers: H()}).then(r => r.text());
+    const m = text.match(/^id\s*=\s*(\d+)/m);
+    if (m) { myId = m[1]; localStorage.setItem('inact_agent_id', myId); }
+  } catch (_) {}
+}
+
+async function load() {
+  if (!myId) { document.getElementById('notif-list').innerHTML = '<p style="color:#cc0000;font-size:14px">Could not determine your identity. Please <a href="/_human' + AP + '/">log in</a>.</p>'; return; }
+  const showAll = document.getElementById('show-all').checked;
+  const params  = new URLSearchParams({agent_id: myId, per_page: PER, page});
+  if (!showAll) params.set('all', '0');
+  else          params.set('all', '1');
+
+  const text   = await fetch(`${P}/inbox?${params}`, {headers: H()}).then(r => r.text()).catch(() => '');
+  const notifs = parseBlocks(text, 'notifications');
+
+  let total = notifs.length + (page - 1) * PER;
+  const tm  = text.match(/\((\d+) total\)/);
+  if (tm) total = parseInt(tm[1]);
+
+  const list = document.getElementById('notif-list');
+  if (!notifs.length) {
+    list.innerHTML = `<p style="color:#aaa;font-size:14px;padding:20px 0">${showAll ? 'No notifications.' : 'No unread notifications.'}</p>`;
+    document.getElementById('pagination').innerHTML = '';
+    return;
+  }
+
+  list.innerHTML = notifs.map(n => {
+    const id      = n.id != null ? n.id : null;
+    const isUnread = n.read === false || n.read === 'false';
+    const when    = (n.date || '').replace('T',' ').replace('Z','').slice(0,16);
+    const from    = esc(n.from || 'system');
+    const msgLines = esc(n.message || '').replace(/\n/g, '<br>');
+    return `
+    <div class="toml-scalars" style="margin-bottom:8px;opacity:${isUnread ? 1 : 0.6}">
+      <div style="padding:12px 16px">
+        <div style="display:flex;align-items:flex-start;gap:10px">
+          <div style="flex:1;min-width:0">
+            <div style="font-size:12px;color:#888;margin-bottom:6px">
+              ${isUnread ? '<span style="background:#0066cc;color:#fff;border-radius:9px;padding:1px 7px;font-size:11px;margin-right:6px">new</span>' : ''}
+              <strong>${from}</strong>
+              ${when ? ' · ' + esc(when) : ''}
+            </div>
+            <div style="font-size:14px;line-height:1.5;white-space:pre-wrap;word-break:break-word">${msgLines}</div>
+          </div>
+          <div style="flex-shrink:0">
+            ${id != null
+              ? `<button onclick="dismiss(${JSON.stringify(id)})"
+                         style="background:none;border:1px solid #ddd;border-radius:6px;
+                                padding:4px 10px;font-size:12px;color:#888;cursor:pointer">Dismiss</button>`
+              : '<span style="font-size:11px;color:#cc0000">bad id</span>'}
+          </div>
+        </div>
+      </div>
+    </div>`;
+  }).join('');
+
+  renderPagination(total);
+}
+
+function renderPagination(total) {
+  const totalPages = Math.max(1, Math.ceil(total / PER));
+  const pag = document.getElementById('pagination');
+  if (totalPages <= 1) { pag.innerHTML = ''; return; }
+  pag.innerHTML = `
+    <button class="primary" onclick="goPage(${page-1})" ${page<=1?'disabled':''}
+            style="padding:6px 14px;font-size:13px">&#8592; Prev</button>
+    <span style="font-size:13px;color:#888">${page} / ${totalPages} (${total} total)</span>
+    <button class="primary" onclick="goPage(${page+1})" ${page>=totalPages?'disabled':''}
+            style="padding:6px 14px;font-size:13px">Next &#8594;</button>`;
+}
+
+function goPage(p) { page = p; load(); window.scrollTo(0,0); }
+
+async function dismiss(id) {
+  if (id == null) return;
+  const r = await fetch(`${P}/inbox/${encodeURIComponent(id)}`, {method: 'DELETE', headers: H()});
+  const text = await r.text();
+  if (!text.startsWith('OK')) { alert('Error: ' + text.split('\n')[0]); return; }
+  load();
+}
+
+async function dismissAll() {
+  if (!myId) return;
+  if (!confirm('Dismiss all notifications?')) return;
+  const params = new URLSearchParams({agent_id: myId, per_page: 100, all: '1'});
+  const text   = await fetch(`${P}/inbox?${params}`, {headers: H()}).then(r => r.text()).catch(() => '');
+  const notifs = parseBlocks(text, 'notifications');
+  await Promise.all(
+    notifs
+      .filter(n => n.id != null)
+      .map(n => fetch(`${P}/inbox/${encodeURIComponent(n.id)}`, {method: 'DELETE', headers: H()}))
+  );
+  load();
+}
+
+Object.assign(window, { dismiss, goPage });
+
+document.getElementById('show-all').addEventListener('change', () => { page = 1; load(); });
+document.getElementById('dismiss-all-btn').addEventListener('click', dismissAll);
+
+ensureId().then(load);
+</script>
+{% endblock %}

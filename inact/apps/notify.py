@@ -118,7 +118,7 @@ class NotifyStore:
         )
 
     def count(self, to_id: str, unread_only: bool = False) -> int:
-        q = "SELECT COUNT(*) AS cnt FROM notifications WHERE to_id = ?"
+        q = "SELECT COUNT(*) AS cnt FROM notifications WHERE to_id = ? AND id IS NOT NULL"
         params: tuple = (to_id,)
         if unread_only:
             q += " AND read = 0"
@@ -128,7 +128,7 @@ class NotifyStore:
     def list_inbox(self, to_id: str, page: int, per_page: int,
                    unread_only: bool = False) -> list[dict]:
         offset = (page - 1) * per_page
-        q = "SELECT * FROM notifications WHERE to_id = ?"
+        q = "SELECT * FROM notifications WHERE to_id = ? AND id IS NOT NULL"
         params: list = [to_id]
         if unread_only:
             q += " AND read = 0"
@@ -211,8 +211,10 @@ def _start_revival(store: NotifyStore, interval: int) -> None:
 # ---------------------------------------------------------------------------
 
 def attach_notify(inact_app, prefix: str, store: NotifyStore,
-                  kind_fn=None, member_fn=None, email_fn=None) -> None:
+                  kind_fn=None, member_fn=None, email_fn=None,
+                  agents_prefix: str = "/agents") -> None:
     prefix = "/" + prefix.strip("/")
+    agents_prefix = "/" + agents_prefix.strip("/")
     ep = "_inact_notify_" + prefix.replace("/", "__")
     flask_app = inact_app.app
 
@@ -370,6 +372,22 @@ def attach_notify(inact_app, prefix: str, store: NotifyStore,
         prefix + "/inbox/<notif_id>",
         endpoint=ep + "_notif", view_func=_notif, methods=["GET", "DELETE"])
 
+    def _human(_path: str):
+        from ..render import render_template, workspace_nav
+        from ..utils import html_response
+        html = render_template(
+            "notify_human.html",
+            title="Notifications",
+            prefix=prefix,
+            agents_prefix=agents_prefix,
+            workspace_links=workspace_nav("/_human" + prefix + "/"),
+            show_identity=True,
+        )
+        return html_response(html)
+
+    inact_app._human_views[prefix] = _human
+    inact_app.add_nav_item("notify", "/_human" + prefix + "/")
+
 
 # ---------------------------------------------------------------------------
 # Mount function
@@ -381,6 +399,7 @@ def mount_notify(
     storage,
     revival_interval: int = 600,
     registry=None,
+    agents_prefix: str = "/agents",
 ) -> None:
     """
     Mount the notification system at *prefix*.
@@ -437,7 +456,9 @@ def mount_notify(
     if revival_interval > 0:
         _start_revival(store, revival_interval)
 
-    attach_notify(inact_app, p, store, kind_fn=kind_fn, member_fn=member_fn, email_fn=email_fn)
+    ap = "/" + agents_prefix.strip("/")
+    attach_notify(inact_app, p, store, kind_fn=kind_fn, member_fn=member_fn, email_fn=email_fn,
+                  agents_prefix=ap)
     inact_app._app_mounts.append((p, (
         f"\nNotifications: {p}\n"
         f'  POST {p}/register   register callback  body: {{"agent_id":"1","callback":"http://..."}}\n'

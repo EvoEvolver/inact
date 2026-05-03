@@ -94,7 +94,12 @@ def _agent_loop() -> None:
                     break
 
             if ag.SESSION_TIMEOUT > 0 and time.time() - ag._session_start > ag.SESSION_TIMEOUT:
-                ag.reset_session()
+                summary = ag.reset_session()
+                if summary:
+                    try:
+                        mem.auto_save_output(summary)
+                    except Exception:
+                        logfire.exception("session summary save error")
 
             parts = []
             for p in batch:

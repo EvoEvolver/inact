@@ -1,9 +1,9 @@
 """
 Workspace-agnostic AI agent powered by PydanticAI + OpenRouter.
 
-Memory is managed by the server and accessed via HTTP endpoints:
+Memory is loaded from the server via HTTP:
     GET  {AGENT_SERVER_URL}/memory       — load recent memory into system prompt
-    POST {AGENT_SERVER_URL}/memory       — save a memory entry (plain-text body)
+Memory is saved by the server directly after each run (see server.py).
 
 Public API used by server.py:
     run_llm(user_msg) -> str
@@ -106,18 +106,6 @@ def _fetch_memory() -> str:
     except Exception:
         return ""
 
-
-def _save_memory(output: str) -> None:
-    """Persist output to memory via the server's memory endpoint."""
-    try:
-        http.post(
-            f"{AGENT_SERVER_URL}/memory",
-            data=output.encode(),
-            headers={"Content-Type": "text/plain; charset=utf-8"},
-            timeout=10,
-        )
-    except Exception as exc:
-        logfire.warning("could not save memory: {exc}", exc=exc)
 
 
 # ---------------------------------------------------------------------------
@@ -266,17 +254,19 @@ def run_llm(user_msg: str) -> str:
     return result.output
 
 
-def reset_session() -> None:
+def reset_session() -> str | None:
+    """Reset conversation state after a timeout and return a consolidation summary."""
     global _history, _session_start
     logfire.info("session timeout — resetting conversation")
+    output: str | None = None
     try:
         output = run_llm(
             "Session timeout reached. Write a concise summary of what you've done and any "
             "important context to carry forward. This will be saved as your memory log."
         )
-        _save_memory(output)
     except Exception:
         logfire.exception("consolidation error")
     _history = []
     _session_start = time.time()
     logfire.info("conversation reset")
+    return output

@@ -3,15 +3,22 @@ Notification system for agents — push + persistent inbox.
 
 mount_notify(inact_app, prefix, storage) registers:
 
-  POST {prefix}/register        register a callback URL for an agent
-                                body: {"agent_id":"1","callback":"http://host/wake"}
-  POST {prefix}/send            send a notification
-                                body: {"to":"1","message":"...","from":"optional"}
-                                immediately POSTs to the agent's callback if registered
-  GET  {prefix}/inbox           list notifications  (X-Agent-Id header required)
-                                ?unread=1  ?page=1&per_page=20
-  GET  {prefix}/inbox/{id}      read notification (marks read)
-  DELETE {prefix}/inbox/{id}    dismiss
+  POST {prefix}/register          register a raw callback URL for an agent
+                                  body: {"agent_id":"1","callback":"http://host/wake","secret":"optional"}
+  POST {prefix}/webhook/register  register a Hermes webhook route for an agent
+                                  body: {"agent_id":"1","hermes_url":"http://localhost:8644","route":"my-route","secret":"..."}
+                                  constructs callback as {hermes_url}/webhooks/{route}
+  POST {prefix}/send              send a notification
+                                  body: {"to":"1","message":"...","from":"optional"}
+                                  immediately POSTs to the agent's callback if registered
+  GET  {prefix}/inbox             list notifications  (X-Agent-Id header required)
+                                  ?unread=1  ?page=1&per_page=20
+  GET  {prefix}/inbox/{id}        read notification (marks read)
+  DELETE {prefix}/inbox/{id}      dismiss
+
+Push delivery: if a secret is stored for the agent, every outgoing POST includes
+an X-Webhook-Signature header (raw HMAC-SHA256 hex digest) compatible with the
+Hermes generic webhook format.
 
 A background thread re-fires any unread notification callbacks every
 *revival_interval* seconds (default 600 = 10 min) so agents that were
@@ -20,6 +27,9 @@ offline when a notification arrived are eventually woken up.
 
 from __future__ import annotations
 
+import hashlib
+import hmac
+import json
 import os
 import threading
 import time
@@ -42,9 +52,15 @@ _DDL = [
     """CREATE TABLE IF NOT EXISTS notify_callbacks (
         agent_id     TEXT    PRIMARY KEY,
         url          TEXT    NOT NULL,
+        secret       TEXT    NOT NULL DEFAULT '',
         registered_at BIGINT NOT NULL
     )""",
 ]
+
+try:
+    import logfire as _logfire  # type: ignore
+except ModuleNotFoundError:
+    _logfire = None  # type: ignore
 
 _DEFAULT_PER_PAGE = 20
 _MAX_PER_PAGE = 100
@@ -85,29 +101,36 @@ class NotifyStore:
         self._s = storage
         self._s.init(_DDL)
         self._s.execute("DELETE FROM notifications WHERE id = 'none' OR id IS NULL")
+        try:
+            self._s.execute(
+                "ALTER TABLE notify_callbacks ADD COLUMN secret TEXT NOT NULL DEFAULT ''"
+            )
+        except Exception:
+            pass
 
     # callbacks
 
-    def register_callback(self, agent_id: str, url: str) -> None:
+    def register_callback(self, agent_id: str, url: str, secret: str = "") -> None:
         existing = self._s.fetchone(
             "SELECT agent_id FROM notify_callbacks WHERE agent_id = ?", (agent_id,)
         )
         if existing:
             self._s.execute(
-                "UPDATE notify_callbacks SET url = ?, registered_at = ? WHERE agent_id = ?",
-                (url, int(time.time()), agent_id),
+                "UPDATE notify_callbacks SET url = ?, secret = ?, registered_at = ? WHERE agent_id = ?",
+                (url, secret, int(time.time()), agent_id),
             )
         else:
             self._s.execute(
-                "INSERT INTO notify_callbacks VALUES (?, ?, ?)",
-                (agent_id, url, int(time.time())),
+                "INSERT INTO notify_callbacks (agent_id, url, secret, registered_at) VALUES (?, ?, ?, ?)",
+                (agent_id, url, secret, int(time.time())),
             )
 
-    def get_callback(self, agent_id: str) -> str | None:
+    def get_callback(self, agent_id: str) -> tuple[str, str] | None:
+        """Returns (url, secret) or None."""
         row = self._s.fetchone(
-            "SELECT url FROM notify_callbacks WHERE agent_id = ?", (agent_id,)
+            "SELECT url, secret FROM notify_callbacks WHERE agent_id = ?", (agent_id,)
         )
-        return row["url"] if row else None
+        return (row["url"], row["secret"] or "") if row else None
 
     # notifications
 
@@ -158,18 +181,43 @@ class NotifyStore:
 # Callback delivery
 # ---------------------------------------------------------------------------
 
-def _fire_callback(url: str, payload: dict) -> None:
+def _fire_callback(url: str, payload: dict, secret: str = "") -> None:
     try:
         import httpx
-        httpx.post(url, json=payload, timeout=5)
-    except Exception:
-        pass
+        body = json.dumps(payload).encode()
+        headers: dict[str, str] = {"Content-Type": "application/json"}
+        if secret:
+            sig = hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
+            headers["X-Webhook-Signature"] = sig
+        if _logfire:
+            _logfire.info(
+                "notify webhook → {url}",
+                url=url,
+                payload=payload,
+                signed=bool(secret),
+            )
+        r = httpx.post(url, content=body, headers=headers, timeout=5)
+        if _logfire:
+            _logfire.info(
+                "notify webhook ← {status}",
+                url=url,
+                status=r.status_code,
+                response=r.text[:500],
+            )
+    except Exception as exc:
+        if _logfire:
+            _logfire.warning(
+                "notify webhook failed → {url}: {exc}",
+                url=url,
+                exc=str(exc),
+            )
 
 
 def _push(store: NotifyStore, to_id: str, notif_id: str,
           message: str, from_id: str, from_kind: str = "") -> None:
-    url = store.get_callback(to_id)
-    if url:
+    info = store.get_callback(to_id)
+    if info:
+        url, secret = info
         payload: dict = {
             "type": "notification",
             "id": notif_id,
@@ -180,7 +228,7 @@ def _push(store: NotifyStore, to_id: str, notif_id: str,
             payload["from_kind"] = from_kind
         threading.Thread(
             target=_fire_callback,
-            args=(url, payload),
+            args=(url, payload, secret),
             daemon=True,
         ).start()
 
@@ -191,15 +239,16 @@ def _start_revival(store: NotifyStore, interval: int) -> None:
         while True:
             time.sleep(interval)
             for agent_id, count in store.agents_with_unread():
-                url = store.get_callback(agent_id)
-                if url:
+                info = store.get_callback(agent_id)
+                if info:
+                    url, secret = info
                     threading.Thread(
                         target=_fire_callback,
                         args=(url, {
                             "type": "revival",
                             "unread": count,
                             "agent_id": agent_id,
-                        }),
+                        }, secret),
                         daemon=True,
                     ).start()
 
@@ -231,13 +280,41 @@ def attach_notify(inact_app, prefix: str, store: NotifyStore,
         body = request.get_json(force=True, silent=True) or {}
         agent_id = str(body.get("agent_id") or "").strip()
         callback = (body.get("callback") or "").strip()
+        secret   = (body.get("secret")   or "").strip()
         if not agent_id:
             return text_response("ERROR 400: 'agent_id' required\n", 400)
         if not callback:
             return text_response("ERROR 400: 'callback' required\n", 400)
-        store.register_callback(agent_id, callback)
+        store.register_callback(agent_id, callback, secret)
         return text_response(
             f"OK\nagent_id = {toml_str(agent_id)}\ncallback = {toml_str(callback)}\n"
+        )
+
+    def _webhook_register():
+        """Register a Hermes webhook endpoint for an agent.
+
+        Body: {"agent_id":"1","hermes_url":"http://localhost:8644","route":"my-route","secret":"..."}
+        Constructs callback as {hermes_url}/webhooks/{route} and stores the HMAC secret.
+        """
+        body = request.get_json(force=True, silent=True) or {}
+        agent_id   = str(body.get("agent_id")   or "").strip()
+        hermes_url = (body.get("hermes_url")     or "").strip().rstrip("/")
+        route      = (body.get("route")          or "").strip().strip("/")
+        secret     = (body.get("secret")         or "").strip()
+        if not agent_id:
+            return text_response("ERROR 400: 'agent_id' required\n", 400)
+        if not hermes_url:
+            return text_response("ERROR 400: 'hermes_url' required\n", 400)
+        if not route:
+            return text_response("ERROR 400: 'route' required\n", 400)
+        if not secret:
+            return text_response("ERROR 400: 'secret' required\n", 400)
+        callback = f"{hermes_url}/webhooks/{route}"
+        store.register_callback(agent_id, callback, secret)
+        return text_response(
+            f"OK\nagent_id    = {toml_str(agent_id)}\n"
+            f"webhook_url = {toml_str(callback)}\n"
+            f"route       = {toml_str(route)}\n"
         )
 
     def _send():
@@ -363,6 +440,9 @@ def attach_notify(inact_app, prefix: str, store: NotifyStore,
         prefix + "/register",
         endpoint=ep + "_register", view_func=_register, methods=["POST"])
     flask_app.add_url_rule(
+        prefix + "/webhook/register",
+        endpoint=ep + "_webhook_register", view_func=_webhook_register, methods=["POST"])
+    flask_app.add_url_rule(
         prefix + "/send",
         endpoint=ep + "_send", view_func=_send, methods=["POST"])
     flask_app.add_url_rule(
@@ -461,10 +541,12 @@ def mount_notify(
                   agents_prefix=ap)
     inact_app._app_mounts.append((p, (
         f"\nNotifications: {p}\n"
-        f'  POST {p}/register   register callback  body: {{"agent_id":"1","callback":"http://..."}}\n'
-        f'  POST {p}/send       send notification  body: {{"to":"1","message":"..."}}\n'
-        f"  GET  {p}/inbox      inbox  unread only by default  (?agent_id=<id>  ?all=1 for all)\n"
-        f"  GET  {p}/inbox/{{id}}  read notification\n"
-        f"  DELETE {p}/inbox/{{id}} dismiss\n"
+        f'  POST {p}/register          register callback  body: {{"agent_id":"1","callback":"http://...","secret":"optional"}}\n'
+        f'  POST {p}/webhook/register  register Hermes webhook  body: {{"agent_id":"1","hermes_url":"http://localhost:8644","route":"my-route","secret":"..."}}\n'
+        f'  POST {p}/send              send notification  body: {{"to":"1","message":"..."}}\n'
+        f"  GET  {p}/inbox             inbox  unread only by default  (?agent_id=<id>  ?all=1 for all)\n"
+        f"  GET  {p}/inbox/{{id}}        read notification\n"
+        f"  DELETE {p}/inbox/{{id}}      dismiss\n"
         f"  # revival thread fires callbacks every {revival_interval}s for unread\n"
+        f"  # Hermes webhooks: payload signed with X-Webhook-Signature (HMAC-SHA256)\n"
     )))

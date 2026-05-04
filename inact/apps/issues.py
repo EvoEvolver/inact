@@ -799,6 +799,40 @@ def mount_issues(
                 except Exception:
                     pass
             _push(nstore, to_id, notif_id, message, from_id, name=name)
+            # Also email human assignees even if they haven't registered a callback.
+            if agents_storage is not None:
+                try:
+                    to_agent = ag_reg.get(int(to_id))
+                    if to_agent and to_agent.get("kind") == "human" and to_agent.get("email"):
+                        to_email = to_agent["email"].strip()
+                        if to_email:
+                            import os
+                            from ..apps.workspace.mailbox import _send_email
+                            r_host = os.environ.get("SMTP_RELAY_HOST", "")
+                            r_port = int(os.environ.get("SMTP_RELAY_PORT", "587") or 587)
+                            r_user = os.environ.get("SMTP_RELAY_USER", "")
+                            r_pass = os.environ.get("SMTP_RELAY_PASSWORD", "")
+                            s_port = int(os.environ.get("SMTP_PORT", "2525") or 2525)
+                            from_email = (
+                                os.environ.get("FROM_EMAIL", "")
+                                or os.environ.get("SMTP_FROM", "")
+                                or f"notify@{os.environ.get('DOMAIN', 'localhost')}"
+                            )
+                            # Extract title from the standard assignment message
+                            subject = "Inact Issue Notification"
+                            if 'You have been assigned: "' in message:
+                                title = message.split('You have been assigned: "', 1)[1].split('"', 1)[0]
+                                subject = f'[Issue] "{title}" assigned to you'
+                            elif 'New reply from' in message:
+                                subject = "Inact Issue Reply"
+                            _send_email(
+                                from_email, to_email, subject, message,
+                                relay_host=r_host, relay_port=r_port,
+                                relay_user=r_user, relay_password=r_pass,
+                                smtp_port=s_port,
+                            )
+                except Exception:
+                    pass
 
     ap = "/" + agents_prefix.strip("/")
     attach_issues(inact_app, p, store,

@@ -194,8 +194,9 @@ def _fire_callback(url: str, payload: dict, secret: str = "") -> None:
     if secret:
         sig = hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
         headers["X-Webhook-Signature"] = sig
-    _log.info("webhook → %s  type=%s id=%s signed=%s",
-              url, payload.get("type"), payload.get("id"), bool(secret))
+    _log.info("webhook → %s  type=%s id=%s signed=%s\npayload: %s",
+              url, payload.get("type"), payload.get("id"), bool(secret),
+              json.dumps(payload, ensure_ascii=False))
     try:
         r = httpx.post(url, content=body, headers=headers, timeout=5)
         _log.info("webhook ← %s  status=%d", url, r.status_code)

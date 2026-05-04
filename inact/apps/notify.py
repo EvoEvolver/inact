@@ -34,7 +34,11 @@ import os
 import threading
 import time
 
+import logging
+
 from flask import request
+
+_log = logging.getLogger(__name__)
 
 from ..storage import Storage
 from ..utils import text_response, toml_str
@@ -56,11 +60,6 @@ _DDL = [
         registered_at BIGINT NOT NULL
     )""",
 ]
-
-try:
-    import logfire as _logfire  # type: ignore
-except ModuleNotFoundError:
-    _logfire = None  # type: ignore
 
 _DEFAULT_PER_PAGE = 20
 _MAX_PER_PAGE = 100
@@ -181,36 +180,33 @@ class NotifyStore:
 # Callback delivery
 # ---------------------------------------------------------------------------
 
+def _health_url(webhook_url: str) -> str:
+    """Derive the Hermes health endpoint from a webhook URL."""
+    from urllib.parse import urlparse
+    p = urlparse(webhook_url)
+    return f"{p.scheme}://{p.netloc}/health"
+
+
 def _fire_callback(url: str, payload: dict, secret: str = "") -> None:
+    import httpx
+    body = json.dumps(payload).encode()
+    headers: dict[str, str] = {"Content-Type": "application/json"}
+    if secret:
+        sig = hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
+        headers["X-Webhook-Signature"] = sig
+    _log.info("webhook → %s  type=%s id=%s signed=%s",
+              url, payload.get("type"), payload.get("id"), bool(secret))
     try:
-        import httpx
-        body = json.dumps(payload).encode()
-        headers: dict[str, str] = {"Content-Type": "application/json"}
-        if secret:
-            sig = hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
-            headers["X-Webhook-Signature"] = sig
-        if _logfire:
-            _logfire.info(
-                "notify webhook → {url}",
-                url=url,
-                payload=payload,
-                signed=bool(secret),
-            )
         r = httpx.post(url, content=body, headers=headers, timeout=5)
-        if _logfire:
-            _logfire.info(
-                "notify webhook ← {status}",
-                url=url,
-                status=r.status_code,
-                response=r.text[:500],
-            )
+        _log.info("webhook ← %s  status=%d", url, r.status_code)
     except Exception as exc:
-        if _logfire:
-            _logfire.warning(
-                "notify webhook failed → {url}: {exc}",
-                url=url,
-                exc=str(exc),
-            )
+        _log.warning("webhook failed → %s: %s", url, exc)
+        try:
+            health = _health_url(url)
+            hr = httpx.get(health, timeout=3)
+            _log.warning("health check %s → %d %s", health, hr.status_code, hr.text[:200])
+        except Exception as hexc:
+            _log.warning("health check unreachable %s: %s", _health_url(url), hexc)
 
 
 def _push(store: NotifyStore, to_id: str, notif_id: str,

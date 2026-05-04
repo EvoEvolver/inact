@@ -86,7 +86,7 @@ def mount_workspace(
         mount_workspace(app, "./workspace.db", prefix="/ws")
     """
     p = prefix.rstrip("/")
-    agents_prefix = f"{p}/agents"
+    agents_prefix = f"{p}/members"
     msg_prefix    = f"{p}/msg"
     issues_prefix = f"{p}/issues"
     mail_prefix   = f"{p}/mail"

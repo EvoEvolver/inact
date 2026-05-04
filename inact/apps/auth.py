@@ -12,8 +12,8 @@ Accepted credentials (in order):
 Public paths skip auth entirely. Defaults:
   /          home / docs
   /.help     help pages
-  /agents/   agent listing (discovery + self-registration)
-  /_human/agents/   human registration page
+  /members/   agent listing (discovery + self-registration)
+  /_human/members/   human registration page
 
 All other routes — including /_human/* pages beyond registration — require
 a valid key.  Browsers get the key via the _inact_key cookie which the
@@ -22,7 +22,7 @@ register page sets automatically on registration.
 Example::
 
     mount_auth(app, "./agents.db")
-    mount_auth(app, "./agents.db", public=["/", "/agents/", "/_human/agents/"])
+    mount_auth(app, "./agents.db", public=["/", "/members/", "/_human/members/"])
 """
 
 from __future__ import annotations
@@ -36,9 +36,9 @@ _SESSION_COOKIE = "_inact_key"
 _DEFAULT_PUBLIC = [
     "/",
     "/.help",
-    "/agents/",           # registration + listing
-    "/_human/agents/",    # human registration page
-    "/_human/agents",
+    "/members/",           # registration + listing
+    "/_human/members/",    # human registration page
+    "/_human/members",
 ]
 
 
@@ -61,7 +61,7 @@ def mount_auth(
     """
     Require a valid API key on every route not in *public*.
 
-    Browsers that have registered via ``/_human/agents/`` have their key
+    Browsers that have registered via ``/_human/members/`` have their key
     stored in a ``_inact_key`` cookie (set by the registration page JS).
     This cookie is checked automatically so browser page navigation works
     without manual headers.
@@ -103,17 +103,17 @@ def mount_auth(
             # Browser page request → redirect to register page
             if path.startswith("/_human/"):
                 from flask import redirect
-                return redirect("/_human/agents/")
+                return redirect("/_human/members/")
             return text_response(
                 "ERROR 401: X-Api-Key header required\n"
-                "  Register at POST /agents/ to get an API key.\n",
+                "  Register at POST /members/ to get an API key.\n",
                 401,
             )
 
         if not store.valid_key(api_key):
             if path.startswith("/_human/"):
                 from flask import redirect
-                return redirect("/_human/agents/")
+                return redirect("/_human/members/")
             return text_response("ERROR 403: invalid api_key\n", 403)
 
         return None
@@ -123,6 +123,6 @@ def mount_auth(
     inact_app._app_mounts.append(("/_auth", (
         "\nAuth: all routes require X-Api-Key\n"
         "  Header:  X-Api-Key: <key>\n"
-        "  Cookie:  _inact_key=<key>  (set by /_human/agents/ on registration)\n"
+        "  Cookie:  _inact_key=\u003ckey\u003e  (set by /_human/members/ on registration)\n"
         "  Public:  " + "  ".join(exempt) + "\n"
     )))

@@ -11,7 +11,7 @@ Environment variables:
   SMTP_RELAY_USER       relay auth user
   SMTP_RELAY_PASSWORD   relay auth password
   TAVILY_API_KEY        enables /search
-  ADMIN_KEY             secret for /_human/agents/.admin
+  ADMIN_KEY             secret for /_human/members/.admin
   SMTP2GO_API_KEY       use SMTP2GO HTTP API for outbound email
   FROM_EMAIL            default sender for system emails
   FRONTEND_URL          optional URL for human UI links in notifications
@@ -95,7 +95,7 @@ def home():
 
 | Endpoint | Description |
 |---|---|
-| `GET  /agents/`        | list agents and humans |
+| `GET  /members/`        | list agents and humans |
 | `GET  /msg/sessions`   | your message sessions |
 | `POST /msg/sessions`   | start a session |
 | `GET  /issues/`        | shared issue tracker |
@@ -157,9 +157,9 @@ mount_auth(
     public=[
         "/",
         "/.help",
-        "/agents/",
-        "/_human/agents/",
-        "/_human/agents",
+        "/members/",
+        "/_human/members/",
+        "/_human/members",
         "/favicon.ico",
     ],
 )
@@ -175,7 +175,7 @@ if __name__ == "__main__":
         "  Inact Agent Workspace",
         f"  {local}/",
         "",
-        "  /agents/     registry     /msg/        messaging",
+        "  /members/     registry     /msg/        messaging",
         "  /issues/     issues       /notify/     notifications",
         "  /documents/  documents    /db/         SQL",
     ]

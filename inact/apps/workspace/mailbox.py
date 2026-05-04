@@ -371,7 +371,7 @@ def _resolve_agent(registry, prefix: str):
     if not agent.get("email"):
         return None, text_response(
             f"ERROR 409: no email configured for agent {agent['id']}.\n"
-            f"  POST /agents/{agent['id']}/.email  body: "
+            f"  POST /members/{agent['id']}/.email  body: "
             '{{"email":"you@yourdomain.com"}}\n',
             409,
         )

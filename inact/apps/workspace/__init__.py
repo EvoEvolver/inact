@@ -3,7 +3,7 @@ Workspace — agent identity, messaging, issues, and email in one mount.
 
 mount_workspace(app, storage) mounts:
 
-  /agents      agent registry      (mount_register)
+  /members     agent registry      (mount_register)
   /msg         internal messaging  (mount_message)
   /issues      issue tracker       (mount_issues)
   /mail        external email      (mount_mailbox, optional — needs SMTP_HOST)

@@ -313,7 +313,7 @@ def attach_register(inact_app, prefix: str, registry: AgentRegistry,
             prefix=prefix,
             agents_api=prefix,
             chat_url=msg_prefix,
-            workspace_links=workspace_nav("/_human/agents/"),
+            workspace_links=workspace_nav("/_human/members/"),
             show_identity=True,
         )
         return html_response(html)
@@ -498,7 +498,7 @@ def attach_register(inact_app, prefix: str, registry: AgentRegistry,
         return html_response(render_template("admin_human.html",
             title="Admin", prefix=prefix, nav="", pills=[],
             admin_key=admin_key,
-            workspace_links=workspace_nav("/_human/agents/.admin"),
+            workspace_links=workspace_nav("/_human/members/.admin"),
             show_identity=False))
 
     # Register both GET and POST so the login form can submit
@@ -528,8 +528,8 @@ def mount_register(inact_app, prefix: str, storage,
 
     Example::
 
-        mount_register(app, "/agents", "./agents.db")
-        mount_register(app, "/agents", "./agents.db", notify_storage="./notify.db")
+        mount_register(app, "/members", "./agents.db")
+        mount_register(app, "/members", "./agents.db", notify_storage="./notify.db")
     """
     from ...storage import make_storage
     p = "/" + prefix.strip("/")

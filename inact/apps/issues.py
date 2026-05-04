@@ -791,7 +791,14 @@ def mount_issues(
         nstore  = NotifyStore(ns_back)
         def notify_fn(to_id: str, from_id: str, message: str) -> None:
             notif_id = nstore.send(to_id, message, from_id)
-            _push(nstore, to_id, notif_id, message, from_id)
+            name = ""
+            if agents_storage is not None and from_id:
+                try:
+                    row = ag_reg.get(int(from_id))
+                    name = (row.get("name") or "") if row else ""
+                except Exception:
+                    pass
+            _push(nstore, to_id, notif_id, message, from_id, name=name)
 
     ap = "/" + agents_prefix.strip("/")
     attach_issues(inact_app, p, store,

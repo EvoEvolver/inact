@@ -17,7 +17,13 @@ Environment variables:
   FRONTEND_URL          optional URL for human UI links in notifications
 """
 
+import logging
 import os
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+)
 
 if os.path.exists(".env"):
     try:

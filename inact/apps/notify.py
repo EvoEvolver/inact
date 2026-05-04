@@ -210,15 +210,18 @@ def _fire_callback(url: str, payload: dict, secret: str = "") -> None:
 
 
 def _push(store: NotifyStore, to_id: str, notif_id: str,
-          message: str, from_id: str, from_kind: str = "") -> None:
+          message: str, from_id: str, from_kind: str = "", name: str = "") -> None:
     info = store.get_callback(to_id)
     if info:
         url, secret = info
+        sender = f"{name}#{from_id}" if name else from_id
         payload: dict = {
             "type": "notification",
             "id": notif_id,
             "from": from_id,
             "message": message,
+            "prompt": f'You have received a notification (#{notif_id}) from "{sender}": {message}',
+            "deliver": "log",
         }
         if from_kind:
             payload["from_kind"] = from_kind
@@ -328,7 +331,8 @@ def attach_notify(inact_app, prefix: str, store: NotifyStore,
         if not message:
             return text_response("ERROR 400: 'message' required\n", 400)
         notif_id = store.send(to_id, message, from_id)
-        _push(store, to_id, notif_id, message, from_id)
+        name = (member_fn(from_id) or {}).get("name", "") if member_fn and from_id else ""
+        _push(store, to_id, notif_id, message, from_id, name=name)
 
         # If sending to a human and we have an email address configured,
         # send an email copy of the notification.

@@ -549,7 +549,8 @@ def mount_message(inact_app, prefix: str, storage,
         def notify_fn(to_id: str, from_id: str, message: str) -> None:
             notif_id = nstore.send(to_id, message, from_id)
             fk = kind_fn(from_id) if kind_fn else ""
-            _push(nstore, to_id, notif_id, message, from_id, from_kind=fk)
+            name = (member_fn(from_id) or {}).get("name", "") if member_fn and from_id else ""
+            _push(nstore, to_id, notif_id, message, from_id, from_kind=fk, name=name)
 
     attach_message(inact_app, p, SessionStore(backend),
                    agents_prefix="/" + agents_prefix.strip("/"),

@@ -21,6 +21,7 @@ from .apps.search import mount_search
 from .storage import PostgresStorage, SqliteStorage, Storage, make_storage
 from .utils import text_response, html_response, toml_str, server_base, format_table
 from .apps.website import WebsiteProxy, mount_website
+from .apps.remote import mount_remote_inact
 
 __all__ = [
     "A2AClient",
@@ -60,6 +61,7 @@ __all__ = [
     "mount_mcp_npx",
     "mount_mcp_uvx",
     "mount_register",
+    "mount_remote_inact",
     "FileSystem",
     "LocalFS",
     "mount_s3",

@@ -15,6 +15,8 @@ Environment variables:
   SMTP2GO_API_KEY       use SMTP2GO HTTP API for outbound email
   FROM_EMAIL            default sender for system emails
   FRONTEND_URL          optional URL for human UI links in notifications
+  CHEM_REMOTE_URL       optional remote Inact app mounted at /chem
+  CHEM_REMOTE_TOKEN     optional token forwarded to the remote chemistry app
 """
 
 import logging
@@ -44,6 +46,7 @@ from inact.apps.notify    import mount_notify
 from inact.apps.search    import mount_search
 from inact.apps.sql       import mount_sql
 from inact.apps.workspace import mount_workspace
+from inact.apps.remote    import mount_remote_inact
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -69,6 +72,8 @@ TAVILY_KEY   = os.environ.get("TAVILY_API_KEY", "")
 DOMAIN       = os.environ.get("DOMAIN", "")      # e.g. agents.example.com
 ADMIN_KEY    = os.environ.get("ADMIN_KEY", "123456")
 CODE_SERVER_PORT = int(os.environ.get("CODE_SERVER_PORT", "0")) or None  # 0 = disabled
+CHEM_REMOTE_URL = os.environ.get("CHEM_REMOTE_URL", "")
+CHEM_REMOTE_TOKEN = os.environ.get("CHEM_REMOTE_TOKEN", "")
 
 # ---------------------------------------------------------------------------
 # App
@@ -149,6 +154,10 @@ mount_files(app, "/documents", FILES_DIR,
 # Web search: always mount so /_human/search/ works even without a key
 mount_search(app, "/search", api_key=TAVILY_KEY)
 
+# Optional remote chemistry app
+if CHEM_REMOTE_URL:
+    mount_remote_inact(app, "/chem", CHEM_REMOTE_URL, token=CHEM_REMOTE_TOKEN or None)
+
 # Auth: require X-Api-Key on everything except discovery + UI + favicon
 # Explicitly whitelist favicon to avoid 403s from browsers without/invalid auth
 mount_auth(
@@ -181,6 +190,8 @@ if __name__ == "__main__":
     ]
     if TAVILY_KEY:
         lines.append("  /search    web search")
+    if CHEM_REMOTE_URL:
+        lines.append("  /chem      remote chemistry app")
     if RELAY_HOST or _smtp_port:
         smtp_info = f"relay={RELAY_HOST}" if RELAY_HOST else f"inbound port {_smtp_port}"
         lines.append(f"  /mail/     email ({smtp_info})")

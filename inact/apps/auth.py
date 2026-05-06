@@ -82,7 +82,12 @@ def mount_auth(
         if request.method == "OPTIONS":
             return None
 
-        # Exempt public prefixes
+        # Always exempt the member registration page — it is the redirect
+        # target for unauthenticated browsers and must never require a key.
+        if path == "/_human/members" or path.startswith("/_human/members/"):
+            return None
+
+        # Exempt caller-supplied public prefixes
         for prefix in exempt:
             if prefix in ("/", ""):
                 # exact match only — don't exempt everything

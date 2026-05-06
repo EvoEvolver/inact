@@ -434,8 +434,6 @@ def attach_admin(inact_app, prefix: str, registry: AgentRegistry,
                 resp.set_cookie(_COOKIE, admin_key,
                                 httponly=True, samesite="Lax",
                                 max_age=8 * 3600)
-                if request.cookies.get("_inact_key") == admin_key:
-                    resp.delete_cookie("_inact_key")
                 return resp
             html = render_template("admin_login.html", error="Incorrect key.")
             return make_response(html_response(html)[0], 401,

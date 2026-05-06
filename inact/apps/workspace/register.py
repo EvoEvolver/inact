@@ -38,6 +38,7 @@ _MIGRATIONS = [
     "ALTER TABLE agents ADD COLUMN email        TEXT NOT NULL DEFAULT ''",
     "ALTER TABLE agents ADD COLUMN callback_url TEXT NOT NULL DEFAULT ''",
     "ALTER TABLE agents ADD COLUMN kind         TEXT NOT NULL DEFAULT 'agent'",
+    "ALTER TABLE agents ADD COLUMN description  TEXT NOT NULL DEFAULT ''",
 ]
 
 _DEFAULT_PER_PAGE = 20
@@ -83,7 +84,8 @@ class AgentRegistry:
     def register(self, name: str = "", email: str = "",
                  callback_url: str = "",
                  kind: str = "agent",
-                 api_key: str = "") -> tuple[int, str]:
+                 api_key: str = "",
+                 description: str = "") -> tuple[int, str]:
         if kind not in ("agent", "human"):
             kind = "agent"
         if not api_key:
@@ -92,9 +94,9 @@ class AgentRegistry:
             raise ValueError("api_key already in use")
         ts = int(time.time())
         self._s.execute(
-            "INSERT INTO agents (id, api_key, name, kind, email, callback_url, created_at) "
-            "SELECT COALESCE(MAX(id), 0) + 1, ?, ?, ?, ?, ?, ? FROM agents",
-            (api_key, name, kind, email, callback_url, ts),
+            "INSERT INTO agents (id, api_key, name, kind, email, callback_url, description, created_at) "
+            "SELECT COALESCE(MAX(id), 0) + 1, ?, ?, ?, ?, ?, ?, ? FROM agents",
+            (api_key, name, kind, email, callback_url, description, ts),
         )
         row = self._s.fetchone("SELECT id FROM agents WHERE api_key = ?", (api_key,))
         return row["id"], api_key
@@ -111,33 +113,33 @@ class AgentRegistry:
         offset = (page - 1) * per_page
         if kind:
             return self._s.fetchall(
-                "SELECT id, name, kind, email, callback_url, created_at FROM agents "
+                "SELECT id, name, kind, email, callback_url, description, created_at FROM agents "
                 "WHERE kind=? ORDER BY id ASC LIMIT ? OFFSET ?",
                 (kind, per_page, offset),
             )
         return self._s.fetchall(
-            "SELECT id, name, kind, email, callback_url, created_at FROM agents "
+            "SELECT id, name, kind, email, callback_url, description, created_at FROM agents "
             "ORDER BY id ASC LIMIT ? OFFSET ?",
             (per_page, offset),
         )
 
     def list_all_with_keys(self) -> list[dict]:
-        """Admin: returns api_key too."""
+        """Admin: returns api_key and description too."""
         return self._s.fetchall(
-            "SELECT id, name, kind, email, callback_url, api_key, created_at "
+            "SELECT id, name, kind, email, callback_url, description, api_key, created_at "
             "FROM agents ORDER BY id ASC"
         )
 
     def get(self, agent_id: int) -> dict | None:
         return self._s.fetchone(
-            "SELECT id, name, kind, email, callback_url, created_at FROM agents WHERE id = ?",
+            "SELECT id, name, kind, email, callback_url, description, created_at FROM agents WHERE id = ?",
             (agent_id,)
         )
 
     def get_by_key(self, api_key: str) -> dict | None:
         """Look up a full agent record by API key (for auth in other apps)."""
         return self._s.fetchone(
-            "SELECT id, name, kind, email, callback_url, created_at FROM agents WHERE api_key = ?",
+            "SELECT id, name, kind, email, callback_url, description, created_at FROM agents WHERE api_key = ?",
             (api_key,)
         )
 
@@ -152,6 +154,28 @@ class AgentRegistry:
             "UPDATE agents SET api_key = ? WHERE id = ?", (new_key, agent_id)
         ) > 0
         return new_key if ok else None
+
+    def update(self, agent_id: int, fields: dict) -> bool:
+        """Admin: update any subset of name, kind, email, description, api_key, callback_url."""
+        allowed = {"name", "kind", "email", "description", "api_key", "callback_url"}
+        updates = {k: v for k, v in fields.items() if k in allowed}
+        if not updates:
+            return False
+        if "api_key" in updates:
+            conflict = self._s.fetchone(
+                "SELECT id FROM agents WHERE api_key = ? AND id != ?",
+                (updates["api_key"], agent_id),
+            )
+            if conflict:
+                raise ValueError("api_key already in use")
+        if "kind" in updates and updates["kind"] not in ("agent", "human"):
+            updates["kind"] = "agent"
+        cols = list(updates.keys())
+        vals = [updates[c] for c in cols]
+        return self._s.execute(
+            "UPDATE agents SET " + ", ".join(f"{c} = ?" for c in cols) + " WHERE id = ?",
+            vals + [agent_id],
+        ) > 0
 
     def set_callback(self, agent_id: int, api_key: str, callback_url: str) -> bool:
         return self._s.execute(
@@ -366,12 +390,13 @@ def attach_admin(inact_app, prefix: str, registry: AgentRegistry,
         for e in entries:
             lines += [
                 "[[entries]]\n",
-                f"id         = {e['id']}\n",
-                f"kind       = {toml_str(e.get('kind','agent'))}\n",
-                f"name       = {toml_str(e['name'])}\n",
-                f"api_key    = {toml_str(e['api_key'])}\n",
-                f"email      = {toml_str(e['email'])}\n",
-                f"created_at = {toml_str(_fmt_ts(e['created_at']))}\n",
+                f"id          = {e['id']}\n",
+                f"kind        = {toml_str(e.get('kind','agent'))}\n",
+                f"name        = {toml_str(e['name'])}\n",
+                f"api_key     = {toml_str(e['api_key'])}\n",
+                f"email       = {toml_str(e['email'])}\n",
+                f"description = {toml_str(e.get('description',''))}\n",
+                f"created_at  = {toml_str(_fmt_ts(e['created_at']))}\n",
                 "\n",
             ]
         return text_response("".join(lines))
@@ -380,13 +405,15 @@ def attach_admin(inact_app, prefix: str, registry: AgentRegistry,
         auth = _admin_require()
         if auth is not True: return auth
         body = request.get_json(force=True, silent=True) or {}
-        name    = (body.get("name")    or "").strip()
-        kind    = (body.get("kind")    or "agent").strip()
-        email   = (body.get("email")   or "").strip()
-        cb      = (body.get("callback") or "").strip()
-        api_key = (body.get("api_key") or "").strip()
+        name        = (body.get("name")        or "").strip()
+        kind        = (body.get("kind")        or "agent").strip()
+        email       = (body.get("email")       or "").strip()
+        cb          = (body.get("callback")    or "").strip()
+        api_key     = (body.get("api_key")     or "").strip()
+        description = (body.get("description") or "").strip()
         try:
-            agent_id, api_key = registry.register(name, email, cb, kind, api_key=api_key)
+            agent_id, api_key = registry.register(
+                name, email, cb, kind, api_key=api_key, description=description)
         except ValueError as e:
             return text_response(f"ERROR 409: {e}\n", 409)
         if cb and notify_fn:
@@ -417,6 +444,27 @@ def attach_admin(inact_app, prefix: str, registry: AgentRegistry,
         if not new_key:
             return text_response("ERROR 404: not found\n", 404)
         return text_response(f"OK\napi_key = {toml_str(new_key)}\n")
+
+    def _admin_update(agent_id: str):
+        auth = _admin_require()
+        if auth is not True: return auth
+        try:
+            aid = int(agent_id)
+        except ValueError:
+            return text_response("ERROR 400: integer id required\n", 400)
+        body = request.get_json(force=True, silent=True) or {}
+        fields = {
+            k: str(body[k] or "").strip()
+            for k in ("name", "kind", "email", "description", "api_key", "callback_url")
+            if k in body
+        }
+        if not fields:
+            return text_response("ERROR 400: no fields provided\n", 400)
+        try:
+            ok = registry.update(aid, fields)
+        except ValueError as e:
+            return text_response(f"ERROR 409: {e}\n", 409)
+        return text_response("OK\n" if ok else "ERROR 404: not found\n", 200 if ok else 404)
 
     def _admin_human():
         from inact.render import render_template
@@ -467,6 +515,9 @@ def attach_admin(inact_app, prefix: str, registry: AgentRegistry,
     flask_app.add_url_rule(
         prefix + "/<agent_id>/rekey",
         endpoint=ep + "_rekey", view_func=_admin_rekey, methods=["POST"])
+    flask_app.add_url_rule(
+        prefix + "/<agent_id>/update",
+        endpoint=ep + "_update", view_func=_admin_update, methods=["POST"])
 
     ep_human = ep + "_human"
     inact_app.app.add_url_rule(

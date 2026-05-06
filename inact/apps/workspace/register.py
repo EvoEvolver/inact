@@ -24,7 +24,7 @@ from ...utils import text_response, html_response, toml_str
 
 _DDL = [
     """CREATE TABLE IF NOT EXISTS agents (
-        id           INTEGER PRIMARY KEY,
+        id           INTEGER PRIMARY KEY AUTOINCREMENT,
         api_key      TEXT    NOT NULL UNIQUE,
         name         TEXT    NOT NULL DEFAULT '',
         kind         TEXT    NOT NULL DEFAULT 'agent',

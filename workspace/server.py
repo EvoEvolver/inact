@@ -158,7 +158,8 @@ mount_auth(
         "/",
         "/.help",
         "/favicon.ico",
-        "/admin",          # standalone admin: own X-Admin-Key auth
+        "/_human/members",  # registration page — redirect target for unauthenticated browsers
+        "/admin",           # standalone admin: own X-Admin-Key auth
         "/_human/admin",
     ],
 )

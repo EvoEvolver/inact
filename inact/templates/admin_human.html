@@ -30,6 +30,7 @@
       </select>
       <input id="c-email"    placeholder="Email (optional)">
       <input id="c-callback" placeholder="Callback URL (agents)">
+      <input id="c-apikey"   placeholder="API key (optional, auto-generated if blank)" style="grid-column:span 2">
     </div>
     <div style="display:flex;gap:10px;align-items:center">
       <button class="primary" id="c-create">Create</button>
@@ -165,7 +166,14 @@ async function del(id) {
 
 /* ── Create ── */
 document.getElementById('c-create').addEventListener('click', async () => {
-  const res = document.getElementById('c-result');
+  const res  = document.getElementById('c-result');
+  const name = document.getElementById('c-name').value.trim();
+  if (!name) {
+    res.textContent = 'Name is required.';
+    res.style.color = '#cc0000';
+    document.getElementById('c-name').focus();
+    return;
+  }
   const r = await fetch(`${P}/.admin/create`, {
     method: 'POST',
     headers: H({'Content-Type': 'application/json'}),
@@ -174,6 +182,7 @@ document.getElementById('c-create').addEventListener('click', async () => {
       kind:     document.getElementById('c-kind').value,
       email:    document.getElementById('c-email').value.trim(),
       callback: document.getElementById('c-callback').value.trim(),
+      api_key:  document.getElementById('c-apikey').value.trim(),
     }),
   });
   const text = await r.text();
@@ -181,7 +190,7 @@ document.getElementById('c-create').addEventListener('click', async () => {
     const m = text.match(/api_key\s*=\s*"([^"]+)"/);
     res.textContent = m ? `Created — key: ${m[1]}` : 'Created';
     res.style.color = '#22863a';
-    ['c-name','c-email','c-callback'].forEach(id => document.getElementById(id).value='');
+    ['c-name','c-email','c-callback','c-apikey'].forEach(id => document.getElementById(id).value='');
   } else {
     res.textContent = text.split('\n')[0];
     res.style.color = '#cc0000';

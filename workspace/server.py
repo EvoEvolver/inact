@@ -11,7 +11,7 @@ Environment variables:
   SMTP_RELAY_USER       relay auth user
   SMTP_RELAY_PASSWORD   relay auth password
   TAVILY_API_KEY        enables /search
-  ADMIN_KEY             secret for /_human/members/.admin
+  ADMIN_KEY             secret for /_human/admin
   SMTP2GO_API_KEY       use SMTP2GO HTTP API for outbound email
   FROM_EMAIL            default sender for system emails
   FRONTEND_URL          optional URL for human UI links in notifications
@@ -159,8 +159,8 @@ mount_auth(
         "/",
         "/.help",
         "/favicon.ico",
-        "/members/.admin",       # has its own auth via _admin_require()
-        "/_human/members/.admin",
+        "/admin",          # standalone admin: own auth via X-Admin-Key
+        "/_human/admin",
     ],
 )
 

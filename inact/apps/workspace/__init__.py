@@ -31,7 +31,7 @@ from __future__ import annotations
 
 import os
 
-from .register import AgentRegistry, attach_register, mount_register
+from .register import AgentRegistry, attach_register, mount_register, attach_admin, mount_admin
 from .message  import SessionStore, MessageStore, attach_message, mount_message
 from .mailbox  import MailStore,     attach_mailbox,  mount_mailbox
 from .database import DbStore,       attach_db,       mount_db
@@ -45,6 +45,7 @@ __all__ = [
     "attach_register", "attach_message", "attach_mailbox", "attach_issues", "attach_db",
     # mount functions
     "mount_register", "mount_message", "mount_mailbox", "mount_issues", "mount_db",
+    "mount_admin",
     # unified
     "mount_workspace",
 ]
@@ -92,7 +93,10 @@ def mount_workspace(
     mail_prefix   = f"{p}/mail"
 
     mount_register(inact_app, agents_prefix, storage,
-                   notify_storage=notify_storage, admin_key=admin_key)
+                   notify_storage=notify_storage)
+    if admin_key:
+        mount_admin(inact_app, f"{p}/admin", storage,
+                    admin_key=admin_key, notify_storage=notify_storage)
 
     mount_message(inact_app, msg_prefix, storage,
                   agents_prefix=agents_prefix,

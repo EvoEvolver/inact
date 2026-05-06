@@ -1,20 +1,13 @@
 """
 Registry — agents and humans share a single identity store.
 
-  POST   {prefix}/                register
-                                  body: {"name":"...","kind":"agent"|"human",
-                                         "email":"...","callback":"http://..."}
-                                  returns: id, api_key, url
   GET    {prefix}/                list all  ?kind=agent|human  ?page=1&per_page=20
   GET    {prefix}/{id}            public profile
-  POST   {prefix}/{id}/.email     set email   (own X-Api-Key or admin_key)
-  POST   {prefix}/{id}/.callback  set callback url  (own X-Api-Key or admin_key)
-  DELETE {prefix}/{id}            deregister  (own X-Api-Key or admin_key)
+  POST   {prefix}/{id}/.email     set email        (X-Api-Key required)
+  POST   {prefix}/{id}/.callback  set callback url (X-Api-Key required)
+  DELETE {prefix}/{id}            deregister       (X-Api-Key required)
 
-Admin endpoints  (require X-Admin-Key header):
-  POST   {prefix}/.admin/create   create agent/human with chosen name/kind
-  GET    {prefix}/.admin/list     full list including api_keys
-  DELETE {prefix}/.admin/{id}     force-delete any entry
+Admin endpoints live at a separate prefix — see attach_admin / mount_admin.
 
 *storage* accepts a :class:`~inact.storage.Storage` object or URL/path.
 """
@@ -183,40 +176,12 @@ class AgentRegistry:
 # ---------------------------------------------------------------------------
 
 def attach_register(inact_app, prefix: str, registry: AgentRegistry,
-                    notify_fn=None, admin_key: str = "") -> None:
+                    notify_fn=None) -> None:
     prefix = "/" + prefix.strip("/")
     ep = "_inact_register_" + prefix.replace("/", "__")
     flask_app = inact_app.app
 
-    def _is_admin() -> bool:
-        return bool(admin_key and
-                    request.headers.get("X-Admin-Key", "").strip() == admin_key)
-
     def _root():
-        if request.method == "POST":
-            if not _is_admin():
-                return text_response("ERROR 403: registration requires X-Admin-Key\n", 403)
-            body = request.get_json(force=True, silent=True) or {}
-            name         = (body.get("name")     or "").strip()
-            email        = (body.get("email")    or "").strip()
-            callback_url = (body.get("callback") or "").strip()
-            kind         = (body.get("kind")     or "agent").strip()
-            agent_id, api_key = registry.register(name, email, callback_url, kind)
-            if callback_url and notify_fn:
-                notify_fn(str(agent_id), callback_url)
-            lines = [
-                "OK\n",
-                f"id      = {agent_id}\n",
-                f"kind    = {toml_str(kind)}\n",
-                f"api_key = {toml_str(api_key)}\n",
-                f"url     = {toml_str(prefix + '/' + str(agent_id))}\n",
-            ]
-            if email:
-                lines.append(f"email    = {toml_str(email)}\n")
-            if callback_url:
-                lines.append(f"callback = {toml_str(callback_url)}\n")
-            return text_response("".join(lines))
-
         kind_filter = request.args.get("kind", "").strip() or None
         page, per_page = _parse_page_params()
         total = registry.count(kind_filter)
@@ -242,13 +207,10 @@ def attach_register(inact_app, prefix: str, registry: AgentRegistry,
         except ValueError:
             return text_response("ERROR 400: agent id must be an integer\n", 400)
         if request.method == "DELETE":
-            if _is_admin():
-                ok = registry.force_delete(aid)
-            else:
-                api_key = request.headers.get("X-Api-Key", "").strip()
-                if not api_key:
-                    return text_response("ERROR 401: X-Api-Key or X-Admin-Key required\n", 401)
-                ok = registry.delete(aid, api_key)
+            api_key = request.headers.get("X-Api-Key", "").strip()
+            if not api_key:
+                return text_response("ERROR 401: X-Api-Key required\n", 401)
+            ok = registry.delete(aid, api_key)
             if not ok:
                 return text_response("ERROR 404: not found or key mismatch\n", 404)
             return text_response("OK\n")
@@ -284,26 +246,16 @@ def attach_register(inact_app, prefix: str, registry: AgentRegistry,
             aid = int(agent_id)
         except ValueError:
             return text_response("ERROR 400: agent id must be an integer\n", 400)
-        if not _is_admin():
-            api_key = request.headers.get("X-Api-Key", "").strip()
-            if not api_key:
-                return text_response("ERROR 401: X-Api-Key or X-Admin-Key required\n", 401)
-            body = request.get_json(force=True, silent=True) or {}
-            email = (body.get("email") or "").strip()
-            if not email:
-                return text_response("ERROR 400: 'email' required\n", 400)
-            ok = registry.set_email(aid, api_key, email)
-            if not ok:
-                return text_response("ERROR 404: not found or api_key mismatch\n", 404)
-            return text_response(f"OK\nemail = {toml_str(email)}\n")
-        # Admin path — no api_key check
+        api_key = request.headers.get("X-Api-Key", "").strip()
+        if not api_key:
+            return text_response("ERROR 401: X-Api-Key required\n", 401)
         body = request.get_json(force=True, silent=True) or {}
         email = (body.get("email") or "").strip()
         if not email:
             return text_response("ERROR 400: 'email' required\n", 400)
-        ok = registry._s.execute("UPDATE agents SET email=? WHERE id=?", (email, aid)) > 0
+        ok = registry.set_email(aid, api_key, email)
         if not ok:
-            return text_response("ERROR 404: agent not found\n", 404)
+            return text_response("ERROR 404: not found or api_key mismatch\n", 404)
         return text_response(f"OK\nemail = {toml_str(email)}\n")
 
     def _human():
@@ -347,9 +299,61 @@ def attach_register(inact_app, prefix: str, registry: AgentRegistry,
             notify_fn(str(aid), callback_url)
         return text_response(f"OK\ncallback = {toml_str(callback_url)}\n")
 
+    def _me():
+        """Return the caller's own profile, identified by X-Api-Key or cookie."""
+        api_key = (
+            request.headers.get("X-Api-Key", "")
+            or request.cookies.get("_inact_key", "")
+        ).strip()
+        if not api_key:
+            return text_response("ERROR 401: X-Api-Key required\n", 401)
+        agent = registry.get_by_key(api_key)
+        if not agent:
+            return text_response("ERROR 403: invalid api_key\n", 403)
+        kind    = agent.get("kind", "agent")
+        display = agent["name"] or f"{kind} {agent['id']}"
+        lines = [
+            f"# {display}\n\n",
+            f"id         = {agent['id']}\n",
+            f"kind       = {toml_str(kind)}\n",
+        ]
+        if agent["name"]:
+            lines.append(f"name       = {toml_str(agent['name'])}\n")
+        if agent["email"]:
+            lines.append(f"email      = {toml_str(agent['email'])}\n")
+        lines.append(f"url        = {toml_str(prefix + '/' + str(agent['id']))}\n")
+        return text_response("".join(lines))
+
+    flask_app.add_url_rule(
+        prefix + "/",
+        endpoint=ep + "_root", view_func=_root, methods=["GET"])
+    flask_app.add_url_rule(
+        prefix + "/.me",
+        endpoint=ep + "_me", view_func=_me)
+    flask_app.add_url_rule(
+        prefix + "/<agent_id>",
+        endpoint=ep + "_agent", view_func=_agent, methods=["GET", "DELETE"])
+    flask_app.add_url_rule(
+        prefix + "/<agent_id>/.email",
+        endpoint=ep + "_email", view_func=_set_email, methods=["POST"])
+    flask_app.add_url_rule(
+        prefix + "/<agent_id>/.callback",
+        endpoint=ep + "_callback", view_func=_set_callback, methods=["POST"])
+
+    inact_app._human_views[prefix] = lambda path: _human()
+    inact_app.add_nav_item("agents", "/_human" + prefix + "/")
+
+
+def attach_admin(inact_app, prefix: str, registry: AgentRegistry,
+                 admin_key: str, notify_fn=None) -> None:
+    prefix = "/" + prefix.strip("/")
+    ep = "_inact_admin_" + prefix.replace("/", "__")
+    flask_app = inact_app.app
+    _COOKIE = "_inact_admin"
+
     def _admin_require() -> bool | tuple:
         if not admin_key:
-            return text_response("ERROR 503: admin_key not configured on this server\n", 503)
+            return text_response("ERROR 503: admin_key not configured\n", 503)
         if request.headers.get("X-Admin-Key", "").strip() != admin_key:
             return text_response("ERROR 401: X-Admin-Key required\n", 401)
         return True
@@ -414,73 +418,15 @@ def attach_register(inact_app, prefix: str, registry: AgentRegistry,
             return text_response("ERROR 404: not found\n", 404)
         return text_response(f"OK\napi_key = {toml_str(new_key)}\n")
 
-    def _me():
-        """Return the caller's own profile, identified by X-Api-Key or cookie."""
-        api_key = (
-            request.headers.get("X-Api-Key", "")
-            or request.cookies.get("_inact_key", "")
-        ).strip()
-        if not api_key:
-            return text_response("ERROR 401: X-Api-Key required\n", 401)
-        if admin_key and api_key == admin_key:
-            return text_response("# Admin\n\nkind = \"admin\"\n")
-        agent = registry.get_by_key(api_key)
-        if not agent:
-            return text_response("ERROR 403: invalid api_key\n", 403)
-        kind    = agent.get("kind", "agent")
-        display = agent["name"] or f"{kind} {agent['id']}"
-        lines = [
-            f"# {display}\n\n",
-            f"id         = {agent['id']}\n",
-            f"kind       = {toml_str(kind)}\n",
-        ]
-        if agent["name"]:
-            lines.append(f"name       = {toml_str(agent['name'])}\n")
-        if agent["email"]:
-            lines.append(f"email      = {toml_str(agent['email'])}\n")
-        lines.append(f"url        = {toml_str(prefix + '/' + str(agent['id']))}\n")
-        return text_response("".join(lines))
-
-    flask_app.add_url_rule(
-        prefix + "/",
-        endpoint=ep + "_root", view_func=_root, methods=["GET", "POST"])
-    flask_app.add_url_rule(
-        prefix + "/.me",
-        endpoint=ep + "_me", view_func=_me)
-    flask_app.add_url_rule(
-        prefix + "/<agent_id>",
-        endpoint=ep + "_agent", view_func=_agent, methods=["GET", "DELETE"])
-    flask_app.add_url_rule(
-        prefix + "/<agent_id>/.email",
-        endpoint=ep + "_email", view_func=_set_email, methods=["POST"])
-    flask_app.add_url_rule(
-        prefix + "/<agent_id>/.callback",
-        endpoint=ep + "_callback", view_func=_set_callback, methods=["POST"])
-    flask_app.add_url_rule(
-        prefix + "/.admin/list",
-        endpoint=ep + "_admin_list", view_func=_admin_list)
-    flask_app.add_url_rule(
-        prefix + "/.admin/create",
-        endpoint=ep + "_admin_create", view_func=_admin_create, methods=["POST"])
-    flask_app.add_url_rule(
-        prefix + "/.admin/<agent_id>/delete",
-        endpoint=ep + "_admin_delete", view_func=_admin_delete, methods=["POST"])
-    flask_app.add_url_rule(
-        prefix + "/.admin/<agent_id>/rekey",
-        endpoint=ep + "_admin_rekey", view_func=_admin_rekey, methods=["POST"])
-    _COOKIE = "_inact_admin"
-
     def _admin_human():
         from inact.render import render_template
         from inact.utils import html_response
         from flask import make_response, redirect
 
-        # No admin key configured → 404
         if not admin_key:
-            from inact.utils import text_response
-            return text_response("ERROR 404: not found\n", 404)
+            from inact.utils import text_response as tr
+            return tr("ERROR 404: not found\n", 404)
 
-        # POST — validate submitted key, set cookie, redirect
         if request.method == "POST":
             submitted = (request.form.get("key") or "").strip()
             if submitted == admin_key:
@@ -496,14 +442,12 @@ def attach_register(inact_app, prefix: str, registry: AgentRegistry,
             return make_response(html_response(html)[0], 401,
                                  {"Content-Type": "text/html; charset=utf-8"})
 
-        # GET — logout
         if request.args.get("logout"):
             resp = make_response(redirect(request.path))
             resp.delete_cookie(_COOKIE)
             resp.delete_cookie("_inact_key")
             return resp
 
-        # GET — check cookie
         if request.cookies.get(_COOKIE) != admin_key:
             html = render_template("admin_login.html", error=None)
             return html_response(html)
@@ -512,26 +456,34 @@ def attach_register(inact_app, prefix: str, registry: AgentRegistry,
         return html_response(render_template("admin_human.html",
             title="Admin", prefix=prefix, nav="", pills=[],
             admin_key=admin_key,
-            workspace_links=workspace_nav("/_human/members/.admin"),
+            workspace_links=workspace_nav("/_human" + prefix),
             show_identity=False))
 
-    # Register both GET and POST so the login form can submit
-    ep_admin = ep + "_admin_human"
-    inact_app.app.add_url_rule(
-        "/_human" + prefix + "/.admin",
-        endpoint=ep_admin, view_func=_admin_human, methods=["GET", "POST"])
+    flask_app.add_url_rule(
+        prefix + "/list",
+        endpoint=ep + "_list", view_func=_admin_list)
+    flask_app.add_url_rule(
+        prefix + "/create",
+        endpoint=ep + "_create", view_func=_admin_create, methods=["POST"])
+    flask_app.add_url_rule(
+        prefix + "/<agent_id>/delete",
+        endpoint=ep + "_delete", view_func=_admin_delete, methods=["POST"])
+    flask_app.add_url_rule(
+        prefix + "/<agent_id>/rekey",
+        endpoint=ep + "_rekey", view_func=_admin_rekey, methods=["POST"])
 
-    inact_app._human_views[prefix] = lambda path: _human()
-    inact_app.add_nav_item("agents", "/_human" + prefix + "/")
-    inact_app.add_nav_item("admin",  "/_human" + prefix + "/.admin")
-    # Also catch sub-paths under /.admin so the cookie redirect lands correctly
+    ep_human = ep + "_human"
     inact_app.app.add_url_rule(
-        "/_human" + prefix + "/.admin/",
-        endpoint=ep_admin + "_slash", view_func=_admin_human, methods=["GET", "POST"])
+        "/_human" + prefix,
+        endpoint=ep_human, view_func=_admin_human, methods=["GET", "POST"])
+    inact_app.app.add_url_rule(
+        "/_human" + prefix + "/",
+        endpoint=ep_human + "_slash", view_func=_admin_human, methods=["GET", "POST"])
+    inact_app.add_nav_item("admin", "/_human" + prefix)
 
 
 def mount_register(inact_app, prefix: str, storage,
-                   notify_storage=None, admin_key: str = "") -> None:
+                   notify_storage=None) -> None:
     """
     Mount an agent registry at *prefix*.
 
@@ -557,14 +509,47 @@ def mount_register(inact_app, prefix: str, storage,
         def notify_fn(agent_id: str, callback_url: str) -> None:
             nstore.register_callback(agent_id, callback_url)
 
-    attach_register(inact_app, p, AgentRegistry(backend),
-                    notify_fn=notify_fn, admin_key=admin_key)
+    attach_register(inact_app, p, AgentRegistry(backend), notify_fn=notify_fn)
     inact_app._app_mounts.append((p, (
         f"\nAgent registry: {p}\n"
-        f'  POST   {p}/               register  body: {{"name":"...","email":"...","callback":"http://..."}}\n'
         f"  GET    {p}/               list agents\n"
         f"  GET    {p}/{{id}}            agent profile\n"
         f"  POST   {p}/{{id}}/.email     set email      (X-Api-Key required)\n"
         f"  POST   {p}/{{id}}/.callback  set callback   (X-Api-Key required)\n"
         f"  DELETE {p}/{{id}}            deregister     (X-Api-Key required)\n"
+    )))
+
+
+def mount_admin(inact_app, prefix: str, storage, admin_key: str,
+                notify_storage=None) -> None:
+    """
+    Mount the admin panel at *prefix* (e.g. ``"/admin"``).
+
+    Every route requires ``X-Admin-Key: <admin_key>`` — completely independent
+    of the regular agent api_key auth.  Human UI at ``/_human{prefix}``.
+
+    Example::
+
+        mount_admin(app, "/admin", "./workspace.db", admin_key="secret")
+    """
+    from ...storage import make_storage
+    p = "/" + prefix.strip("/")
+    backend = make_storage(storage) if isinstance(storage, str) else storage
+
+    notify_fn = None
+    if notify_storage is not None:
+        from ..notify import NotifyStore
+        ns = make_storage(notify_storage) if isinstance(notify_storage, str) else notify_storage
+        nstore = NotifyStore(ns)
+        def notify_fn(agent_id: str, callback_url: str) -> None:
+            nstore.register_callback(agent_id, callback_url)
+
+    attach_admin(inact_app, p, AgentRegistry(backend), admin_key=admin_key, notify_fn=notify_fn)
+    inact_app._app_mounts.append((p, (
+        f"\nAdmin panel: {p}\n"
+        f"  GET    {p}/list           list all members (includes api_keys)\n"
+        f"  POST   {p}/create         create member\n"
+        f"  POST   {p}/{{id}}/delete   force-delete\n"
+        f"  POST   {p}/{{id}}/rekey    regenerate key\n"
+        f"  Auth:  X-Admin-Key header required on all routes\n"
     )))

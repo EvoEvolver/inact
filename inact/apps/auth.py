@@ -71,7 +71,12 @@ def mount_auth(
     *public*           — path prefixes that skip auth entirely.
     *admin_key*        — if set, this key is accepted on all routes regardless of the agents table.
     """
+    from ..settings import Config
     from ..storage import make_storage
+
+    if Config.get().bypass_auth:
+        inact_app._app_mounts.append(("/_auth", "\nAuth: BYPASSED (INACT_BYPASS_AUTH=1)\n"))
+        return
 
     backend = make_storage(registry_storage) if isinstance(registry_storage, str) else registry_storage
     store = _AuthStore(backend)

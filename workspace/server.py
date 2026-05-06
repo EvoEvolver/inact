@@ -154,12 +154,11 @@ mount_search(app, "/search", api_key=TAVILY_KEY)
 mount_auth(
     app,
     STORAGE,
-    admin_key=ADMIN_KEY,
     public=[
         "/",
         "/.help",
         "/favicon.ico",
-        "/admin",          # standalone admin: own auth via X-Admin-Key
+        "/admin",          # standalone admin: own X-Admin-Key auth
         "/_human/admin",
     ],
 )

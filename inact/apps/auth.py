@@ -7,22 +7,15 @@ Flask before_request hook that validates every incoming request.
 Accepted credentials (in order):
   1. X-Api-Key header
   2. ?api_key= query parameter
-  3. _inact_key cookie  (set by browser after registering in /_human/agents/)
+  3. _inact_key cookie  (set by browser after registering via /_human/members/)
 
-Public paths skip auth entirely. Defaults:
-  /          home / docs
-  /.help     help pages
-  /members/   agent listing (discovery + self-registration)
-  /_human/members/   human registration page
-
-All other routes — including /_human/* pages beyond registration — require
-a valid key.  Browsers get the key via the _inact_key cookie which the
-register page sets automatically on registration.
+Public paths skip auth entirely. Admin routes (/admin, /_human/admin) should
+be added to the public list — they carry their own X-Admin-Key auth.
 
 Example::
 
     mount_auth(app, "./agents.db")
-    mount_auth(app, "./agents.db", public=["/", "/members/", "/_human/members/"])
+    mount_auth(app, "./agents.db", public=["/", "/admin", "/_human/admin"])
 """
 
 from __future__ import annotations
@@ -57,19 +50,20 @@ def mount_auth(
     inact_app,
     registry_storage,
     public: list[str] | None = None,
-    admin_key: str = "",
 ) -> None:
     """
-    Require a valid API key on every route not in *public*.
+    Require a valid agent API key on every route not in *public*.
 
     Browsers that have registered via ``/_human/members/`` have their key
     stored in a ``_inact_key`` cookie (set by the registration page JS).
     This cookie is checked automatically so browser page navigation works
     without manual headers.
 
+    Admin routes carry their own X-Admin-Key auth — add them to *public*
+    so this middleware steps aside for them entirely.
+
     *registry_storage* — same storage as :func:`~inact.apps.register.mount_register`.
     *public*           — path prefixes that skip auth entirely.
-    *admin_key*        — if set, this key is accepted on all routes regardless of the agents table.
     """
     from ..settings import Config
     from ..storage import make_storage
@@ -99,10 +93,6 @@ def mount_auth(
             if path == p or path == p + "/" or path.startswith(p + "/"):
                 return None
 
-        # Accept X-Admin-Key directly
-        if admin_key and request.headers.get("X-Admin-Key", "").strip() == admin_key:
-            return None
-
         # Resolve key: header → query param → cookie
         api_key = (
             request.headers.get("X-Api-Key", "")
@@ -121,7 +111,7 @@ def mount_auth(
                 401,
             )
 
-        if not (store.valid_key(api_key) or (admin_key and api_key == admin_key)):
+        if not store.valid_key(api_key):
             if path.startswith("/_human/"):
                 from flask import redirect
                 return redirect("/_human/members/")

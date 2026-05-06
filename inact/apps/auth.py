@@ -94,6 +94,10 @@ def mount_auth(
             if path == p or path == p + "/" or path.startswith(p + "/"):
                 return None
 
+        # Accept X-Admin-Key directly
+        if admin_key and request.headers.get("X-Admin-Key", "").strip() == admin_key:
+            return None
+
         # Resolve key: header → query param → cookie
         api_key = (
             request.headers.get("X-Api-Key", "")

@@ -35,14 +35,14 @@ _BARE_KEY_RE = re.compile(r"^[a-zA-Z0-9_-]+$")
 
 _DDL = [
     """CREATE TABLE IF NOT EXISTS forms (
-        id          INTEGER PRIMARY KEY,
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
         title       TEXT    NOT NULL,
         description TEXT    NOT NULL DEFAULT '',
         fields_json TEXT    NOT NULL DEFAULT '[]',
         created_at  BIGINT  NOT NULL
     )""",
     """CREATE TABLE IF NOT EXISTS responses (
-        id           INTEGER PRIMARY KEY,
+        id           INTEGER PRIMARY KEY AUTOINCREMENT,
         form_id      TEXT    NOT NULL,
         data_json    TEXT    NOT NULL,
         submitted_at BIGINT  NOT NULL,

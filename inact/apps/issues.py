@@ -66,7 +66,7 @@ _DDL = [
         created_at  BIGINT NOT NULL
     )""",
     """CREATE TABLE IF NOT EXISTS issue_comments (
-        id           INTEGER PRIMARY KEY,
+        id           INTEGER PRIMARY KEY AUTOINCREMENT,
         issue_number INTEGER NOT NULL,
         author       TEXT    NOT NULL DEFAULT '',
         body         TEXT    NOT NULL,

@@ -29,7 +29,7 @@ from ..utils import text_response, toml_str
 
 _DDL = [
     """CREATE TABLE IF NOT EXISTS jobs (
-        id         INTEGER PRIMARY KEY,
+        id         INTEGER PRIMARY KEY AUTOINCREMENT,
         title      TEXT    NOT NULL,
         status     TEXT    NOT NULL DEFAULT 'pending',
         details    TEXT    NOT NULL DEFAULT '',

@@ -29,7 +29,7 @@ from ...utils import text_response, html_response, toml_str
 
 _DDL = [
     """CREATE TABLE IF NOT EXISTS sessions (
-        id         INTEGER PRIMARY KEY,
+        id         INTEGER PRIMARY KEY AUTOINCREMENT,
         name       TEXT    NOT NULL DEFAULT '',
         created_by TEXT    NOT NULL DEFAULT '',
         created_at BIGINT  NOT NULL
@@ -41,7 +41,7 @@ _DDL = [
         PRIMARY KEY (session_id, agent_id)
     )""",
     """CREATE TABLE IF NOT EXISTS session_messages (
-        id         INTEGER PRIMARY KEY,
+        id         INTEGER PRIMARY KEY AUTOINCREMENT,
         session_id INTEGER NOT NULL,
         from_id    TEXT    NOT NULL,
         body       TEXT    NOT NULL DEFAULT '',

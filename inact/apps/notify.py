@@ -46,7 +46,7 @@ from ..apps.workspace.mailbox import _send_email
 
 _DDL = [
     """CREATE TABLE IF NOT EXISTS notifications (
-        id         INTEGER PRIMARY KEY,
+        id         INTEGER PRIMARY KEY AUTOINCREMENT,
         to_id      TEXT    NOT NULL,
         from_id    TEXT    NOT NULL DEFAULT '',
         message    TEXT    NOT NULL DEFAULT '',
@@ -60,7 +60,7 @@ _DDL = [
         registered_at BIGINT NOT NULL
     )""",
     """CREATE TABLE IF NOT EXISTS push_subscriptions (
-        id           INTEGER PRIMARY KEY,
+        id           INTEGER PRIMARY KEY AUTOINCREMENT,
         agent_id     TEXT    NOT NULL,
         endpoint     TEXT    NOT NULL UNIQUE,
         p256dh       TEXT    NOT NULL,
@@ -68,7 +68,7 @@ _DDL = [
         registered_at BIGINT NOT NULL
     )""",
     """CREATE TABLE IF NOT EXISTS vapid_keys (
-        id          INTEGER PRIMARY KEY CHECK(id = 1),
+        id          INTEGER PRIMARY KEY AUTOINCREMENT CHECK(id = 1),
         private_pem TEXT    NOT NULL,
         public_b64  TEXT    NOT NULL
     )""",

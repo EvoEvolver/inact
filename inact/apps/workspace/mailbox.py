@@ -60,7 +60,7 @@ _MAX_PER_PAGE = 100
 
 _DDL = [
     """CREATE TABLE IF NOT EXISTS mail (
-        id          INTEGER PRIMARY KEY,
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
         folder      TEXT    NOT NULL DEFAULT 'inbox',
         from_addr   TEXT    NOT NULL DEFAULT '',
         to_addr     TEXT    NOT NULL DEFAULT '',

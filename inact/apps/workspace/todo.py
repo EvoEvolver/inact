@@ -64,7 +64,7 @@ from ...utils import text_response, toml_str
 
 _DDL = [
     """CREATE TABLE IF NOT EXISTS tasks (
-        id          INTEGER PRIMARY KEY,
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
         parent_id   INTEGER,
         title       TEXT    NOT NULL,
         description TEXT    NOT NULL DEFAULT '',
@@ -77,7 +77,7 @@ _DDL = [
         done_at     BIGINT
     )""",
     """CREATE TABLE IF NOT EXISTS reminders (
-        id         INTEGER PRIMARY KEY,
+        id         INTEGER PRIMARY KEY AUTOINCREMENT,
         task_id    INTEGER NOT NULL,
         url        TEXT    NOT NULL,
         schedule   TEXT    NOT NULL,
@@ -89,7 +89,7 @@ _DDL = [
         enabled    INTEGER NOT NULL DEFAULT 1
     )""",
     """CREATE TABLE IF NOT EXISTS reminder_runs (
-        id          INTEGER PRIMARY KEY,
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
         reminder_id INTEGER NOT NULL,
         ran_at      BIGINT  NOT NULL,
         status      INTEGER NOT NULL,

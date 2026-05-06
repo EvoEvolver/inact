@@ -20,6 +20,7 @@ dependencies = [
 pdf = ["pypdf>=4.0"]
 mcp = ["mcp>=1.0"]
 postgres = ["psycopg2-binary>=2.9"]
+push = ["pywebpush>=2.0"]
 
 [project.urls]
 Repository = "https://github.com/EvoEvolver/inact"

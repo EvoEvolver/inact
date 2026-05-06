@@ -4,6 +4,11 @@
 <div style="display:flex;align-items:center;gap:10px;margin-bottom:16px;flex-wrap:wrap">
   <h1 class="page-title" style="margin:0">Notifications</h1>
   <div style="margin-left:auto;display:flex;gap:8px;align-items:center">
+    <button id="push-btn"
+            style="padding:6px 14px;font-size:13px;border:1px solid #ddd;border-radius:8px;
+                   background:#fff;color:#555;cursor:pointer;display:none">
+      Enable push
+    </button>
     <label style="font-size:13px;display:flex;align-items:center;gap:5px;cursor:pointer">
       <input type="checkbox" id="show-all"> Show read
     </label>
@@ -150,10 +155,98 @@ const _dismissBtn = document.getElementById('dismiss-all-btn');
 _showAll.disabled = true;
 _dismissBtn.disabled = true;
 
+// --- Web Push ---
+const SW_URL = '/_human' + P + '/sw.js';
+const SW_SCOPE = '/_human' + P + '/';
+const PUSH_KEY_URL = P + '/push/vapid-public-key';
+const PUSH_SUB_URL = P + '/push/subscribe';
+const PUSH_UNSUB_URL = P + '/push/unsubscribe';
+const pushBtn = document.getElementById('push-btn');
+
+function urlBase64ToUint8Array(b64) {
+  const pad = '='.repeat((4 - b64.length % 4) % 4);
+  const raw = atob((b64 + pad).replace(/-/g, '+').replace(/_/g, '/'));
+  return Uint8Array.from(raw, c => c.charCodeAt(0));
+}
+
+async function getPushSubscription(reg) {
+  return reg.pushManager.getSubscription();
+}
+
+async function subscribePush(reg, vapidKey) {
+  return reg.pushManager.subscribe({
+    userVisibleOnly: true,
+    applicationServerKey: urlBase64ToUint8Array(vapidKey),
+  });
+}
+
+async function sendSubToServer(sub, agentId) {
+  const k = sub.getKey('p256dh');
+  const a = sub.getKey('auth');
+  const p256dh = btoa(String.fromCharCode(...new Uint8Array(k)));
+  const auth   = btoa(String.fromCharCode(...new Uint8Array(a)));
+  await fetch(PUSH_SUB_URL, {
+    method: 'POST',
+    headers: Object.assign({'Content-Type': 'application/json'}, H()),
+    body: JSON.stringify({agent_id: agentId, endpoint: sub.endpoint, p256dh, auth}),
+  });
+}
+
+async function removeSubFromServer(sub) {
+  await fetch(PUSH_UNSUB_URL, {
+    method: 'POST',
+    headers: Object.assign({'Content-Type': 'application/json'}, H()),
+    body: JSON.stringify({endpoint: sub.endpoint}),
+  });
+}
+
+function setPushBtnState(subscribed) {
+  pushBtn.textContent = subscribed ? 'Push on' : 'Enable push';
+  pushBtn.style.background = subscribed ? '#e8f4e8' : '#fff';
+  pushBtn.style.color       = subscribed ? '#1a7a1a' : '#555';
+  pushBtn.style.borderColor = subscribed ? '#a0d0a0' : '#ddd';
+}
+
+async function initPush() {
+  if (!('serviceWorker' in navigator) || !('PushManager' in window)) return;
+  pushBtn.style.display = 'block';
+  try {
+    const reg = await navigator.serviceWorker.register(SW_URL, {scope: SW_SCOPE});
+    const existing = await getPushSubscription(reg);
+    setPushBtnState(!!existing);
+
+    pushBtn.addEventListener('click', async () => {
+      if (!myId) return;
+      const perm = await Notification.requestPermission();
+      if (perm !== 'granted') { alert('Notification permission denied.'); return; }
+      const current = await getPushSubscription(reg);
+      if (current) {
+        // unsubscribe
+        await removeSubFromServer(current);
+        await current.unsubscribe();
+        setPushBtnState(false);
+      } else {
+        // subscribe
+        try {
+          const vapidKey = await fetch(PUSH_KEY_URL, {headers: H()}).then(r => r.text());
+          const sub = await subscribePush(reg, vapidKey.trim());
+          await sendSubToServer(sub, myId);
+          setPushBtnState(true);
+        } catch(err) {
+          alert('Push subscription failed: ' + err.message);
+        }
+      }
+    });
+  } catch(err) {
+    console.warn('Service worker registration failed:', err);
+  }
+}
+
 ensureId().then(() => {
   _showAll.disabled = false;
   _dismissBtn.disabled = false;
   load();
+  initPush();
 });
 </script>
 {% endblock %}

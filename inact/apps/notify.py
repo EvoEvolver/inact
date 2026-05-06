@@ -59,6 +59,19 @@ _DDL = [
         secret       TEXT    NOT NULL DEFAULT '',
         registered_at BIGINT NOT NULL
     )""",
+    """CREATE TABLE IF NOT EXISTS push_subscriptions (
+        id           INTEGER PRIMARY KEY,
+        agent_id     TEXT    NOT NULL,
+        endpoint     TEXT    NOT NULL UNIQUE,
+        p256dh       TEXT    NOT NULL,
+        auth         TEXT    NOT NULL,
+        registered_at BIGINT NOT NULL
+    )""",
+    """CREATE TABLE IF NOT EXISTS vapid_keys (
+        id          INTEGER PRIMARY KEY CHECK(id = 1),
+        private_pem TEXT    NOT NULL,
+        public_b64  TEXT    NOT NULL
+    )""",
 ]
 
 _DEFAULT_PER_PAGE = 20
@@ -175,6 +188,56 @@ class NotifyStore:
         )
         return [(r["to_id"], r["cnt"]) for r in rows]
 
+    # push subscriptions
+
+    def get_or_create_vapid_keys(self) -> tuple[str, str]:
+        """Return (private_pem, public_b64). Creates keys on first call."""
+        row = self._s.fetchone("SELECT private_pem, public_b64 FROM vapid_keys WHERE id = 1")
+        if row:
+            return row["private_pem"], row["public_b64"]
+        from py_vapid import Vapid
+        from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
+        import base64
+        v = Vapid()
+        v.generate_keys()
+        pub_bytes = v._public_key.public_bytes(Encoding.X962, PublicFormat.UncompressedPoint)
+        public_b64 = base64.urlsafe_b64encode(pub_bytes).rstrip(b"=").decode()
+        private_pem = v.private_pem().decode()
+        self._s.execute(
+            "INSERT INTO vapid_keys (id, private_pem, public_b64) VALUES (1, ?, ?)",
+            (private_pem, public_b64),
+        )
+        return private_pem, public_b64
+
+    def store_push_subscription(self, agent_id: str, endpoint: str,
+                                p256dh: str, auth: str) -> None:
+        existing = self._s.fetchone(
+            "SELECT id FROM push_subscriptions WHERE endpoint = ?", (endpoint,)
+        )
+        if existing:
+            self._s.execute(
+                "UPDATE push_subscriptions SET agent_id=?, p256dh=?, auth=?, registered_at=? "
+                "WHERE endpoint=?",
+                (agent_id, p256dh, auth, int(time.time()), endpoint),
+            )
+        else:
+            self._s.insert(
+                "INSERT INTO push_subscriptions (agent_id, endpoint, p256dh, auth, registered_at) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (agent_id, endpoint, p256dh, auth, int(time.time())),
+            )
+
+    def get_push_subscriptions(self, agent_id: str) -> list[dict]:
+        return self._s.fetchall(
+            "SELECT endpoint, p256dh, auth FROM push_subscriptions WHERE agent_id = ?",
+            (agent_id,),
+        )
+
+    def delete_push_subscription(self, endpoint: str) -> bool:
+        return self._s.execute(
+            "DELETE FROM push_subscriptions WHERE endpoint = ?", (endpoint,)
+        ) > 0
+
 
 # ---------------------------------------------------------------------------
 # Callback delivery
@@ -210,6 +273,42 @@ def _fire_callback(url: str, payload: dict, secret: str = "") -> None:
             _log.warning("health check unreachable %s: %s", _health_url(url), hexc)
 
 
+def _fire_web_push(store: NotifyStore, agent_id: str, title: str, body: str) -> None:
+    try:
+        from pywebpush import webpush, WebPushException
+    except ImportError:
+        return
+    subscriptions = store.get_push_subscriptions(agent_id)
+    if not subscriptions:
+        return
+    try:
+        private_pem, _ = store.get_or_create_vapid_keys()
+    except Exception as exc:
+        _log.warning("vapid key error: %s", exc)
+        return
+    payload = json.dumps({"title": title, "body": body})
+    contact = os.environ.get("VAPID_CONTACT", "mailto:push@localhost")
+    for sub in subscriptions:
+        sub_info = {
+            "endpoint": sub["endpoint"],
+            "keys": {"p256dh": sub["p256dh"], "auth": sub["auth"]},
+        }
+        try:
+            webpush(
+                subscription_info=sub_info,
+                data=payload,
+                vapid_private_key=private_pem,
+                vapid_claims={"sub": contact},
+            )
+            _log.info("web push sent to %s...", sub["endpoint"][:40])
+        except WebPushException as exc:
+            _log.warning("web push failed (%s...): %s", sub["endpoint"][:40], exc)
+            if exc.response is not None and exc.response.status_code in (404, 410):
+                store.delete_push_subscription(sub["endpoint"])
+        except Exception as exc:
+            _log.warning("web push error: %s", exc)
+
+
 def _push(store: NotifyStore, to_id: str, notif_id: str,
           message: str, from_id: str, from_kind: str = "", name: str = "") -> None:
     info = store.get_callback(to_id)
@@ -231,6 +330,14 @@ def _push(store: NotifyStore, to_id: str, notif_id: str,
             args=(url, payload, secret),
             daemon=True,
         ).start()
+
+    # also fire web push to any browser subscriptions
+    display = f"From {name or from_id}" if from_id else "New notification"
+    threading.Thread(
+        target=_fire_web_push,
+        args=(store, to_id, display, message),
+        daemon=True,
+    ).start()
 
 
 def _start_revival(store: NotifyStore, interval: int) -> None:
@@ -437,6 +544,37 @@ def attach_notify(inact_app, prefix: str, store: NotifyStore,
             f"read      = {str(bool(n['read'])).lower()}\n"
         )
 
+    def _vapid_public_key():
+        from flask import make_response as flask_resp
+        try:
+            _, public_b64 = store.get_or_create_vapid_keys()
+        except Exception as exc:
+            return text_response(f"ERROR 500: {exc}\n", 500)
+        resp = flask_resp(public_b64, 200)
+        resp.content_type = "text/plain"
+        return resp
+
+    def _push_subscribe():
+        body = request.get_json(force=True, silent=True) or {}
+        agent_id = str(body.get("agent_id") or "").strip()
+        endpoint = (body.get("endpoint") or "").strip()
+        p256dh   = (body.get("p256dh")   or "").strip()
+        auth     = (body.get("auth")     or "").strip()
+        if not agent_id:
+            return text_response("ERROR 400: 'agent_id' required\n", 400)
+        if not endpoint or not p256dh or not auth:
+            return text_response("ERROR 400: 'endpoint', 'p256dh', 'auth' required\n", 400)
+        store.store_push_subscription(agent_id, endpoint, p256dh, auth)
+        return text_response(f"OK\nagent_id = {toml_str(agent_id)}\n")
+
+    def _push_unsubscribe():
+        body = request.get_json(force=True, silent=True) or {}
+        endpoint = (body.get("endpoint") or "").strip()
+        if not endpoint:
+            return text_response("ERROR 400: 'endpoint' required\n", 400)
+        store.delete_push_subscription(endpoint)
+        return text_response("OK\n")
+
     flask_app.add_url_rule(
         prefix + "/register",
         endpoint=ep + "_register", view_func=_register, methods=["POST"])
@@ -452,10 +590,46 @@ def attach_notify(inact_app, prefix: str, store: NotifyStore,
     flask_app.add_url_rule(
         prefix + "/inbox/<notif_id>",
         endpoint=ep + "_notif", view_func=_notif, methods=["GET", "DELETE"])
+    flask_app.add_url_rule(
+        prefix + "/push/vapid-public-key",
+        endpoint=ep + "_vapid_pk", view_func=_vapid_public_key, methods=["GET"])
+    flask_app.add_url_rule(
+        prefix + "/push/subscribe",
+        endpoint=ep + "_push_sub", view_func=_push_subscribe, methods=["POST"])
+    flask_app.add_url_rule(
+        prefix + "/push/unsubscribe",
+        endpoint=ep + "_push_unsub", view_func=_push_unsubscribe, methods=["DELETE", "POST"])
+
+    _SW_JS = """\
+self.addEventListener('push', function(e) {
+  let d = {};
+  try { d = e.data.json(); } catch(_) { d = {title:'Notification', body: e.data ? e.data.text() : ''}; }
+  e.waitUntil(self.registration.showNotification(d.title || 'New notification', {
+    body: d.body || '',
+    tag: 'inact-notify',
+    renotify: true
+  }));
+});
+self.addEventListener('notificationclick', function(e) {
+  e.notification.close();
+  e.waitUntil(clients.matchAll({type:'window', includeUncontrolled:true}).then(function(cs) {
+    for (let c of cs) {
+      if (c.url.includes('/_human/') && 'focus' in c) return c.focus();
+    }
+    if (clients.openWindow) return clients.openWindow('/_human__SW_NOTIFY_PATH__/');
+  }));
+});
+""".replace("__SW_NOTIFY_PATH__", prefix)
 
     def _human(_path: str):
+        from flask import make_response as flask_resp
         from ..render import render_template, workspace_nav
         from ..utils import html_response
+        if _path == prefix + "/sw.js":
+            resp = flask_resp(_SW_JS, 200)
+            resp.content_type = "application/javascript"
+            resp.headers["Service-Worker-Allowed"] = "/_human" + prefix + "/"
+            return resp
         html = render_template(
             "notify_human.html",
             title="Notifications",

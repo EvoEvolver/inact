@@ -79,7 +79,7 @@ function esc(s) { return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;'
 let allEntries = [];
 
 async function load() {
-  const text = await fetch(`${P}/.admin/list`, {headers: H()}).then(r => r.text());
+  const text = await fetch(`${P}/list`, {headers: H()}).then(r => r.text());
   allEntries = parseEntries(text);
   renderStats();
   renderTable();
@@ -151,7 +151,7 @@ function copyKey(key) {
 
 async function rekey(id) {
   if (!confirm(`Re-issue API key for entry #${id}? The old key will stop working.`)) return;
-  const r    = await fetch(`${P}/.admin/${id}/rekey`, {method:'POST', headers: H()});
+  const r    = await fetch(`${P}/${id}/rekey`, {method:'POST', headers: H()});
   const text = await r.text();
   const m    = text.match(/api_key\s*=\s*"([^"]+)"/);
   if (m) { alert(`New key for #${id}:\n${m[1]}`); }
@@ -160,7 +160,7 @@ async function rekey(id) {
 
 async function del(id) {
   if (!confirm(`Delete entry #${id}? This cannot be undone.`)) return;
-  await fetch(`${P}/.admin/${id}/delete`, {method:'POST', headers: H()});
+  await fetch(`${P}/${id}/delete`, {method:'POST', headers: H()});
   await load();
 }
 
@@ -174,7 +174,7 @@ document.getElementById('c-create').addEventListener('click', async () => {
     document.getElementById('c-name').focus();
     return;
   }
-  const r = await fetch(`${P}/.admin/create`, {
+  const r = await fetch(`${P}/create`, {
     method: 'POST',
     headers: H({'Content-Type': 'application/json'}),
     body: JSON.stringify({

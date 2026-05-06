@@ -89,10 +89,14 @@ class AgentRegistry:
 
     def register(self, name: str = "", email: str = "",
                  callback_url: str = "",
-                 kind: str = "agent") -> tuple[int, str]:
+                 kind: str = "agent",
+                 api_key: str = "") -> tuple[int, str]:
         if kind not in ("agent", "human"):
             kind = "agent"
-        api_key = secrets.token_urlsafe(32)
+        if not api_key:
+            api_key = secrets.token_urlsafe(32)
+        elif self._s.fetchone("SELECT id FROM agents WHERE api_key = ?", (api_key,)):
+            raise ValueError("api_key already in use")
         ts = int(time.time())
         self._s.execute(
             "INSERT INTO agents (id, api_key, name, kind, email, callback_url, created_at) "
@@ -372,11 +376,15 @@ def attach_register(inact_app, prefix: str, registry: AgentRegistry,
         auth = _admin_require()
         if auth is not True: return auth
         body = request.get_json(force=True, silent=True) or {}
-        name  = (body.get("name")  or "").strip()
-        kind  = (body.get("kind")  or "agent").strip()
-        email = (body.get("email") or "").strip()
-        cb    = (body.get("callback") or "").strip()
-        agent_id, api_key = registry.register(name, email, cb, kind)
+        name    = (body.get("name")    or "").strip()
+        kind    = (body.get("kind")    or "agent").strip()
+        email   = (body.get("email")   or "").strip()
+        cb      = (body.get("callback") or "").strip()
+        api_key = (body.get("api_key") or "").strip()
+        try:
+            agent_id, api_key = registry.register(name, email, cb, kind, api_key=api_key)
+        except ValueError as e:
+            return text_response(f"ERROR 409: {e}\n", 409)
         if cb and notify_fn:
             notify_fn(str(agent_id), cb)
         return text_response(

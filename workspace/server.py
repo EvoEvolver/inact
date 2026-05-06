@@ -159,6 +159,8 @@ mount_auth(
         "/",
         "/.help",
         "/favicon.ico",
+        "/members/.admin",       # has its own auth via _admin_require()
+        "/_human/members/.admin",
     ],
 )
 

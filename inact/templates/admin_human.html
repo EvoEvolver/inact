@@ -70,7 +70,7 @@ const P        = {{ prefix | tojson }};
 const ADMIN_KEY = {{ admin_key | tojson }};  // injected server-side after cookie auth
 
 function H(extra) {
-  return Object.assign({'X-Admin-Key': ADMIN_KEY}, extra || {});
+  return Object.assign({'X-Admin-Key': ADMIN_KEY, 'X-Api-Key': ADMIN_KEY}, extra || {});
 }
 function esc(s) { return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 

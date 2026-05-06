@@ -40,11 +40,14 @@ function parseBlocks(text, tag) {
 
 async function ensureId() {
   if (myId) return;
-  try {
-    const text = await fetch(AP + '/.me', {headers: H()}).then(r => r.text());
-    const m = text.match(/^id\s*=\s*(\d+)/m);
-    if (m) { myId = m[1]; localStorage.setItem('inact_agent_id', myId); }
-  } catch (_) {}
+  // Try with stored key first; if that fails (stale key), fall back to cookie auth.
+  for (const h of [H(), {}]) {
+    try {
+      const text = await fetch(AP + '/.me', {headers: h}).then(r => r.text());
+      const m = text.match(/^id\s*=\s*(\d+)/m);
+      if (m) { myId = m[1]; localStorage.setItem('inact_agent_id', myId); return; }
+    } catch (_) {}
+  }
 }
 
 async function load() {
@@ -142,6 +145,15 @@ Object.assign(window, { dismiss, goPage });
 document.getElementById('show-all').addEventListener('change', () => { page = 1; load(); });
 document.getElementById('dismiss-all-btn').addEventListener('click', dismissAll);
 
-ensureId().then(load);
+const _showAll = document.getElementById('show-all');
+const _dismissBtn = document.getElementById('dismiss-all-btn');
+_showAll.disabled = true;
+_dismissBtn.disabled = true;
+
+ensureId().then(() => {
+  _showAll.disabled = false;
+  _dismissBtn.disabled = false;
+  load();
+});
 </script>
 {% endblock %}

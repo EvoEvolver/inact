@@ -50,6 +50,7 @@ def mount_auth(
     inact_app,
     registry_storage,
     public: list[str] | None = None,
+    admin_human_url: str = "",
 ) -> None:
     """
     Require a valid agent API key on every route not in *public*.
@@ -64,6 +65,9 @@ def mount_auth(
 
     *registry_storage* — same storage as :func:`~inact.apps.register.mount_register`.
     *public*           — path prefixes that skip auth entirely.
+    *admin_human_url*  — if set, browsers that have an admin session but no
+                         workspace key are redirected here instead of the
+                         member registration page.
     """
     from ..settings import Config
     from ..storage import make_storage
@@ -118,8 +122,12 @@ def mount_auth(
 
         if not store.valid_key(api_key):
             if path.startswith("/_human/"):
-                from flask import redirect
-                return redirect("/_human/members/")
+                from flask import make_response, redirect
+                resp = make_response(redirect("/_human/members/"))
+                # Clear the stale cookie so the browser doesn't keep sending it
+                if request.cookies.get(_SESSION_COOKIE):
+                    resp.delete_cookie(_SESSION_COOKIE)
+                return resp
             return text_response("ERROR 403: invalid api_key\n", 403)
 
         return None

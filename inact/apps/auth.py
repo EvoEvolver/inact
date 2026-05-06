@@ -57,6 +57,7 @@ def mount_auth(
     inact_app,
     registry_storage,
     public: list[str] | None = None,
+    admin_key: str = "",
 ) -> None:
     """
     Require a valid API key on every route not in *public*.
@@ -68,6 +69,7 @@ def mount_auth(
 
     *registry_storage* — same storage as :func:`~inact.apps.register.mount_register`.
     *public*           — path prefixes that skip auth entirely.
+    *admin_key*        — if set, this key is accepted on all routes regardless of the agents table.
     """
     from ..storage import make_storage
 
@@ -110,7 +112,7 @@ def mount_auth(
                 401,
             )
 
-        if not store.valid_key(api_key):
+        if not (store.valid_key(api_key) or (admin_key and api_key == admin_key)):
             if path.startswith("/_human/"):
                 from flask import redirect
                 return redirect("/_human/members/")

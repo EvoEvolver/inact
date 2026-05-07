@@ -180,11 +180,16 @@ async function subscribePush(reg, vapidKey) {
   });
 }
 
+function bufToUrlB64(buf) {
+  const bytes = new Uint8Array(buf);
+  let s = '';
+  for (let i = 0; i < bytes.length; i++) s += String.fromCharCode(bytes[i]);
+  return btoa(s).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
 async function sendSubToServer(sub, agentId) {
-  const k = sub.getKey('p256dh');
-  const a = sub.getKey('auth');
-  const p256dh = btoa(String.fromCharCode(...new Uint8Array(k)));
-  const auth   = btoa(String.fromCharCode(...new Uint8Array(a)));
+  const p256dh = bufToUrlB64(sub.getKey('p256dh'));
+  const auth   = bufToUrlB64(sub.getKey('auth'));
   await fetch(PUSH_SUB_URL, {
     method: 'POST',
     headers: Object.assign({'Content-Type': 'application/json'}, H()),

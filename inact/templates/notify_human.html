@@ -96,7 +96,7 @@ async function load() {
           </div>
           <div style="flex-shrink:0">
             ${id != null
-              ? `<button onclick="dismiss(${JSON.stringify(id)})"
+              ? `<button data-nid="${esc(String(id))}" onclick="dismiss(this.dataset.nid)"
                          style="background:none;border:1px solid #ddd;border-radius:6px;
                                 padding:4px 10px;font-size:12px;color:#888;cursor:pointer">Dismiss</button>`
               : '<span style="font-size:11px;color:#cc0000">bad id</span>'}

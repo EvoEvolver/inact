@@ -514,8 +514,10 @@ def attach_notify(inact_app, prefix: str, store: NotifyStore,
         ]
         for n in notifs:
             fk = kind_fn(n['from_id']) if kind_fn and n['from_id'] else ""
+            _id = n['id']
+            _id_toml = str(_id) if isinstance(_id, int) else toml_str(str(_id))
             lines += ["[[notifications]]\n",
-                      f"id        = {n['id']}\n",
+                      f"id        = {_id_toml}\n",
                       f"from      = {toml_str(_from_str(n['from_id']))}\n"]
             if fk:
                 lines.append(f"from_kind = {toml_str(fk)}\n")

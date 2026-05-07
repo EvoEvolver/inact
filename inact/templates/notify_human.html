@@ -32,7 +32,6 @@ const KEY = localStorage.getItem('inact_api_key') || '';
 function H(extra) { return Object.assign({'X-Api-Key': KEY}, extra || {}); }
 function esc(s) { return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 
-let myId   = localStorage.getItem('inact_agent_id') || '';
 let page   = 1;
 const PER  = 20;
 
@@ -43,22 +42,9 @@ function parseBlocks(text, tag) {
   } catch (_) { return []; }
 }
 
-async function ensureId() {
-  if (myId) return;
-  // Try with stored key first; if that fails (stale key), fall back to cookie auth.
-  for (const h of [H(), {}]) {
-    try {
-      const text = await fetch(AP + '/.me', {headers: h}).then(r => r.text());
-      const m = text.match(/^id\s*=\s*(\d+)/m);
-      if (m) { myId = m[1]; localStorage.setItem('inact_agent_id', myId); return; }
-    } catch (_) {}
-  }
-}
-
 async function load() {
-  if (!myId) { document.getElementById('notif-list').innerHTML = '<p style="color:#cc0000;font-size:14px">Could not determine your identity. Please <a href="/_human' + AP + '/">log in</a>.</p>'; return; }
   const showAll = document.getElementById('show-all').checked;
-  const params  = new URLSearchParams({agent_id: myId, per_page: PER, page});
+  const params  = new URLSearchParams({per_page: PER, page});
   if (!showAll) params.set('all', '0');
   else          params.set('all', '1');
 
@@ -132,16 +118,11 @@ async function dismiss(id) {
 }
 
 async function dismissAll() {
-  if (!myId) return;
   if (!confirm('Dismiss all notifications?')) return;
-  const params = new URLSearchParams({agent_id: myId, per_page: 100, all: '1'});
-  const text   = await fetch(`${P}/inbox?${params}`, {headers: H()}).then(r => r.text()).catch(() => '');
-  const notifs = parseBlocks(text, 'notifications');
-  await Promise.all(
-    notifs
-      .filter(n => n.id != null)
-      .map(n => fetch(`${P}/inbox/${encodeURIComponent(n.id)}`, {method: 'DELETE', headers: H()}))
-  );
+  const r = await fetch(`${P}/inbox/all`, {method: 'DELETE', headers: H()});
+  const text = await r.text();
+  if (!text.startsWith('OK')) { alert('Error: ' + text.split('\n')[0]); return; }
+  page = 1;
   load();
 }
 
@@ -187,13 +168,13 @@ function bufToUrlB64(buf) {
   return btoa(s).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 }
 
-async function sendSubToServer(sub, agentId) {
+async function sendSubToServer(sub) {
   const p256dh = bufToUrlB64(sub.getKey('p256dh'));
   const auth   = bufToUrlB64(sub.getKey('auth'));
   await fetch(PUSH_SUB_URL, {
     method: 'POST',
     headers: Object.assign({'Content-Type': 'application/json'}, H()),
-    body: JSON.stringify({agent_id: agentId, endpoint: sub.endpoint, p256dh, auth}),
+    body: JSON.stringify({endpoint: sub.endpoint, p256dh, auth}),
   });
 }
 
@@ -221,7 +202,6 @@ async function initPush() {
     setPushBtnState(!!existing);
 
     pushBtn.addEventListener('click', async () => {
-      if (!myId) return;
       const perm = await Notification.requestPermission();
       if (perm !== 'granted') { alert('Notification permission denied.'); return; }
       const current = await getPushSubscription(reg);
@@ -237,7 +217,7 @@ async function initPush() {
           const vapidKey = await kr.text();
           if (!kr.ok || vapidKey.startsWith('ERROR')) throw new Error('Server: ' + vapidKey.trim());
           const sub = await subscribePush(reg, vapidKey.trim());
-          await sendSubToServer(sub, myId);
+          await sendSubToServer(sub);
           setPushBtnState(true);
         } catch(err) {
           alert('Push subscription failed: ' + err.message);
@@ -249,7 +229,7 @@ async function initPush() {
   }
 }
 
-ensureId().then(() => {
+Promise.resolve().then(() => {
   _showAll.disabled = false;
   _dismissBtn.disabled = false;
   load();

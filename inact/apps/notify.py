@@ -190,6 +190,12 @@ class NotifyStore:
     def delete(self, notif_id: str) -> bool:
         return self._s.execute("DELETE FROM notifications WHERE id = ?", (notif_id,)) > 0
 
+    def clear_inbox(self, to_id: str) -> int:
+        """Delete all notifications for *to_id*. Returns number deleted."""
+        return self._s.execute(
+            "DELETE FROM notifications WHERE to_id = ?", (to_id,)
+        )
+
     def agents_with_unread(self) -> list[tuple[str, int]]:
         """Return [(agent_id, unread_count)] for all agents with unread notifications."""
         rows = self._s.fetchall(
@@ -393,11 +399,25 @@ def _start_revival(store: NotifyStore, interval: int) -> None:
 
 def attach_notify(inact_app, prefix: str, store: NotifyStore,
                   kind_fn=None, member_fn=None, email_fn=None,
-                  agents_prefix: str = "/agents") -> None:
+                  agents_prefix: str = "/agents", registry=None) -> None:
     prefix = "/" + prefix.strip("/")
     agents_prefix = "/" + agents_prefix.strip("/")
     ep = "_inact_notify_" + prefix.replace("/", "__")
     flask_app = inact_app.app
+
+    def _resolve_agent_id() -> str | None:
+        """Infer agent_id from X-Api-Key / ?api_key= / _inact_key cookie via registry."""
+        if registry is None:
+            return None
+        api_key = (
+            request.headers.get("X-Api-Key", "")
+            or request.args.get("api_key", "")
+            or request.cookies.get("_inact_key", "")
+        ).strip()
+        if not api_key:
+            return None
+        agent = registry.get_by_key(api_key)
+        return str(agent["id"]) if agent else None
 
     def _from_str(agent_id: str) -> str:
         if not agent_id:
@@ -516,15 +536,17 @@ def attach_notify(inact_app, prefix: str, store: NotifyStore,
         return text_response(f"OK\nid = {notif_id}\n")
 
     def _inbox():
-        agent_id = (
-            request.args.get("agent_id", "")
-            or request.headers.get("X-Agent-Id", "")
-        ).strip()
+        agent_id = _resolve_agent_id()
+        if not agent_id:
+            agent_id = (
+                request.args.get("agent_id", "")
+                or request.headers.get("X-Agent-Id", "")
+            ).strip()
         if not agent_id:
             return text_response(
                 "ERROR 400: agent_id required\n"
                 f"Usage: GET {prefix}/inbox?agent_id=<id>\n"
-                "       or set X-Agent-Id header\n",
+                "       or set X-Api-Key header\n",
                 400,
             )
         show_all = request.args.get("all", "0") == "1"
@@ -555,6 +577,12 @@ def attach_notify(inact_app, prefix: str, store: NotifyStore,
 
     def _notif(notif_id: str):
         if request.method == "DELETE":
+            n = store.get(notif_id)
+            if not n:
+                return text_response("ERROR 404: not found\n", 404)
+            caller = _resolve_agent_id()
+            if caller is not None and str(n.get("to_id", "")) != caller:
+                return text_response("ERROR 403: forbidden\n", 403)
             ok = store.delete(notif_id)
             return text_response("OK\n" if ok else "ERROR 404: not found\n", 200 if ok else 404)
         n = store.get(notif_id)
@@ -571,6 +599,23 @@ def attach_notify(inact_app, prefix: str, store: NotifyStore,
             f"read      = {str(bool(n['read'])).lower()}\n"
         )
 
+    def _inbox_clear():
+        agent_id = _resolve_agent_id()
+        if not agent_id:
+            agent_id = (
+                request.args.get("agent_id", "")
+                or request.headers.get("X-Agent-Id", "")
+            ).strip()
+        if not agent_id:
+            return text_response(
+                "ERROR 400: agent_id required\n"
+                f"Usage: DELETE {prefix}/inbox/all?agent_id=<id>\n"
+                "       or set X-Api-Key header\n",
+                400,
+            )
+        n = store.clear_inbox(agent_id)
+        return text_response(f"OK\ndeleted = {n}\n")
+
     def _vapid_public_key():
         from flask import make_response as flask_resp
         try:
@@ -584,6 +629,8 @@ def attach_notify(inact_app, prefix: str, store: NotifyStore,
     def _push_subscribe():
         body = request.get_json(force=True, silent=True) or {}
         agent_id = str(body.get("agent_id") or "").strip()
+        if not agent_id:
+            agent_id = _resolve_agent_id() or ""
         endpoint = (body.get("endpoint") or "").strip()
         p256dh   = (body.get("p256dh")   or "").strip()
         auth     = (body.get("auth")     or "").strip()
@@ -618,6 +665,9 @@ def attach_notify(inact_app, prefix: str, store: NotifyStore,
     flask_app.add_url_rule(
         prefix + "/inbox/<notif_id>",
         endpoint=ep + "_notif", view_func=_notif, methods=["GET", "DELETE"])
+    flask_app.add_url_rule(
+        prefix + "/inbox/all",
+        endpoint=ep + "_inbox_clear", view_func=_inbox_clear, methods=["DELETE"])
     flask_app.add_url_rule(
         prefix + "/push/vapid-public-key",
         endpoint=ep + "_vapid_pk", view_func=_vapid_public_key, methods=["GET"])
@@ -741,7 +791,7 @@ def mount_notify(
 
     ap = "/" + agents_prefix.strip("/")
     attach_notify(inact_app, p, store, kind_fn=kind_fn, member_fn=member_fn, email_fn=email_fn,
-                  agents_prefix=ap)
+                  agents_prefix=ap, registry=_reg)
     inact_app._app_mounts.append((p, (
         f"\nNotifications: {p}\n"
         f'  POST {p}/register          register callback  body: {{"agent_id":"1","callback":"http://...","secret":"optional"}}\n'
@@ -750,6 +800,7 @@ def mount_notify(
         f"  GET  {p}/inbox             inbox  unread only by default  (?agent_id=<id>  ?all=1 for all)\n"
         f"  GET  {p}/inbox/{{id}}        read notification\n"
         f"  DELETE {p}/inbox/{{id}}      dismiss\n"
+        f"  DELETE {p}/inbox/all       dismiss all notifications for the authenticated agent\n"
         f"  # revival thread fires callbacks every {revival_interval}s for unread\n"
         f"  # Hermes webhooks: payload signed with X-Webhook-Signature (HMAC-SHA256)\n"
     )))

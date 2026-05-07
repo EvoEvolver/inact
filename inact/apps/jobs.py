@@ -6,7 +6,7 @@ mount_jobs(inact_app, prefix, storage, notify_store=None) registers:
   POST {prefix}              create a new job
                              body: {"title":"...","notify_to":"agent_id",
                                     "metadata":{...},"kind":"generic",
-                                    "id":"optional"}
+                                    "backend":""}
   GET  {prefix}              list jobs  (X-Agent-Id or ?agent_id=)
                              ?status=  ?kind=  ?page=  ?per_page=
   GET  {prefix}/{id}         get job details
@@ -48,6 +48,7 @@ _DDL = [
     """CREATE TABLE IF NOT EXISTS jobs (
         id               INTEGER    PRIMARY KEY AUTOINCREMENT,
         kind             TEXT    NOT NULL DEFAULT 'generic',
+        backend          TEXT    NOT NULL DEFAULT '',
         title            TEXT    NOT NULL DEFAULT '',
         status           TEXT    NOT NULL DEFAULT 'pending',
         notify_to        TEXT    NOT NULL DEFAULT '',
@@ -70,10 +71,11 @@ _DDL = [
         content     TEXT    NOT NULL,
         created_at  BIGINT  NOT NULL
     )""",
-    "CREATE INDEX IF NOT EXISTS idx_jobs_kind_status ON jobs(kind, status)",
-    "CREATE INDEX IF NOT EXISTS idx_jobs_notify_to   ON jobs(notify_to)",
-    "CREATE INDEX IF NOT EXISTS idx_jobs_worker      ON jobs(worker_id, kind)",
-    "CREATE INDEX IF NOT EXISTS idx_job_logs_owner   ON job_logs(job_id, stream, seq)",
+    "CREATE INDEX IF NOT EXISTS idx_jobs_kind_status   ON jobs(kind, status)",
+    "CREATE INDEX IF NOT EXISTS idx_jobs_kind_backend  ON jobs(kind, backend, status)",
+    "CREATE INDEX IF NOT EXISTS idx_jobs_notify_to     ON jobs(notify_to)",
+    "CREATE INDEX IF NOT EXISTS idx_jobs_worker        ON jobs(worker_id, kind)",
+    "CREATE INDEX IF NOT EXISTS idx_job_logs_owner     ON job_logs(job_id, stream, seq)",
 ]
 
 VALID_STATUSES   = {"pending", "running", "done", "failed", "cancelled"}
@@ -91,11 +93,6 @@ def _fmt_ts(ts: int | None) -> str:
     if not ts:
         return ""
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(ts))
-
-
-def _gen_id(kind: str) -> str:
-    prefix = (kind or "job").strip() or "job"
-    return f"{prefix}_{uuid.uuid4().hex[:12]}"
 
 
 def _parse_page_params() -> tuple[int, int]:
@@ -145,17 +142,18 @@ class JobStore:
     # ---- CRUD ----
 
     def create(self, *, title: str = "", kind: str = "generic",
-               id: str | None = None, notify_to: str = "",
+               backend: str = "", notify_to: str = "",
                metadata: dict | None = None) -> dict:
         kind = (kind or "generic").strip() or "generic"
-        job_id = (id or _gen_id(kind)).strip()
+        backend = (backend or "").strip()
         meta_json = json.dumps(metadata or {})
         now = _now()
-        self._s.execute(
-            "INSERT INTO jobs (id, kind, title, status, notify_to, "
+        job_id = self._s.insert(
+            "INSERT INTO jobs (kind, backend, title, status, notify_to, "
             "metadata_json, created_at, updated_at) "
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (job_id, kind, title, "pending", notify_to, meta_json, now, now),
+            (kind, backend, title, "pending", notify_to,
+             meta_json, now, now),
         )
         return self.get(job_id)
 
@@ -170,11 +168,13 @@ class JobStore:
 
     # ---- listing / counting ----
 
-    def _where(self, *, kind=None, status=None, notify_to=None,
-               worker_id=None) -> tuple[str, list]:
+    def _where(self, *, kind=None, backend=None, status=None,
+               notify_to=None, worker_id=None) -> tuple[str, list]:
         clauses, params = [], []
         if kind is not None:
             clauses.append("kind = ?"); params.append(kind)
+        if backend is not None:
+            clauses.append("backend = ?"); params.append(backend)
         if status is not None:
             clauses.append("status = ?"); params.append(status)
         if notify_to is not None:
@@ -184,21 +184,21 @@ class JobStore:
         where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
         return where, params
 
-    def count(self, *, kind=None, status=None, notify_to=None,
+    def count(self, *, kind=None, backend=None, status=None, notify_to=None,
               worker_id=None) -> int:
-        where, params = self._where(kind=kind, status=status,
+        where, params = self._where(kind=kind, backend=backend, status=status,
                                     notify_to=notify_to, worker_id=worker_id)
         row = self._s.fetchone(
             f"SELECT COUNT(*) AS cnt FROM jobs {where}", tuple(params)
         )
         return row["cnt"] if row else 0
 
-    def list(self, *, kind=None, status=None, notify_to=None,
+    def list(self, *, kind=None, backend=None, status=None, notify_to=None,
              worker_id=None, page: int = 1, per_page: int = 20
              ) -> tuple[list[dict], int]:
-        where, params = self._where(kind=kind, status=status,
+        where, params = self._where(kind=kind, backend=backend, status=status,
                                     notify_to=notify_to, worker_id=worker_id)
-        total = self.count(kind=kind, status=status,
+        total = self.count(kind=kind, backend=backend, status=status,
                            notify_to=notify_to, worker_id=worker_id)
         params2 = list(params) + [per_page, (page - 1) * per_page]
         rows = self._s.fetchall(
@@ -299,13 +299,16 @@ class JobStore:
 
     # ---- worker helpers ----
 
-    def claim_next(self, *, kind: str, worker_id: str) -> dict | None:
-        row = self._s.fetchone(
-            "SELECT * FROM jobs WHERE kind = ? AND status = 'pending' "
-            "AND worker_id = '' AND cancel_requested = 0 "
-            "ORDER BY created_at ASC LIMIT 1",
-            (kind,),
-        )
+    def claim_next(self, *, kind: str, worker_id: str,
+                   backend: str | None = None) -> dict | None:
+        sql = ("SELECT * FROM jobs WHERE kind = ? AND status = 'pending' "
+               "AND worker_id = '' AND cancel_requested = 0")
+        params: list = [kind]
+        if backend is not None:
+            sql += " AND backend = ?"
+            params.append(backend)
+        sql += " ORDER BY created_at ASC LIMIT 1"
+        row = self._s.fetchone(sql, tuple(params))
         if not row:
             return None
         n = self._s.execute(
@@ -317,22 +320,27 @@ class JobStore:
             return None
         return self.get(row["id"])
 
-    def list_active(self, *, kind: str, worker_id: str) -> list[dict]:
-        rows = self._s.fetchall(
-            "SELECT * FROM jobs WHERE kind = ? AND worker_id = ? "
-            "AND status NOT IN ('done','failed','cancelled') "
-            "ORDER BY created_at ASC",
-            (kind, worker_id),
-        )
+    def list_active(self, *, kind: str, worker_id: str,
+                    backend: str | None = None) -> list[dict]:
+        sql = ("SELECT * FROM jobs WHERE kind = ? AND worker_id = ? "
+               "AND status NOT IN ('done','failed','cancelled')")
+        params: list = [kind, worker_id]
+        if backend is not None:
+            sql += " AND backend = ?"
+            params.append(backend)
+        sql += " ORDER BY created_at ASC"
+        rows = self._s.fetchall(sql, tuple(params))
         return [self._hydrate(r) for r in rows]
 
-    def list_pending_cancels(self, *, kind: str,
-                             worker_id: str) -> list[dict]:
-        rows = self._s.fetchall(
-            "SELECT * FROM jobs WHERE kind = ? AND worker_id = ? "
-            "AND cancel_requested = 1 AND cancel_acked = 0",
-            (kind, worker_id),
-        )
+    def list_pending_cancels(self, *, kind: str, worker_id: str,
+                             backend: str | None = None) -> list[dict]:
+        sql = ("SELECT * FROM jobs WHERE kind = ? AND worker_id = ? "
+               "AND cancel_requested = 1 AND cancel_acked = 0")
+        params: list = [kind, worker_id]
+        if backend is not None:
+            sql += " AND backend = ?"
+            params.append(backend)
+        rows = self._s.fetchall(sql, tuple(params))
         return [self._hydrate(r) for r in rows]
 
     # ---- logs ----
@@ -423,6 +431,10 @@ def _job_lines(prefix: str, j: dict, *, full: bool) -> list[str]:
     lines = [
         f"id           = {toml_str(j['id'])}\n",
         f"kind         = {toml_str(j['kind'])}\n",
+    ]
+    if j.get("backend"):
+        lines.append(f"backend      = {toml_str(j['backend'])}\n")
+    lines += [
         f"title        = {toml_str(j['title'])}\n",
         f"status       = {toml_str(j['status'])}\n",
     ]
@@ -476,7 +488,7 @@ def attach_jobs(inact_app, prefix: str, store: JobStore,
             body = request.get_json(force=True, silent=True) or {}
             title     = (body.get("title") or "").strip()
             kind      = (body.get("kind")  or "generic").strip() or "generic"
-            given_id  = (body.get("id")    or "").strip() or None
+            backend   = (body.get("backend") or "").strip()
             notify_to = str(body.get("notify_to") or "").strip()
             metadata  = body.get("metadata") if isinstance(body.get("metadata"), dict) else None
             if not title:
@@ -484,10 +496,10 @@ def attach_jobs(inact_app, prefix: str, store: JobStore,
                     "ERROR 400: 'title' required\n"
                     f"POST {prefix}\n"
                     '  body: {"title":"...","notify_to":"agent_id",'
-                    '"metadata":{...},"kind":"generic"}\n',
+                    '"metadata":{...},"kind":"generic","backend":""}\n',
                     400,
                 )
-            job = store.create(title=title, kind=kind, id=given_id,
+            job = store.create(title=title, kind=kind, backend=backend,
                                notify_to=notify_to, metadata=metadata)
             return text_response(
                 "OK\n" + "".join(_job_lines(prefix, job, full=False)),
@@ -515,6 +527,9 @@ def attach_jobs(inact_app, prefix: str, store: JobStore,
                 f"valid: {', '.join(sorted(VALID_STATUSES))}\n",
                 400,
             )
+        kind_filter = request.args.get("kind", "").strip() or None
+        if kind_filter == "*":
+            kind_filter = None
         rows, total = store.list(
             kind=kind_filter, status=status_filter, notify_to=agent_id,
             page=page, per_page=per_page,

@@ -239,7 +239,8 @@ MessageStore = SessionStore
 
 def attach_message(inact_app, prefix: str, store: SessionStore,
                    agents_prefix: str = "/agents",
-                   notify_fn=None, kind_fn=None, member_fn=None) -> None:
+                   notify_fn=None, kind_fn=None, member_fn=None,
+                   registry=None) -> None:
     prefix = "/" + prefix.strip("/")
     ep = "_inact_msg_" + prefix.replace("/", "__")
     flask_app = inact_app.app
@@ -254,7 +255,24 @@ def attach_message(inact_app, prefix: str, store: SessionStore,
         )
         return f"{name}#{agent_id}"
 
+    def _resolve_agent_id() -> str | None:
+        """Infer agent_id from X-Api-Key / ?api_key= / _inact_key cookie via registry."""
+        if registry is None:
+            return None
+        api_key = (
+            request.headers.get("X-Api-Key", "")
+            or request.args.get("api_key", "")
+            or request.cookies.get("_inact_key", "")
+        ).strip()
+        if not api_key:
+            return None
+        agent = registry.get_by_key(api_key)
+        return str(agent["id"]) if agent else None
+
     def _agent_id() -> str:
+        resolved = _resolve_agent_id()
+        if resolved:
+            return resolved
         return (
             request.args.get("agent_id", "")
             or request.headers.get("X-Agent-Id", "")
@@ -554,7 +572,8 @@ def mount_message(inact_app, prefix: str, storage,
 
     attach_message(inact_app, p, SessionStore(backend),
                    agents_prefix="/" + agents_prefix.strip("/"),
-                   notify_fn=notify_fn, kind_fn=kind_fn, member_fn=member_fn)
+                   notify_fn=notify_fn, kind_fn=kind_fn, member_fn=member_fn,
+                   registry=_reg)
     inact_app._app_mounts.append((p, (
         f"\nSession messaging: {p}\n"
         f'  POST   {p}/sessions                    create session  body: {{"name":"opt","members":["1","2"]}}\n'

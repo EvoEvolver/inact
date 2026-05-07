@@ -157,10 +157,24 @@ def _notify_completion(job: dict, notify_store, prefix: str) -> None:
 # ---------------------------------------------------------------------------
 
 def attach_jobs(inact_app, prefix: str, store: JobStore,
-                notify_store=None) -> None:
+                notify_store=None, registry=None) -> None:
     prefix = "/" + prefix.strip("/")
     ep = "_inact_jobs_" + prefix.replace("/", "__")
     flask_app = inact_app.app
+
+    def _resolve_agent_id() -> str | None:
+        """Infer agent_id from X-Api-Key / ?api_key= / _inact_key cookie via registry."""
+        if registry is None:
+            return None
+        api_key = (
+            request.headers.get("X-Api-Key", "")
+            or request.args.get("api_key", "")
+            or request.cookies.get("_inact_key", "")
+        ).strip()
+        if not api_key:
+            return None
+        agent = registry.get_by_key(api_key)
+        return str(agent["id"]) if agent else None
 
     def _jobs():
         if request.method == "POST":
@@ -185,15 +199,17 @@ def attach_jobs(inact_app, prefix: str, store: JobStore,
                 201,
             )
         # GET — list (scoped to the requesting agent)
-        agent_id = (
-            request.args.get("agent_id", "")
-            or request.headers.get("X-Agent-Id", "")
-        ).strip()
+        agent_id = _resolve_agent_id()
+        if not agent_id:
+            agent_id = (
+                request.args.get("agent_id", "")
+                or request.headers.get("X-Agent-Id", "")
+            ).strip()
         if not agent_id:
             return text_response(
                 "ERROR 400: agent_id required\n"
                 f"Usage: GET {prefix}?agent_id=<id>\n"
-                "       or set X-Agent-Id header\n",
+                "       or set X-Api-Key header\n",
                 400,
             )
         page, per_page = _parse_page_params()
@@ -301,6 +317,7 @@ def mount_jobs(
     prefix: str,
     storage,
     notify_store=None,
+    registry=None,
 ) -> None:
     """
     Mount the jobs system at *prefix*.
@@ -323,7 +340,19 @@ def mount_jobs(
     backend = make_storage(storage) if isinstance(storage, str) else storage
     store = JobStore(backend)
 
-    attach_jobs(inact_app, p, store, notify_store)
+    ns = None
+    if notify_store is not None:
+        from ..apps.notify import NotifyStore
+        ns = notify_store if isinstance(notify_store, NotifyStore) \
+             else NotifyStore(make_storage(notify_store) if isinstance(notify_store, str) else notify_store)
+
+    _reg = None
+    if registry is not None:
+        from .workspace.register import AgentRegistry
+        _reg = registry if isinstance(registry, AgentRegistry) \
+               else AgentRegistry(make_storage(registry) if isinstance(registry, str) else registry)
+
+    attach_jobs(inact_app, p, store, notify_store=ns, registry=_reg)
     inact_app._app_mounts.append((p, (
         f"\nJobs: {p}\n"
         f"  POST   {p}            create job  body: {{\"title\":\"...\",\"notify_to\":\"agent_id\"}}\n"

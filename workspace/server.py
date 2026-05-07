@@ -120,7 +120,8 @@ def home():
 mount_notify(app, "/notify",
              storage=NOTIFY_DB,
              revival_interval=600,
-             registry=STORAGE)
+             registry=STORAGE,
+             agents_prefix="/members")
 
 # Core workspace: agents + messaging + issues + email (if explicitly configured)
 _smtp_port = SMTP_PORT or (2525 if RELAY_HOST else None)

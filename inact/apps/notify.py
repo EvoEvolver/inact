@@ -147,10 +147,20 @@ class NotifyStore:
     # notifications
 
     def send(self, to_id: str, message: str, from_id: str = "") -> int:
-        return self._s.insert(
+        rowid = self._s.insert(
             "INSERT INTO notifications (to_id, from_id, message, read, created_at) VALUES (?, ?, ?, ?, ?)",
             (to_id, from_id, message, 0, int(time.time())),
         )
+        # On older schemas the id column is TEXT and defaults to NULL on insert.
+        # Back-fill it with the rowid so WHERE id IS NOT NULL queries find the row.
+        try:
+            self._s.execute(
+                "UPDATE notifications SET id = ? WHERE rowid = ? AND id IS NULL",
+                (rowid, rowid),
+            )
+        except Exception:
+            pass
+        return rowid
 
     def count(self, to_id: str, unread_only: bool = False) -> int:
         q = "SELECT COUNT(*) AS cnt FROM notifications WHERE to_id = ? AND id IS NOT NULL"

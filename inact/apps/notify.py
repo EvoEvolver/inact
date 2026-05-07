@@ -602,66 +602,6 @@ def attach_notify(inact_app, prefix: str, store: NotifyStore,
         store.delete_push_subscription(endpoint)
         return text_response("OK\n")
 
-    def _push_subscriptions():
-        agent_id = (
-            request.args.get("agent_id", "")
-            or request.headers.get("X-Agent-Id", "")
-        ).strip()
-        if not agent_id:
-            return text_response("ERROR 400: agent_id required\n", 400)
-        subs = store.get_push_subscriptions(agent_id)
-        lines = [f"# Push subscriptions for agent {agent_id}\n",
-                 f"count = {len(subs)}\n\n"]
-        for s in subs:
-            lines += ["[[subscriptions]]\n",
-                      f"endpoint = {toml_str(s['endpoint'][:60] + '...')}\n\n"]
-        return text_response("".join(lines))
-
-    def _push_test():
-        """Send a test push synchronously and return detailed result."""
-        agent_id = (
-            request.args.get("agent_id", "")
-            or request.headers.get("X-Agent-Id", "")
-        ).strip()
-        if not agent_id:
-            return text_response("ERROR 400: agent_id required\n", 400)
-        try:
-            from pywebpush import webpush, WebPushException
-        except ImportError:
-            return text_response("ERROR: pywebpush not installed\n", 500)
-        subs = store.get_push_subscriptions(agent_id)
-        if not subs:
-            return text_response(f"ERROR: no subscriptions for agent {agent_id}\n", 404)
-        try:
-            private_pem, public_b64 = store.get_or_create_vapid_keys()
-        except Exception as exc:
-            return text_response(f"ERROR: vapid key: {exc}\n", 500)
-        contact = os.environ.get("VAPID_CONTACT", "mailto:push@localhost")
-        lines = [f"# Push test for agent {agent_id}\n",
-                 f"subscriptions = {len(subs)}\n",
-                 f"vapid_contact = {toml_str(contact)}\n\n"]
-        for i, sub in enumerate(subs):
-            sub_info = {
-                "endpoint": sub["endpoint"],
-                "keys": {"p256dh": sub["p256dh"], "auth": sub["auth"]},
-            }
-            try:
-                r = webpush(
-                    subscription_info=sub_info,
-                    data=json.dumps({"title": "Test", "body": "push test"}),
-                    vapid_private_key=private_pem,
-                    vapid_claims={"sub": contact},
-                )
-                status = getattr(r, "status_code", "?")
-                lines.append(f"sub_{i}_result = {toml_str(f'OK status={status}')}\n")
-            except WebPushException as exc:
-                resp = exc.response
-                status = resp.status_code if resp else "no_response"
-                body = resp.text[:200] if resp else str(exc)
-                lines.append(f"sub_{i}_error  = {toml_str(f'WebPushException status={status}: {body}')}\n")
-            except Exception as exc:
-                lines.append(f"sub_{i}_error  = {toml_str(str(exc))}\n")
-        return text_response("".join(lines))
 
     flask_app.add_url_rule(
         prefix + "/register",
@@ -687,12 +627,6 @@ def attach_notify(inact_app, prefix: str, store: NotifyStore,
     flask_app.add_url_rule(
         prefix + "/push/unsubscribe",
         endpoint=ep + "_push_unsub", view_func=_push_unsubscribe, methods=["DELETE", "POST"])
-    flask_app.add_url_rule(
-        prefix + "/push/subscriptions",
-        endpoint=ep + "_push_subs", view_func=_push_subscriptions, methods=["GET"])
-    flask_app.add_url_rule(
-        prefix + "/push/test",
-        endpoint=ep + "_push_test", view_func=_push_test, methods=["GET"])
 
     _SW_JS = """\
 self.addEventListener('push', function(e) {

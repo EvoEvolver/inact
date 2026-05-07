@@ -1,0 +1,199 @@
+{% extends "base.html" %}
+{% block content %}
+
+<div style="display:flex;align-items:center;gap:10px;margin-bottom:16px;flex-wrap:wrap">
+  <h1 class="page-title" style="margin:0">Jobs</h1>
+  <div style="margin-left:auto;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+    <select id="status-filter"
+            style="padding:6px 10px;font-size:13px;border:1px solid #ddd;border-radius:8px;background:#fff;color:#555;cursor:pointer">
+      <option value="">All statuses</option>
+      <option value="pending">Pending</option>
+      <option value="running">Running</option>
+      <option value="done">Done</option>
+      <option value="failed">Failed</option>
+    </select>
+    <button class="primary" id="create-btn"
+            style="padding:6px 14px;font-size:13px">+ New job</button>
+  </div>
+</div>
+
+<div id="job-list"><p style="color:#aaa;font-size:14px">Loading…</p></div>
+<div id="pagination"
+     style="display:flex;gap:8px;justify-content:center;margin-top:16px;align-items:center"></div>
+
+<!-- New job modal -->
+<div id="create-modal" style="display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,.35);z-index:100;align-items:center;justify-content:center">
+  <div style="background:#fff;border-radius:12px;padding:28px;max-width:420px;width:90%;box-shadow:0 4px 24px rgba(0,0,0,.15)">
+    <h2 style="font-size:18px;margin:0 0 16px">New Job</h2>
+    <label style="font-size:13px;font-weight:600;color:#555;display:block;margin-bottom:4px">Title</label>
+    <input type="text" id="new-title" placeholder="e.g. Train model" style="margin-bottom:12px">
+    <label style="font-size:13px;font-weight:600;color:#555;display:block;margin-bottom:4px">Details (optional)</label>
+    <textarea id="new-details" placeholder="Any extra info…" style="width:100%;min-height:80px;border:1px solid #ddd;border-radius:8px;padding:10px 12px;font-size:14px;font-family:inherit;resize:vertical"></textarea>
+    <div style="display:flex;gap:10px;margin-top:16px">
+      <button class="primary" id="do-create" style="flex:1">Create</button>
+      <button class="btn-cancel" id="cancel-create" style="flex:1;background:#f0f0f0;color:#444;border:none;border-radius:8px;padding:10px;cursor:pointer;font-size:14px">Cancel</button>
+    </div>
+    <div id="create-err" class="err" style="display:none;margin-top:10px"></div>
+  </div>
+</div>
+
+{% endblock %}
+
+{% block scripts %}
+<script type="module">
+import { parse as parseTOML } from 'https://esm.sh/smol-toml';
+const P   = {{ prefix        | tojson }};
+const AP  = {{ agents_prefix | tojson }};
+const KEY = localStorage.getItem('inact_api_key') || '';
+function H(extra) { return Object.assign({'X-Api-Key': KEY}, extra || {}); }
+function esc(s) { return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+
+let page   = 1;
+const PER  = 20;
+
+function parseBlocks(text, tag) {
+  try {
+    const v = parseTOML(text)[tag];
+    return Array.isArray(v) ? v : v !== undefined ? [v] : [];
+  } catch (_) { return []; }
+}
+
+function statusColor(st) {
+  if (st === 'done')    return '#1a7a1a';
+  if (st === 'failed')  return '#cc0000';
+  if (st === 'running') return '#0066cc';
+  return '#888';
+}
+function statusBg(st) {
+  if (st === 'done')    return '#e8f4e8';
+  if (st === 'failed')  return '#fce8e8';
+  if (st === 'running') return '#e8f0fe';
+  return '#f0f0f0';
+}
+
+async function load() {
+  const status = document.getElementById('status-filter').value;
+  const params = new URLSearchParams({per_page: PER, page});
+  if (status) params.set('status', status);
+
+  const text  = await fetch(`${P}?${params}`, {headers: H()}).then(r => r.text()).catch(() => '');
+  if (text.startsWith('ERROR')) {
+    document.getElementById('job-list').innerHTML = `<p style="color:#cc0000;font-size:14px;padding:20px 0">${esc(text.split('\n')[0])}</p>`;
+    document.getElementById('pagination').innerHTML = '';
+    return;
+  }
+  const jobs = parseBlocks(text, 'jobs');
+
+  let total = jobs.length + (page - 1) * PER;
+  const tm  = text.match(/\((\d+) total\)/);
+  if (tm) total = parseInt(tm[1]);
+
+  const list = document.getElementById('job-list');
+  if (!jobs.length) {
+    list.innerHTML = `<p style="color:#aaa;font-size:14px;padding:20px 0">No jobs${status ? ' with status "' + esc(status) + '"' : ''}.</p>`;
+    document.getElementById('pagination').innerHTML = '';
+    return;
+  }
+
+  list.innerHTML = jobs.map(j => {
+    const id      = j.id != null ? j.id : null;
+    const st      = j.status || 'pending';
+    const title   = esc(j.title || '');
+    const details = esc(j.details || '').replace(/\n/g, '<br>');
+    const when    = (j.created_at || '').replace('T',' ').replace('Z','').slice(0,16);
+    return `
+    <div class="toml-scalars" style="margin-bottom:8px">
+      <div style="padding:12px 16px">
+        <div style="display:flex;align-items:flex-start;gap:10px">
+          <div style="flex:1;min-width:0">
+            <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;flex-wrap:wrap">
+              <span style="font-size:12px;font-weight:600;color:#555">#${esc(String(id))}</span>
+              <span style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.03em;
+                           background:${statusBg(st)};color:${statusColor(st)};border-radius:6px;padding:2px 8px">
+                ${esc(st)}
+              </span>
+              ${when ? `<span style="font-size:12px;color:#888">${esc(when)}</span>` : ''}
+            </div>
+            <div style="font-size:15px;font-weight:600;margin-bottom:4px">${title}</div>
+            ${details ? `<div style="font-size:13px;color:#666;line-height:1.5;white-space:pre-wrap;word-break:break-word">${details}</div>` : ''}
+          </div>
+          <div style="flex-shrink:0;display:flex;flex-direction:column;gap:6px;align-items:flex-end">
+            ${id != null
+              ? `<button data-jid="${esc(String(id))}" onclick="delJob(this.dataset.jid)"
+                         style="background:none;border:1px solid #ddd;border-radius:6px;
+                                padding:4px 10px;font-size:12px;color:#888;cursor:pointer">Delete</button>`
+              : '<span style="font-size:11px;color:#cc0000">bad id</span>'}
+          </div>
+        </div>
+      </div>
+    </div>`;
+  }).join('');
+
+  renderPagination(total);
+}
+
+function renderPagination(total) {
+  const totalPages = Math.max(1, Math.ceil(total / PER));
+  const pag = document.getElementById('pagination');
+  if (totalPages <= 1) { pag.innerHTML = ''; return; }
+  pag.innerHTML = `
+    <button class="primary" onclick="goPage(${page-1})" ${page<=1?'disabled':''}
+            style="padding:6px 14px;font-size:13px">&#8592; Prev</button>
+    <span style="font-size:13px;color:#888">${page} / ${totalPages} (${total} total)</span>
+    <button class="primary" onclick="goPage(${page+1})" ${page>=totalPages?'disabled':''}
+            style="padding:6px 14px;font-size:13px">Next &#8594;</button>`;
+}
+
+function goPage(p) { page = p; load(); window.scrollTo(0,0); }
+
+async function delJob(id) {
+  if (!confirm('Delete job #' + id + '?')) return;
+  const r = await fetch(`${P}/${encodeURIComponent(id)}`, {method: 'DELETE', headers: H()});
+  const text = await r.text();
+  if (!text.startsWith('OK')) { alert('Error: ' + text.split('\n')[0]); return; }
+  load();
+}
+
+// Create modal
+const modal      = document.getElementById('create-modal');
+const createBtn  = document.getElementById('create-btn');
+const cancelBtn  = document.getElementById('cancel-create');
+const doCreate   = document.getElementById('do-create');
+const titleInp   = document.getElementById('new-title');
+const detailsInp = document.getElementById('new-details');
+const createErr  = document.getElementById('create-err');
+
+createBtn.addEventListener('click', () => {
+  titleInp.value = '';
+  detailsInp.value = '';
+  createErr.style.display = 'none';
+  modal.style.display = 'flex';
+  titleInp.focus();
+});
+cancelBtn.addEventListener('click', () => { modal.style.display = 'none'; });
+modal.addEventListener('click', (e) => { if (e.target === modal) modal.style.display = 'none'; });
+
+doCreate.addEventListener('click', async () => {
+  const title   = titleInp.value.trim();
+  const details = detailsInp.value.trim();
+  if (!title) { createErr.textContent = 'Title is required.'; createErr.style.display = 'block'; return; }
+  createErr.style.display = 'none';
+  const r = await fetch(P, {
+    method: 'POST',
+    headers: H({'Content-Type': 'application/json'}),
+    body: JSON.stringify({title, details, notify_to: ''})
+  });
+  const text = await r.text();
+  if (!text.startsWith('OK')) { createErr.textContent = text.split('\n')[0]; createErr.style.display = 'block'; return; }
+  modal.style.display = 'none';
+  page = 1;
+  load();
+});
+
+document.getElementById('status-filter').addEventListener('change', () => { page = 1; load(); });
+
+Object.assign(window, { goPage, delJob });
+
+load();
+</script>
+{% endblock %}

@@ -307,6 +307,22 @@ def attach_jobs(inact_app, prefix: str, store: JobStore,
         prefix + "/<job_id>/update", endpoint=ep + "_update",
         view_func=_update, methods=["POST"])
 
+    def _human(_path: str):
+        from ..render import render_template, workspace_nav
+        from ..utils import html_response
+        html = render_template(
+            "jobs_human.html",
+            title="Jobs",
+            prefix=prefix,
+            agents_prefix="/agents",
+            workspace_links=workspace_nav("/_human" + prefix + "/"),
+            show_identity=True,
+        )
+        return html_response(html)
+
+    inact_app._human_views[prefix] = _human
+    inact_app.add_nav_item("jobs", "/_human" + prefix + "/")
+
 
 # ---------------------------------------------------------------------------
 # Mount function

@@ -228,7 +228,9 @@ async function initPush() {
       } else {
         // subscribe
         try {
-          const vapidKey = await fetch(PUSH_KEY_URL, {headers: H()}).then(r => r.text());
+          const kr = await fetch(PUSH_KEY_URL, {headers: H()});
+          const vapidKey = await kr.text();
+          if (!kr.ok || vapidKey.startsWith('ERROR')) throw new Error('Server: ' + vapidKey.trim());
           const sub = await subscribePush(reg, vapidKey.trim());
           await sendSubToServer(sub, myId);
           setPushBtnState(true);

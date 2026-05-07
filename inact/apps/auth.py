@@ -6,8 +6,7 @@ Flask before_request hook that validates every incoming request.
 
 Accepted credentials (in order):
   1. X-Api-Key header
-  2. ?api_key= query parameter
-  3. _inact_key cookie  (set by browser after registering via /_human/members/)
+  2. _inact_key cookie  (set by browser after registering via /_human/members/)
 
 Public paths skip auth entirely. Admin routes (/admin, /_human/admin) should
 be added to the public list — they carry their own X-Admin-Key auth.
@@ -105,7 +104,6 @@ def mount_auth(
         # Resolve key: header → query param → cookie
         api_key = (
             request.headers.get("X-Api-Key", "")
-            or request.args.get("api_key", "")
             or request.cookies.get(_SESSION_COOKIE, "")
         ).strip()
 

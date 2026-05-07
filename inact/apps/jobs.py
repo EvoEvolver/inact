@@ -470,12 +470,11 @@ def attach_jobs(inact_app, prefix: str, store: JobStore,
     flask_app = inact_app.app
 
     def _resolve_agent_id() -> str | None:
-        """Infer agent_id from X-Api-Key / ?api_key= / _inact_key cookie via registry."""
+        """Infer agent_id from X-Api-Key header or _inact_key cookie via registry."""
         if registry is None:
             return None
         api_key = (
             request.headers.get("X-Api-Key", "")
-            or request.args.get("api_key", "")
             or request.cookies.get("_inact_key", "")
         ).strip()
         if not api_key:

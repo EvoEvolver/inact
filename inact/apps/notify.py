@@ -202,31 +202,32 @@ class NotifyStore:
 
     def get_or_create_vapid_keys(self) -> tuple[str, str]:
         """Return (private_b64, public_b64) — both URL-safe base64. Creates on first call."""
+        import base64
+
+        def _ec_priv_to_b64(pk) -> str:
+            # Raw 32-byte big-endian EC private scalar, base64url-encoded (no padding).
+            d = pk.private_numbers().private_value
+            return base64.urlsafe_b64encode(d.to_bytes(32, "big")).rstrip(b"=").decode()
+
         row = self._s.fetchone("SELECT private_pem, public_b64 FROM vapid_keys WHERE id = 1")
         if row:
             private_val = row["private_pem"]
             # Migrate: if stored as PEM, convert to raw base64 in-place.
             if private_val and "-----" in private_val:
-                from cryptography.hazmat.primitives.serialization import (
-                    Encoding, PublicFormat, PrivateFormat, NoEncryption, load_pem_private_key)
-                import base64
+                from cryptography.hazmat.primitives.serialization import load_pem_private_key
                 pk = load_pem_private_key(private_val.encode(), password=None)
-                raw = pk.private_bytes(Encoding.Raw, PrivateFormat.Raw, NoEncryption())
-                private_val = base64.urlsafe_b64encode(raw).rstrip(b"=").decode()
+                private_val = _ec_priv_to_b64(pk)
                 self._s.execute(
                     "UPDATE vapid_keys SET private_pem = ? WHERE id = 1", (private_val,)
                 )
             return private_val, row["public_b64"]
         from py_vapid import Vapid
-        from cryptography.hazmat.primitives.serialization import (
-            Encoding, PublicFormat, PrivateFormat, NoEncryption)
-        import base64
+        from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
         v = Vapid()
         v.generate_keys()
         pub_bytes = v._public_key.public_bytes(Encoding.X962, PublicFormat.UncompressedPoint)
         public_b64 = base64.urlsafe_b64encode(pub_bytes).rstrip(b"=").decode()
-        priv_raw = v._private_key.private_bytes(Encoding.Raw, PrivateFormat.Raw, NoEncryption())
-        private_b64 = base64.urlsafe_b64encode(priv_raw).rstrip(b"=").decode()
+        private_b64 = _ec_priv_to_b64(v._private_key)
         self._s.execute(
             "INSERT INTO vapid_keys (id, private_pem, public_b64) VALUES (1, ?, ?)",
             (private_b64, public_b64),

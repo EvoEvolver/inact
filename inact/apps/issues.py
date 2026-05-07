@@ -374,11 +374,12 @@ def attach_issues(inact_app, prefix: str, store: IssueStore,
         return agent_id
 
     def _caller_id() -> str:
-        """Resolve the calling agent's id from X-Api-Key / cookie."""
+        """Resolve the calling agent's id from X-Api-Key / ?api_key= / cookie."""
         if lookup_agent_by_key is None:
             return ""
         api_key = (
             request.headers.get("X-Api-Key", "")
+            or request.args.get("api_key", "")
             or request.cookies.get("_inact_key", "")
         ).strip()
         if not api_key:

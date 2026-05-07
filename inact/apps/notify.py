@@ -201,23 +201,37 @@ class NotifyStore:
     # push subscriptions
 
     def get_or_create_vapid_keys(self) -> tuple[str, str]:
-        """Return (private_pem, public_b64). Creates keys on first call."""
+        """Return (private_b64, public_b64) — both URL-safe base64. Creates on first call."""
         row = self._s.fetchone("SELECT private_pem, public_b64 FROM vapid_keys WHERE id = 1")
         if row:
-            return row["private_pem"], row["public_b64"]
+            private_val = row["private_pem"]
+            # Migrate: if stored as PEM, convert to raw base64 in-place.
+            if private_val and "-----" in private_val:
+                from cryptography.hazmat.primitives.serialization import (
+                    Encoding, PublicFormat, PrivateFormat, NoEncryption, load_pem_private_key)
+                import base64
+                pk = load_pem_private_key(private_val.encode(), password=None)
+                raw = pk.private_bytes(Encoding.Raw, PrivateFormat.Raw, NoEncryption())
+                private_val = base64.urlsafe_b64encode(raw).rstrip(b"=").decode()
+                self._s.execute(
+                    "UPDATE vapid_keys SET private_pem = ? WHERE id = 1", (private_val,)
+                )
+            return private_val, row["public_b64"]
         from py_vapid import Vapid
-        from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
+        from cryptography.hazmat.primitives.serialization import (
+            Encoding, PublicFormat, PrivateFormat, NoEncryption)
         import base64
         v = Vapid()
         v.generate_keys()
         pub_bytes = v._public_key.public_bytes(Encoding.X962, PublicFormat.UncompressedPoint)
         public_b64 = base64.urlsafe_b64encode(pub_bytes).rstrip(b"=").decode()
-        private_pem = v.private_pem().decode()
+        priv_raw = v._private_key.private_bytes(Encoding.Raw, PrivateFormat.Raw, NoEncryption())
+        private_b64 = base64.urlsafe_b64encode(priv_raw).rstrip(b"=").decode()
         self._s.execute(
             "INSERT INTO vapid_keys (id, private_pem, public_b64) VALUES (1, ?, ?)",
-            (private_pem, public_b64),
+            (private_b64, public_b64),
         )
-        return private_pem, public_b64
+        return private_b64, public_b64
 
     def store_push_subscription(self, agent_id: str, endpoint: str,
                                 p256dh: str, auth: str) -> None:

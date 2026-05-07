@@ -587,6 +587,21 @@ def attach_notify(inact_app, prefix: str, store: NotifyStore,
         store.delete_push_subscription(endpoint)
         return text_response("OK\n")
 
+    def _push_subscriptions():
+        agent_id = (
+            request.args.get("agent_id", "")
+            or request.headers.get("X-Agent-Id", "")
+        ).strip()
+        if not agent_id:
+            return text_response("ERROR 400: agent_id required\n", 400)
+        subs = store.get_push_subscriptions(agent_id)
+        lines = [f"# Push subscriptions for agent {agent_id}\n",
+                 f"count = {len(subs)}\n\n"]
+        for s in subs:
+            lines += ["[[subscriptions]]\n",
+                      f"endpoint = {toml_str(s['endpoint'][:60] + '...')}\n\n"]
+        return text_response("".join(lines))
+
     flask_app.add_url_rule(
         prefix + "/register",
         endpoint=ep + "_register", view_func=_register, methods=["POST"])
@@ -611,6 +626,9 @@ def attach_notify(inact_app, prefix: str, store: NotifyStore,
     flask_app.add_url_rule(
         prefix + "/push/unsubscribe",
         endpoint=ep + "_push_unsub", view_func=_push_unsubscribe, methods=["DELETE", "POST"])
+    flask_app.add_url_rule(
+        prefix + "/push/subscriptions",
+        endpoint=ep + "_push_subs", view_func=_push_subscriptions, methods=["GET"])
 
     _SW_JS = """\
 self.addEventListener('push', function(e) {

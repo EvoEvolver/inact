@@ -2,6 +2,7 @@ import json
 
 from fastapi import Request
 from fastapi.responses import Response, HTMLResponse
+from starlette.middleware.base import BaseHTTPMiddleware
 
 
 def text_response(body: str, status: int = 200) -> Response:

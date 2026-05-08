@@ -19,6 +19,7 @@ from .utils import (
     Request,
     Response,
     HTMLResponse,
+    BaseHTTPMiddleware,
 )
 
 __all__ = [
@@ -40,6 +41,7 @@ __all__ = [
     "HTMLResponse",
     "Request",
     "Response",
+    "BaseHTTPMiddleware",
     "make_storage",
     "IssueStore",
     "JobStore",

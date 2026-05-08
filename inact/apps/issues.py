@@ -25,6 +25,7 @@ mount_issues(inact_app, prefix, storage) registers:
 
   GET    {prefix}/{number}/comments        list all comments
   POST   {prefix}/{number}/comments        add comment  body: {"body":"...","author":"..."}
+  POST   {prefix}/{number}/comments/{cid}  update comment body
   DELETE {prefix}/{number}/comments/{cid}  delete comment
 
   GET    {prefix}/labels/                  list defined labels
@@ -70,7 +71,8 @@ _DDL = [
         issue_number INTEGER NOT NULL,
         author       TEXT    NOT NULL DEFAULT '',
         body         TEXT    NOT NULL,
-        created_at   BIGINT  NOT NULL
+        created_at   BIGINT  NOT NULL,
+        updated_at   BIGINT  NOT NULL
     )""",
 ]
 
@@ -116,6 +118,7 @@ class IssueStore:
     def __init__(self, storage: Storage):
         self._s = storage
         self._s.init(_DDL)
+        self._ensure_comment_updated_at()
         # Seed sqlite_sequence so existing databases (created before AUTOINCREMENT was added)
         # never reuse a previously-assigned issue number.
         try:
@@ -125,6 +128,18 @@ class IssueStore:
             )
         except Exception:
             pass  # Non-SQLite backends or sqlite_sequence not yet created
+
+    def _ensure_comment_updated_at(self) -> None:
+        try:
+            self._s.execute(
+                "ALTER TABLE issue_comments ADD COLUMN updated_at BIGINT NOT NULL DEFAULT 0"
+            )
+        except Exception:
+            pass  # Column already exists, or backend handled it during CREATE TABLE.
+        self._s.execute(
+            "UPDATE issue_comments SET updated_at=created_at"
+            " WHERE updated_at IS NULL OR updated_at=0"
+        )
 
     # --- issues ---
 
@@ -264,14 +279,15 @@ class IssueStore:
     def add_comment(self, number: int, body: str, author: str = "") -> dict:
         now = int(time.time())
         cid = self._s.insert(
-            "INSERT INTO issue_comments (issue_number, author, body, created_at) VALUES (?,?,?,?)",
-            (number, author, body, now),
+            "INSERT INTO issue_comments (issue_number, author, body, created_at, updated_at)"
+            " VALUES (?,?,?,?,?)",
+            (number, author, body, now, now),
         )
         self._s.execute(
             "UPDATE issues SET updated_at=? WHERE number=?", (now, number)
         )
         return {"id": cid, "issue_number": number, "author": author,
-                "body": body, "created_at": now}
+                "body": body, "created_at": now, "updated_at": now}
 
     def list_comments(self, number: int) -> list[dict]:
         return self._s.fetchall(
@@ -283,6 +299,18 @@ class IssueStore:
         return self._s.execute(
             "DELETE FROM issue_comments WHERE id=?", (cid,)
         ) > 0
+
+    def update_comment(self, number: int, cid: int, body: str) -> bool:
+        now = int(time.time())
+        ok = self._s.execute(
+            "UPDATE issue_comments SET body=?, updated_at=? WHERE id=? AND issue_number=?",
+            (body, now, cid, number),
+        ) > 0
+        if ok:
+            self._s.execute(
+                "UPDATE issues SET updated_at=? WHERE number=?", (now, number)
+            )
+        return ok
 
 
 # ---------------------------------------------------------------------------
@@ -347,6 +375,7 @@ def _issue_detail_toml(issue: dict, comments: list[dict], prefix: str, name_for=
                 f"author     = {toml_str(nf(c['author']))}\n",
                 f"body       = {toml_str(c['body'])}\n",
                 f"created_at = {toml_str(_fmt_ts(c['created_at']))}\n",
+                f"updated_at = {toml_str(_fmt_ts(c['updated_at']))}\n",
                 f"delete     = {toml_str(prefix + '/' + n + '/comments/' + str(c['id']))}\n",
                 "\n",
             ]
@@ -628,12 +657,26 @@ def attach_issues(inact_app, prefix: str, store: IssueStore,
                 f"author     = {toml_str(_agent_display(c['author']))}\n",
                 f"body       = {toml_str(c['body'])}\n",
                 f"created_at = {toml_str(_fmt_ts(c['created_at']))}\n",
+                f"updated_at = {toml_str(_fmt_ts(c['updated_at']))}\n",
                 f"delete     = {toml_str(prefix + '/' + str(number) + '/comments/' + str(c['id']))}\n",
                 "\n",
             ]
         return text_response("".join(lines))
 
     def _comment(number: int, cid: int):
+        if request.method == "POST":
+            body = request.get_json(force=True, silent=True) or {}
+            cbody = (body.get("body") or "").strip()
+            if not cbody:
+                return text_response(
+                    "ERROR 400: 'body' required\n"
+                    f"POST {prefix}/{number}/comments/{cid}\n"
+                    '  body: {"body":"..."}\n',
+                    400,
+                )
+            ok = store.update_comment(number, cid, cbody)
+            return text_response("OK\n" if ok else "ERROR 404: comment not found\n",
+                                 200 if ok else 404)
         if request.method == "DELETE":
             ok = store.delete_comment(cid)
             return text_response("OK\n" if ok else "ERROR 404: not found\n", 200 if ok else 404)
@@ -714,7 +757,7 @@ def attach_issues(inact_app, prefix: str, store: IssueStore,
         endpoint=ep + "_comments", view_func=_comments, methods=["GET", "POST"])
     flask_app.add_url_rule(
         prefix + "/<int:number>/comments/<int:cid>",
-        endpoint=ep + "_comment", view_func=_comment, methods=["DELETE"])
+        endpoint=ep + "_comment", view_func=_comment, methods=["POST", "DELETE"])
 
     def _human(path: str):
         from ..render import render_template, workspace_nav
@@ -856,6 +899,7 @@ def mount_issues(
         f"  DELETE {p}/{{number}}/labels/{{name}}     remove label\n"
         f"  GET    {p}/{{number}}/comments           list comments\n"
         f"  POST   {p}/{{number}}/comments           add comment\n"
+        f"  POST   {p}/{{number}}/comments/{{cid}}    update comment\n"
         f"  DELETE {p}/{{number}}/comments/{{cid}}    delete comment\n"
         f"  GET    {p}/labels/                    list labels\n"
         f"  POST   {p}/labels/                    create label\n"

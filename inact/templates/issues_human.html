@@ -106,8 +106,17 @@
   background: #fff; border: 1px solid #e0e0e0; border-radius: 8px;
   padding: 14px 16px; margin-bottom: 10px;
 }
-.comment-header { font-size: 12px; color: #888; margin-bottom: 8px; }
+.comment-header { font-size: 12px; color: #888; margin-bottom: 8px; display:flex;align-items:center;gap:6px;flex-wrap:wrap; }
 .comment-body   { font-size: 14px; }
+.edit-link {
+  background: none; border: none; color: #555; cursor: pointer;
+  font-size: 12px; padding: 0; text-decoration: underline;
+}
+.edit-field {
+  width: 100%; border: 1px solid #ddd; border-radius: 8px; padding: 10px 12px;
+  font-size: 14px; font-family: inherit; box-sizing: border-box;
+}
+.edit-actions { display:flex;align-items:center;gap:8px;margin-top:8px;flex-wrap:wrap; }
 </style>
 
 <script type="module">
@@ -120,6 +129,8 @@ function esc(s) { return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;'
 function md(s) { return DOMPurify.sanitize(marked.parse(String(s||''))); }
 let stateFilter  = 'open';
 let currentIssue = null;
+let currentIssueData = null;
+let commentBodyMap = {};
 let agentMap     = {};
 let allAgents    = [];
 let issuePage    = 1;
@@ -309,6 +320,7 @@ async function openIssue(num) {
   const comments = parseBlocks(text, 'comments');
   iss.labels     = parseBlocks(text, 'labels');
   iss.number     = num;
+  currentIssueData = iss;
 
   document.getElementById('view-list').hidden   = true;
   document.getElementById('view-detail').hidden = false;
@@ -330,10 +342,21 @@ async function openIssue(num) {
   document.getElementById('detail-content').innerHTML = `
     <div style="display:flex;align-items:flex-start;gap:12px;margin-bottom:16px;flex-wrap:wrap">
       <div style="flex:1;min-width:0">
-        <h2 style="margin:0 0 6px;font-size:20px;font-weight:700">
-          ${esc(iss.title)}
+        <h2 id="issue-title-display" style="margin:0 0 6px;font-size:20px;font-weight:700">
+          <span>${esc(iss.title)}</span>
           <span style="color:#888;font-weight:400;font-size:16px"> #${num}</span>
+          <button class="edit-link" onclick="startIssueEdit();return false" style="margin-left:8px">Edit</button>
         </h2>
+        <div id="issue-edit-form" hidden style="margin:0 0 10px">
+          <input id="issue-edit-title" class="edit-field" placeholder="Title *" style="font-size:18px;font-weight:700;margin-bottom:8px">
+          <textarea id="issue-edit-body" class="edit-field" rows="6" placeholder="Description (optional)" style="resize:vertical"></textarea>
+          <div class="edit-actions">
+            <button class="primary" onclick="saveIssueEdit(${num})" style="font-size:13px;padding:7px 14px">Save</button>
+            <button onclick="cancelIssueEdit()"
+                    style="background:none;border:none;cursor:pointer;font-size:13px;color:#888">Cancel</button>
+            <span id="issue-edit-err" style="color:#cc0000;font-size:13px"></span>
+          </div>
+        </div>
         <div style="font-size:13px;color:#888;display:flex;align-items:center;gap:8px;flex-wrap:wrap">
           <span class="sbadge ${isOpen ? 's-open' : 's-closed'}">${isOpen ? 'Open' : 'Closed'}</span>
           ${author  ? `by <strong>${esc(author)}</strong>` : ''}
@@ -357,11 +380,13 @@ async function openIssue(num) {
       </div>
     </div>
 
+    <div id="issue-body-display">
     ${iss.body ? `
-    <div class="md" style="background:#fff;border:1px solid #e0e0e0;border-radius:8px;
+      <div class="md" style="background:#fff;border:1px solid #e0e0e0;border-radius:8px;
                 padding:16px;margin-bottom:16px;font-size:14px">
-      ${md(iss.body)}
-    </div>` : ''}
+        ${md(iss.body)}
+      </div>` : ''}
+    </div>
 
     <div style="margin-bottom:16px;display:flex;align-items:center;flex-wrap:wrap;gap:6px">
       <span style="font-size:12px;color:#888;font-weight:600">Labels:</span>
@@ -384,6 +409,7 @@ async function openIssue(num) {
 
 function renderComments(num, comments) {
   const sec = document.getElementById('comments-section');
+  commentBodyMap = {};
   if (!comments.length) {
     sec.innerHTML = '<p style="color:#aaa;font-size:13px;margin-bottom:20px">No comments yet.</p>';
     return;
@@ -393,17 +419,100 @@ function renderComments(num, comments) {
        ${comments.length} comment${comments.length !== 1 ? 's' : ''}
      </h4>` +
     comments.map(c => {
+      commentBodyMap[String(c.id)] = c.body || '';
       const author = nameFor(c.author) || (c.author ? '#' + c.author : 'unknown');
       const when   = (c.created_at || '').replace('T',' ').replace('Z','').slice(0,16);
+      const edited = c.updated_at && c.created_at && c.updated_at !== c.created_at;
       return `
-      <div class="comment-card">
+      <div class="comment-card" id="comment-${esc(c.id)}">
         <div class="comment-header">
           <strong>${esc(author)}</strong>
-          ${when ? ' &nbsp;·&nbsp; ' + esc(when) : ''}
+          ${when ? '<span>&middot;</span><span>' + esc(when) + '</span>' : ''}
+          ${edited ? '<span>&middot;</span><span>edited</span>' : ''}
+          <button class="edit-link" onclick="startCommentEdit(${num}, ${esc(c.id)});return false" style="margin-left:auto">Edit</button>
         </div>
-        <div class="comment-body md">${md(c.body)}</div>
+        <div class="comment-body md" id="comment-body-${esc(c.id)}">${md(c.body)}</div>
+        <div id="comment-edit-${esc(c.id)}" hidden>
+          <textarea id="comment-edit-body-${esc(c.id)}" class="edit-field" rows="4" style="resize:vertical"></textarea>
+          <div class="edit-actions">
+            <button class="primary" onclick="saveCommentEdit(${num}, ${esc(c.id)})" style="font-size:13px;padding:7px 14px">Save</button>
+            <button onclick="cancelCommentEdit(${esc(c.id)})"
+                    style="background:none;border:none;cursor:pointer;font-size:13px;color:#888">Cancel</button>
+            <span id="comment-edit-err-${esc(c.id)}" style="color:#cc0000;font-size:13px"></span>
+          </div>
+        </div>
       </div>`;
     }).join('');
+}
+
+function startIssueEdit() {
+  if (!currentIssueData) return;
+  document.getElementById('issue-edit-title').value = currentIssueData.title || '';
+  document.getElementById('issue-edit-body').value = currentIssueData.body || '';
+  document.getElementById('issue-edit-err').textContent = '';
+  document.getElementById('issue-title-display').hidden = true;
+  document.getElementById('issue-body-display').hidden = true;
+  document.getElementById('issue-edit-form').hidden = false;
+  document.getElementById('issue-edit-title').focus();
+}
+
+function cancelIssueEdit() {
+  document.getElementById('issue-edit-form').hidden = true;
+  document.getElementById('issue-title-display').hidden = false;
+  document.getElementById('issue-body-display').hidden = false;
+}
+
+async function saveIssueEdit(num) {
+  const title = document.getElementById('issue-edit-title').value.trim();
+  const body  = document.getElementById('issue-edit-body').value;
+  const errEl = document.getElementById('issue-edit-err');
+  if (!title) { errEl.textContent = 'Title required'; return; }
+  errEl.textContent = '';
+  const r = await fetch(`${P}/${num}`, {
+    method: 'POST',
+    headers: H({'Content-Type': 'application/json'}),
+    body: JSON.stringify({title, body}),
+  });
+  const text = await r.text();
+  if (!text.startsWith('OK')) { errEl.textContent = text.split('\n')[0]; return; }
+  openIssue(num);
+}
+
+function startCommentEdit(num, cid) {
+  const bodyEl = document.getElementById('comment-body-' + cid);
+  const editEl = document.getElementById('comment-edit-' + cid);
+  const textarea = document.getElementById('comment-edit-body-' + cid);
+  const errEl = document.getElementById('comment-edit-err-' + cid);
+  if (!bodyEl || !editEl || !textarea) return;
+  textarea.value = commentBodyMap[String(cid)] || '';
+  errEl.textContent = '';
+  bodyEl.hidden = true;
+  editEl.hidden = false;
+  textarea.focus();
+}
+
+function cancelCommentEdit(cid) {
+  const bodyEl = document.getElementById('comment-body-' + cid);
+  const editEl = document.getElementById('comment-edit-' + cid);
+  if (bodyEl) bodyEl.hidden = false;
+  if (editEl) editEl.hidden = true;
+}
+
+async function saveCommentEdit(num, cid) {
+  const textarea = document.getElementById('comment-edit-body-' + cid);
+  const errEl = document.getElementById('comment-edit-err-' + cid);
+  const body = textarea.value.trim();
+  if (!body) { errEl.textContent = 'Comment cannot be empty'; return; }
+  errEl.textContent = '';
+  const r = await fetch(`${P}/${num}/comments/${cid}`, {
+    method: 'POST',
+    headers: H({'Content-Type': 'application/json'}),
+    body: JSON.stringify({body}),
+  });
+  const text = await r.text();
+  if (!text.startsWith('OK')) { errEl.textContent = text.split('\n')[0]; return; }
+  const issText = await fetch(`${P}/${num}`, {headers: H()}).then(r => r.text()).catch(()=>'');
+  renderComments(num, parseBlocks(issText, 'comments'));
 }
 
 async function toggleState(num, action) {
@@ -469,6 +578,7 @@ async function submitComment() {
 
 function backToList() {
   currentIssue = null;
+  currentIssueData = null;
   document.getElementById('view-detail').hidden = true;
   document.getElementById('view-list').hidden   = false;
   loadIssues();
@@ -484,6 +594,8 @@ Object.assign(window, {
   setStateFilter, showNewForm, hideNewForm, submitNewIssue,
   backToList, submitComment, openIssue, goPage,
   removeLabelFromIssue, assignIssue, toggleState, addLabelToIssue,
+  startIssueEdit, cancelIssueEdit, saveIssueEdit,
+  startCommentEdit, cancelCommentEdit, saveCommentEdit,
 });
 
 Promise.all([loadAgents(), loadLabels()]).then(() => {

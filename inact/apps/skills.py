@@ -243,26 +243,34 @@ def _attach_skills(inact_app, prefix: str, store: SkillStore) -> None:
     fastapi_app.add_api_route(prefix, _index, methods=["GET"])
     fastapi_app.add_api_route(prefix + "/{name}", _detail, methods=["GET"])
 
-    def _human(subpath: str):
-        from ..render import render_markdown, render_ls
+    def _human(path: str):
+        from ..render import render_markdown
         from ..utils import html_response
-        sub = (subpath or "").strip("/")
+        # Caller passes the full request path (e.g. "/skills" or
+        # "/skills/<name>"); strip the mount prefix to recover the
+        # in-app subpath.
+        rel = path[len(prefix):] if path.startswith(prefix) else path
+        sub = rel.strip("/")
         if not sub:
             entries = store.list()
-            ls_entries = [
-                {"path": f"{prefix}/{s.name}", "name": s.name,
-                 "description": s.description}
-                for s in entries
-            ]
-            html, _ = render_ls(ls_entries, "/_human" + prefix + "/", prefix)
-            return html_response(html)
+            lines = [f"# Skills ({len(entries)})\n\n"]
+            for s in entries:
+                tag_str = ", ".join(f"`{t}`" for t in s.tags)
+                lines.append(
+                    f"- [{s.name}](/_human{prefix}/{s.name}) "
+                    f"— {s.description}"
+                )
+                if tag_str:
+                    lines.append(f"  \n  tags: {tag_str}")
+                lines.append("\n")
+            md = "\n".join(lines)
+            return render_markdown(md, prefix)
         entry = store.get(sub)
         if entry is None:
             return html_response(
                 f"<h1>404</h1><p>unknown skill {sub!r}</p>", 404
             )
-        html, _ = render_markdown(entry.read(), prefix + "/" + sub)
-        return html_response(html)
+        return render_markdown(entry.read(), prefix + "/" + sub)
 
     inact_app._human_views[prefix] = _human
     inact_app.add_nav_item("skills", "/_human" + prefix + "/")

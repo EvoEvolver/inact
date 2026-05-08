@@ -167,6 +167,26 @@ def test_http_index_empty_when_no_skills(tmp_path):
     assert "No skills mounted" in resp.text
 
 
+def test_human_view_index_and_detail(tmp_path):
+    client, store, root_a, _ = _make_app(tmp_path)
+    _write_skill(root_a, "alpha", description="Use alpha here.",
+                 body="# Alpha\n\nbody.\n")
+    store.register_root(root_a, default_tags=["mod_a"])
+
+    index = client.get("/_human/skills/")
+    assert index.status_code == 200
+    assert "alpha" in index.text
+    assert "Use alpha here." in index.text
+
+    detail = client.get("/_human/skills/alpha")
+    assert detail.status_code == 200
+    # rendered markdown produces an <h1> for the H1 in body
+    assert "Alpha" in detail.text
+
+    missing = client.get("/_human/skills/nope")
+    assert missing.status_code == 404
+
+
 def test_reload_picks_up_new_skill(tmp_path):
     client, store, root_a, _ = _make_app(tmp_path)
     _write_skill(root_a, "alpha")

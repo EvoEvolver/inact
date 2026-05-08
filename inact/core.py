@@ -13,13 +13,11 @@ from __future__ import annotations
 import os
 from typing import Callable
 
-from flask import Flask, request
+from flask import Flask
 
-from .apps.files import PAGE_RE
 from .pages import normalize_md, normalize_toml
-from .render import render_markdown, render_toml, render_plain, render_ls
-from .utils import text_response, toml_str
-
+from .render import render_markdown, render_toml, render_plain
+from .utils import text_response
 
 # ---------------------------------------------------------------------------
 # Internal types
@@ -38,7 +36,7 @@ class Inact:
         self._routes: dict[str, _RouteEntry] = {}
         self._help: dict[str, Callable[[], str] | str] = {}
         self._mounts: dict[str, str] = {}  # prefix -> abs folder
-        self._mount_handlers: dict[str, dict[str, FileHandler]] = {}  # prefix -> {ext -> handler}
+        self._mount_handlers: dict[str, any] = {}  # prefix -> {ext -> handler}
         self._mount_editable: dict[str, bool | list[str]] = {}  # prefix -> editable spec
         self._website_mounts: dict[str, str] = {}  # prefix -> base URL (used by _render_human)
         self._app_mounts: list[tuple[str, str]] = []  # (prefix, help_text) injected by mount_*
@@ -83,70 +81,6 @@ class Inact:
     def run(self, **kwargs):
         self.app.run(**kwargs)
 
-    def to_mcp(self, base_url: str, name: str | None = None):
-        """
-        Export this inact app as an MCP server with a single ``fetch`` tool.
-
-        The server description auto-lists every route and mount so the agent
-        knows what paths exist before making any requests.
-
-        Requires: pip install mcp httpx
-
-        Usage::
-
-            mcp = app.to_mcp("http://localhost:5000")
-            mcp.run()                          # stdio (Claude Desktop, etc.)
-            mcp.run(transport="streamable-http", port=8080)
-        """
-        try:
-            from mcp.server.fastmcp import FastMCP
-        except ImportError:
-            raise RuntimeError("mcp package is required: pip install mcp")
-
-        import httpx
-
-        base = base_url.rstrip("/")
-        mcp_server = FastMCP(name or self.app.name, description=self._mcp_description(base))
-
-        @mcp_server.tool()
-        def fetch(path: str, method: str = "GET", body: str = "") -> str:
-            """
-            Access any route on this inact server.
-
-            path: URL path starting with / — may include query string.
-                  Examples: '/docs/.ls', '/docs/.grep?q=python',
-                  '/docs/README.md', '/docs/README.md/.info'
-            method: HTTP method. Use 'GET' to read, 'POST' to write
-                    (e.g. /.replace endpoints).
-            body: Request body for POST (plain text content to write).
-            """
-            url = base + "/" + path.lstrip("/")
-            with httpx.Client(timeout=30) as client:
-                if method.upper() == "POST":
-                    resp = client.post(url, content=body.encode())
-                else:
-                    resp = client.get(url)
-                return resp.text
-
-        return mcp_server
-
-    def _mcp_description(self, base_url: str) -> str:
-        lines = [
-            f"Inact server at {base_url} — an AI-first HTTP API.\n",
-            "All responses are plain text, designed for direct AI consumption.\n\n",
-            f"  curl {base_url}/.help\n\n",
-        ]
-        if self._routes:
-            lines.append("## Routes\n\n")
-            for path in sorted(self._routes):
-                kind, _ = self._routes[path]
-                lines.append(f"  GET {path}  [{kind}]\n")
-            lines.append("\n")
-        if self._app_mounts:
-            lines.append("## Mounted apps\n\n")
-            for _, help_text in sorted(self._app_mounts):
-                lines.append(help_text)
-        return "".join(lines)
 
     # -----------------------------------------------------------------------
     # Built-in global routes
@@ -211,67 +145,6 @@ class Inact:
             if kind == "toml":
                 return render_toml(value, path)
             return render_plain(str(value), path)
-
-        # Mounted file/directory
-        for prefix, folder in self._mounts.items():
-            if path == prefix or path.startswith(prefix + "/"):
-                subpath = path[len(prefix):].lstrip("/")
-
-                # Resolve pagination in human view: /<file>/p/<N>
-                page = 1
-                display_subpath = subpath
-                m = PAGE_RE.match(subpath)
-                if m:
-                    file_sub, pg = m.group(1), int(m.group(2))
-                    _, ext = os.path.splitext(file_sub.lower())
-                    if ext in self._mount_handlers.get(prefix, {}):
-                        display_subpath = file_sub
-                        page = pg
-
-                full = os.path.normpath(os.path.join(folder, display_subpath)) if display_subpath else folder
-                if not full.startswith(folder):
-                    return text_response("ERROR 403: Forbidden\n", 403)
-
-                if os.path.isdir(full):
-                    entries = _list_dir_local(folder, full, prefix, display_subpath)
-                    return render_ls(entries, path, prefix + ("/" + display_subpath if display_subpath else ""))
-
-                if os.path.isfile(full):
-                    _, ext = os.path.splitext(display_subpath.lower())
-                    handler = self._mount_handlers.get(prefix, {}).get(ext)
-                    if handler is not None:
-                        content, status = handler.serve(full, prefix + "/" + display_subpath, page)
-                        if status != 200:
-                            return text_response(f"ERROR {status}: {content}\n", status)
-                        return render_plain(content, path)
-                    try:
-                        content = open(full, encoding="utf-8").read()
-                    except Exception as e:
-                        return text_response(f"ERROR 500: {e}\n", 500)
-                    if full.endswith(".md"):
-                        return render_markdown(content, path)
-                    if full.endswith(".toml"):
-                        return render_toml(content, path)
-                    return render_plain(content, path)
-
-        # Proxied website — return the raw HTML so the browser renders it natively
-        for prefix, base_url in self._website_mounts.items():
-            if path == prefix or path.startswith(prefix + "/"):
-                subpath = path[len(prefix):].lstrip("/")
-                # /.links in human view → show the links page as plain text
-                if subpath == ".links" or subpath.endswith("/.links"):
-                    page_sub = subpath[:-6].rstrip("/") if subpath.endswith("/.links") else ""
-                    from .apps.website import WebsiteProxy, serve_links
-                    return serve_links(WebsiteProxy(base_url), prefix, base_url, page_sub)
-                params = dict(request.args) or None
-                try:
-                    from .apps.website import WebsiteProxy
-                    content_type, body = WebsiteProxy(base_url).fetch_raw(subpath, params)
-                except Exception as exc:
-                    return text_response(f"ERROR 502: {exc}\n", 502)
-                if "text/html" in content_type:
-                    return body, 200, {"Content-Type": "text/html; charset=utf-8"}
-                return render_plain(body, path)
 
         return text_response(f"ERROR 404: No human view for {path}\n", 404)
 

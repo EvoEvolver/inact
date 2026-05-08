@@ -35,8 +35,8 @@ import time
 
 from flask import request
 
-from ...storage import Storage
-from ...utils import text_response, toml_str
+from inact.storage import Storage
+from inact.utils import text_response, toml_str
 
 _VALID_NAME   = re.compile(r"^[a-zA-Z][a-zA-Z0-9_]*$")
 _VALID_TYPES  = {"text", "number", "boolean", "date", "datetime", "select", "relation"}

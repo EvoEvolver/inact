@@ -120,8 +120,8 @@ class Inact:
     # -----------------------------------------------------------------------
 
     def _register_builtins(self):
-        def _human(subpath: str = ""):
-            return self._render_human("/" + subpath)
+        def _human(request: Request, subpath: str = ""):
+            return self._render_human("/" + subpath, request)
 
         def _root_help(request: Request):
             return self._serve_help("/")
@@ -162,14 +162,19 @@ class Inact:
     # /_human/ rendering
     # -----------------------------------------------------------------------
 
-    def _render_human(self, path: str) -> Response:
+    def _render_human(self, path: str, request: Request | None = None) -> Response:
         for prefix, view_fn in self._human_views.items():
             if path == prefix or path.startswith(prefix + "/"):
                 return view_fn(path)
 
         if path in self._routes:
             kind, fn, needs_req = self._routes[path]
-            value = fn() if not needs_req else None
+            if needs_req and request is not None:
+                value = fn(request=request)
+            elif not needs_req:
+                value = fn()
+            else:
+                value = None
             if value is not None:
                 if kind == "md":
                     return render_markdown(value, path)

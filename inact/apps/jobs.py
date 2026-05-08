@@ -429,7 +429,7 @@ def maybe_notify_terminal(job: dict | None, old_status: str | None,
 
 def _job_lines(prefix: str, j: dict, *, full: bool) -> list[str]:
     lines = [
-        f"id           = {toml_str(j['id'])}\n",
+        f"id           = {j['id']}\n",
         f"kind         = {toml_str(j['kind'])}\n",
     ]
     if j.get("backend"):
@@ -591,7 +591,7 @@ def attach_jobs(inact_app, prefix: str, store: JobStore,
             job = store.get(job_id)
         return text_response(
             "OK\n"
-            f"id     = {toml_str(job['id'])}\n"
+            f"id     = {job['id']}\n"
             f"status = {toml_str(job['status'])}\n"
         )
 

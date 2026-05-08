@@ -140,8 +140,8 @@ class Inact:
     # -----------------------------------------------------------------------
 
     def _add_route(self, path: str, kind: str, fn: Callable):
-        self._routes[path] = (kind, fn)
         _needs_request = "request" in inspect.signature(fn).parameters
+        self._routes[path] = (kind, fn, _needs_request)
 
         def _handler(request: Request, _kind=kind, _fn=fn, _nr=_needs_request):
             return self._serve_plain(_kind, _fn, request if _nr else None)
@@ -168,13 +168,14 @@ class Inact:
                 return view_fn(path)
 
         if path in self._routes:
-            kind, fn = self._routes[path]
-            value = fn()
-            if kind == "md":
-                return render_markdown(value, path)
-            if kind == "toml":
-                return render_toml(value, path)
-            return render_plain(str(value), path)
+            kind, fn, needs_req = self._routes[path]
+            value = fn() if not needs_req else None
+            if value is not None:
+                if kind == "md":
+                    return render_markdown(value, path)
+                if kind == "toml":
+                    return render_toml(value, path)
+                return render_plain(str(value), path)
 
         return text_response(f"ERROR 404: No human view for {path}\n", 404)
 
@@ -197,8 +198,8 @@ class Inact:
                 entry = self._help[candidate]
                 return entry() if callable(entry) else entry
             if candidate in self._routes:
-                kind, fn = self._routes[candidate]
-                if kind == "md":
+                kind, fn, needs_req = self._routes[candidate]
+                if kind == "md" and not needs_req:
                     meta, _ = normalize_md(fn())
                     if "help" in meta:
                         return str(meta["help"])
@@ -212,7 +213,7 @@ class Inact:
         if children:
             lines.append("Routes:\n")
             for r in children:
-                kind, _ = self._routes[r]
+                kind, _, _nr = self._routes[r]
                 lines.append(f"  {r}  [{kind}]\n")
 
         app_found = False

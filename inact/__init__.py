@@ -9,7 +9,16 @@ from .apps.workspace.message import MessageStore, mount_message
 from .pages import MdContent, TomlContent
 from .apps.workspace.register import AgentRegistry, mount_register
 from .storage import PostgresStorage, SqliteStorage, Storage, make_storage
-from .utils import text_response, html_response, toml_str, server_base, format_table
+from .utils import (
+    text_response,
+    html_response,
+    toml_str,
+    server_base,
+    format_table,
+    Request,
+    Response,
+    HTMLResponse,
+)
 
 __all__ = [
     "mount_auth",
@@ -27,6 +36,9 @@ __all__ = [
     "TomlContent",
     "format_table",
     "html_response",
+    "HTMLResponse",
+    "Request",
+    "Response",
     "make_storage",
     "IssueStore",
     "JobStore",

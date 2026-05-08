@@ -22,10 +22,10 @@ from __future__ import annotations
 
 import time
 
-from flask import request
+from fastapi import Request
 
 from ...storage import Storage
-from ...utils import text_response, html_response, toml_str
+from ...utils import text_response, html_response, toml_str, _body
 
 _DDL = [
     """CREATE TABLE IF NOT EXISTS sessions (
@@ -62,13 +62,13 @@ def _fmt_ts(ts: int) -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(ts))
 
 
-def _parse_page_params() -> tuple[int, int]:
+def _parse_page_params(request: Request) -> tuple[int, int]:
     try:
-        page = max(1, int(request.args.get("page", 1)))
+        page = max(1, int(request.query_params.get("page", 1)))
     except (ValueError, TypeError):
         page = 1
     try:
-        per_page = min(_MAX_PER_PAGE, max(1, int(request.args.get("per_page", _DEFAULT_PER_PAGE))))
+        per_page = min(_MAX_PER_PAGE, max(1, int(request.query_params.get("per_page", _DEFAULT_PER_PAGE))))
     except (ValueError, TypeError):
         per_page = _DEFAULT_PER_PAGE
     return page, per_page
@@ -242,11 +242,9 @@ def attach_message(inact_app, prefix: str, store: SessionStore,
                    notify_fn=None, kind_fn=None, member_fn=None,
                    registry=None) -> None:
     prefix = "/" + prefix.strip("/")
-    ep = "_inact_msg_" + prefix.replace("/", "__")
-    flask_app = inact_app.app
+    fastapi_app = inact_app.app
 
     def _from_str(agent_id: str) -> str:
-        """Return 'Name#id' for display, falling back to 'Kind #id#id'."""
         if not agent_id:
             return agent_id
         info = member_fn(agent_id) if member_fn else {"name": "", "kind": "agent"}
@@ -255,12 +253,11 @@ def attach_message(inact_app, prefix: str, store: SessionStore,
         )
         return f"{name}#{agent_id}"
 
-    def _resolve_agent_id() -> str | None:
-        """Infer agent_id from X-Api-Key header or _inact_key cookie via registry."""
+    def _resolve_agent_id(request: Request) -> str | None:
         if registry is None:
             return None
         api_key = (
-            request.headers.get("X-Api-Key", "")
+            request.headers.get("x-api-key", "")
             or request.cookies.get("_inact_key", "")
         ).strip()
         if not api_key:
@@ -268,17 +265,17 @@ def attach_message(inact_app, prefix: str, store: SessionStore,
         agent = registry.get_by_key(api_key)
         return str(agent["id"]) if agent else None
 
-    def _agent_id() -> str:
-        resolved = _resolve_agent_id()
+    def _agent_id(request: Request) -> str:
+        resolved = _resolve_agent_id(request)
         if resolved:
             return resolved
         return (
-            request.args.get("agent_id", "")
-            or request.headers.get("X-Agent-Id", "")
+            request.query_params.get("agent_id", "")
+            or request.headers.get("x-agent-id", "")
         ).strip()
 
-    def _root():
-        agent_id = _agent_id()
+    def _root(request: Request):
+        agent_id = _agent_id(request)
         lines = [
             "# Session Messaging\n\n",
             f"sessions_url = {toml_str(prefix + '/sessions')}\n",
@@ -295,11 +292,11 @@ def attach_message(inact_app, prefix: str, store: SessionStore,
             lines.append(f"\n# tip: set X-Agent-Id header or ?agent_id= to see your stats\n")
         return text_response("".join(lines))
 
-    def _sessions():
+    def _sessions(request: Request):
         if request.method == "POST":
-            body = request.get_json(force=True, silent=True) or {}
+            body = _body(request)
             name = (body.get("name") or "").strip()
-            created_by = str(body.get("created_by") or _agent_id()).strip()
+            created_by = str(body.get("created_by") or _agent_id(request)).strip()
             members = [str(m).strip() for m in (body.get("members") or []) if str(m).strip()]
             if not created_by:
                 return text_response(
@@ -325,8 +322,7 @@ def attach_message(inact_app, prefix: str, store: SessionStore,
                 f"url  = {toml_str(prefix + '/sessions/' + str(session_id))}\n"
             )
 
-        # GET — list sessions for this agent
-        agent_id = _agent_id()
+        agent_id = _agent_id(request)
         if not agent_id:
             return text_response(
                 "ERROR 400: agent_id required\n"
@@ -334,7 +330,7 @@ def attach_message(inact_app, prefix: str, store: SessionStore,
                 "       or set X-Agent-Id header\n",
                 400,
             )
-        page, per_page = _parse_page_params()
+        page, per_page = _parse_page_params(request)
         all_sessions = store.list_with_unread(agent_id)
         total = len(all_sessions)
         offset = (page - 1) * per_page
@@ -394,12 +390,12 @@ def attach_message(inact_app, prefix: str, store: SessionStore,
             )
         return text_response("".join(lines))
 
-    def _session_send(session_id: str):
+    def _session_send(session_id: str, request: Request):
         s = store.get(session_id)
         if not s:
             return text_response("ERROR 404: session not found\n", 404)
-        body = request.get_json(force=True, silent=True) or {}
-        from_id = str(body.get("from") or _agent_id()).strip()
+        body = _body(request)
+        from_id = str(body.get("from") or _agent_id(request)).strip()
         text_body = (body.get("body") or "").strip()
         if not from_id:
             return text_response("ERROR 400: X-Agent-Id or 'from' required\n", 400)
@@ -423,13 +419,13 @@ def attach_message(inact_app, prefix: str, store: SessionStore,
                     ))
         return text_response(f"OK\nid = {msg_id}\n")
 
-    def _session_messages(session_id: str):
+    def _session_messages(session_id: str, request: Request):
         s = store.get(session_id)
         if not s:
             return text_response("ERROR 404: session not found\n", 404)
-        agent_id = _agent_id()
-        unread_only = request.args.get("unread", "0") == "1"
-        page, per_page = _parse_page_params()
+        agent_id = _agent_id(request)
+        unread_only = request.query_params.get("unread", "0") == "1"
+        page, per_page = _parse_page_params(request)
         total = store.count_messages(session_id, agent_id, unread_only)
         msgs = store.get_messages(session_id, page, per_page, agent_id, unread_only)
         lines = [
@@ -449,11 +445,11 @@ def attach_message(inact_app, prefix: str, store: SessionStore,
             lines.append("\n")
         return text_response("".join(lines))
 
-    def _session_members(session_id: str):
+    def _session_members(session_id: str, request: Request):
         s = store.get(session_id)
         if not s:
             return text_response("ERROR 404: session not found\n", 404)
-        body = request.get_json(force=True, silent=True) or {}
+        body = _body(request)
         agent_id = str(body.get("agent_id") or "").strip()
         if not agent_id:
             return text_response("ERROR 400: 'agent_id' required\n", 400)
@@ -465,7 +461,6 @@ def attach_message(inact_app, prefix: str, store: SessionStore,
 
     def _human():
         from ...render import render_template, workspace_nav
-        from ...utils import html_response
         html = render_template(
             "message_human.html",
             title="Chat",
@@ -477,24 +472,12 @@ def attach_message(inact_app, prefix: str, store: SessionStore,
         )
         return html_response(html)
 
-    flask_app.add_url_rule(
-        prefix + "/",
-        endpoint=ep + "_root", view_func=_root)
-    flask_app.add_url_rule(
-        prefix + "/sessions",
-        endpoint=ep + "_sessions", view_func=_sessions, methods=["GET", "POST"])
-    flask_app.add_url_rule(
-        prefix + "/sessions/<session_id>",
-        endpoint=ep + "_session_detail", view_func=_session_detail)
-    flask_app.add_url_rule(
-        prefix + "/sessions/<session_id>/send",
-        endpoint=ep + "_session_send", view_func=_session_send, methods=["POST"])
-    flask_app.add_url_rule(
-        prefix + "/sessions/<session_id>/messages",
-        endpoint=ep + "_session_messages", view_func=_session_messages)
-    flask_app.add_url_rule(
-        prefix + "/sessions/<session_id>/members",
-        endpoint=ep + "_session_members", view_func=_session_members, methods=["POST"])
+    fastapi_app.add_api_route(prefix + "/", _root, methods=["GET"])
+    fastapi_app.add_api_route(prefix + "/sessions", _sessions, methods=["GET", "POST"])
+    fastapi_app.add_api_route(prefix + "/sessions/{session_id}", _session_detail, methods=["GET"])
+    fastapi_app.add_api_route(prefix + "/sessions/{session_id}/send", _session_send, methods=["POST"])
+    fastapi_app.add_api_route(prefix + "/sessions/{session_id}/messages", _session_messages, methods=["GET"])
+    fastapi_app.add_api_route(prefix + "/sessions/{session_id}/members", _session_members, methods=["POST"])
     inact_app._human_views[prefix] = lambda path: _human()
     inact_app.add_nav_item("chat", "/_human" + prefix + "/")
 

@@ -2,7 +2,7 @@
 API-key authentication middleware for inact.
 
 mount_auth(inact_app, registry_storage, public=None) registers a
-Flask before_request hook that validates every incoming request.
+middleware that validates every incoming request.
 
 Accepted credentials (in order):
   1. X-Api-Key header
@@ -19,17 +19,19 @@ Example::
 
 from __future__ import annotations
 
-from flask import request
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.requests import Request
+from starlette.responses import RedirectResponse, Response
 
-from ..utils import text_response, html_response
+from ..utils import text_response
 
 _SESSION_COOKIE = "_inact_key"
 
 _DEFAULT_PUBLIC = [
     "/",
     "/.help",
-    "/members/",           # registration + listing
-    "/_human/members/",    # human registration page
+    "/members/",
+    "/_human/members/",
     "/_human/members",
 ]
 
@@ -43,6 +45,62 @@ class _AuthStore:
             "SELECT id FROM agents WHERE api_key = ?", (api_key,)
         )
         return row is not None
+
+
+def _check(request: Request, store: _AuthStore, exempt: list[str]) -> Response | None:
+    path = request.url.path
+
+    if request.method == "OPTIONS":
+        return None
+
+    if path == "/_human/members" or path.startswith("/_human/members/"):
+        return None
+
+    for prefix in exempt:
+        if prefix in ("/", ""):
+            if path == "/":
+                return None
+            continue
+        p = prefix.rstrip("/")
+        if path == p or path == p + "/" or path.startswith(p + "/"):
+            return None
+
+    api_key = (
+        request.headers.get("x-api-key", "")
+        or request.cookies.get(_SESSION_COOKIE, "")
+    ).strip()
+
+    if not api_key:
+        if path.startswith("/_human/"):
+            return RedirectResponse("/_human/members/", status_code=302)
+        return text_response(
+            "ERROR 401: X-Api-Key header required\n"
+            "  Register at POST /members/ to get an API key.\n",
+            401,
+        )
+
+    if not store.valid_key(api_key):
+        if path.startswith("/_human/"):
+            resp = RedirectResponse("/_human/members/", status_code=302)
+            if request.cookies.get(_SESSION_COOKIE):
+                resp.delete_cookie(_SESSION_COOKIE)
+            return resp
+        return text_response("ERROR 403: invalid api_key\n", 403)
+
+    return None
+
+
+class _AuthMiddleware(BaseHTTPMiddleware):
+    def __init__(self, app, store: _AuthStore, exempt: list[str]):
+        super().__init__(app)
+        self._store = store
+        self._exempt = exempt
+
+    async def dispatch(self, request: Request, call_next):
+        result = _check(request, self._store, self._exempt)
+        if result is not None:
+            return result
+        return await call_next(request)
 
 
 def mount_auth(
@@ -79,62 +137,11 @@ def mount_auth(
     store = _AuthStore(backend)
     exempt = list(public) if public is not None else list(_DEFAULT_PUBLIC)
 
-    def _check():
-        path = request.path
-
-        if request.method == "OPTIONS":
-            return None
-
-        # Always exempt the member registration page — it is the redirect
-        # target for unauthenticated browsers and must never require a key.
-        if path == "/_human/members" or path.startswith("/_human/members/"):
-            return None
-
-        # Exempt caller-supplied public prefixes
-        for prefix in exempt:
-            if prefix in ("/", ""):
-                # exact match only — don't exempt everything
-                if path == "/":
-                    return None
-                continue
-            p = prefix.rstrip("/")
-            if path == p or path == p + "/" or path.startswith(p + "/"):
-                return None
-
-        # Resolve key: header → query param → cookie
-        api_key = (
-            request.headers.get("X-Api-Key", "")
-            or request.cookies.get(_SESSION_COOKIE, "")
-        ).strip()
-
-        if not api_key:
-            # Browser page request → redirect to register page
-            if path.startswith("/_human/"):
-                from flask import redirect
-                return redirect("/_human/members/")
-            return text_response(
-                "ERROR 401: X-Api-Key header required\n"
-                "  Register at POST /members/ to get an API key.\n",
-                401,
-            )
-
-        if not store.valid_key(api_key):
-            if path.startswith("/_human/"):
-                from flask import make_response, redirect
-                resp = make_response(redirect("/_human/members/"))
-                # Clear the stale cookie so the browser doesn't keep sending it
-                if request.cookies.get(_SESSION_COOKIE):
-                    resp.delete_cookie(_SESSION_COOKIE)
-                return resp
-            return text_response("ERROR 403: invalid api_key\n", 403)
-
-        return None
-
-    inact_app.app.before_request(_check)
+    inact_app.app.add_middleware(_AuthMiddleware, store=store, exempt=exempt)
 
     inact_app._app_mounts.append(("/_auth", (
         "\nAuth: all routes require X-Api-Key\n"
         "  Header:  X-Api-Key: <key>\n"
-        "  Cookie:  _inact_key=\u003ckey\u003e  (set by /_human/members/ on registration)\n"
+        "  Cookie:  _inact_key=<key>  (set by /_human/members/ on registration)\n"
         "  Public:  " + "  ".join(exempt) + "\n"
     )))

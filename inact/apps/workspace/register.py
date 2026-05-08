@@ -17,10 +17,11 @@ from __future__ import annotations
 import secrets
 import time
 
-from flask import request
+from fastapi import Request
+from starlette.responses import RedirectResponse
 
 from ...storage import Storage
-from ...utils import text_response, html_response, toml_str
+from ...utils import text_response, html_response, toml_str, _body
 
 _DDL = [
     """CREATE TABLE IF NOT EXISTS agents (
@@ -49,13 +50,13 @@ def _fmt_ts(ts: int) -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(ts))
 
 
-def _parse_page_params() -> tuple[int, int]:
+def _parse_page_params(request: Request) -> tuple[int, int]:
     try:
-        page = max(1, int(request.args.get("page", 1)))
+        page = max(1, int(request.query_params.get("page", 1)))
     except (ValueError, TypeError):
         page = 1
     try:
-        per_page = min(_MAX_PER_PAGE, max(1, int(request.args.get("per_page", _DEFAULT_PER_PAGE))))
+        per_page = min(_MAX_PER_PAGE, max(1, int(request.query_params.get("per_page", _DEFAULT_PER_PAGE))))
     except (ValueError, TypeError):
         per_page = _DEFAULT_PER_PAGE
     return page, per_page
@@ -202,12 +203,11 @@ class AgentRegistry:
 def attach_register(inact_app, prefix: str, registry: AgentRegistry,
                     notify_fn=None) -> None:
     prefix = "/" + prefix.strip("/")
-    ep = "_inact_register_" + prefix.replace("/", "__")
-    flask_app = inact_app.app
+    fastapi_app = inact_app.app
 
-    def _root():
-        kind_filter = request.args.get("kind", "").strip() or None
-        page, per_page = _parse_page_params()
+    def _root(request: Request):
+        kind_filter = request.query_params.get("kind", "").strip() or None
+        page, per_page = _parse_page_params(request)
         total = registry.count(kind_filter)
         agents = registry.list_agents(page, per_page, kind_filter)
         label = f"# {'Humans' if kind_filter=='human' else 'Agents' if kind_filter=='agent' else 'All'}\n"
@@ -225,13 +225,13 @@ def attach_register(inact_app, prefix: str, registry: AgentRegistry,
             lines.append("\n")
         return text_response("".join(lines))
 
-    def _agent(agent_id: str):
+    def _agent(agent_id: str, request: Request):
         try:
             aid = int(agent_id)
         except ValueError:
             return text_response("ERROR 400: agent id must be an integer\n", 400)
         if request.method == "DELETE":
-            api_key = request.headers.get("X-Api-Key", "").strip()
+            api_key = request.headers.get("x-api-key", "").strip()
             if not api_key:
                 return text_response("ERROR 401: X-Api-Key required\n", 401)
             ok = registry.delete(aid, api_key)
@@ -265,15 +265,15 @@ def attach_register(inact_app, prefix: str, registry: AgentRegistry,
             lines.append("\n# " + "\n# ".join(hints) + "\n")
         return text_response("".join(lines))
 
-    def _set_email(agent_id: str):
+    def _set_email(agent_id: str, request: Request):
         try:
             aid = int(agent_id)
         except ValueError:
             return text_response("ERROR 400: agent id must be an integer\n", 400)
-        api_key = request.headers.get("X-Api-Key", "").strip()
+        api_key = request.headers.get("x-api-key", "").strip()
         if not api_key:
             return text_response("ERROR 401: X-Api-Key required\n", 401)
-        body = request.get_json(force=True, silent=True) or {}
+        body = _body(request)
         email = (body.get("email") or "").strip()
         if not email:
             return text_response("ERROR 400: 'email' required\n", 400)
@@ -284,7 +284,6 @@ def attach_register(inact_app, prefix: str, registry: AgentRegistry,
 
     def _human():
         from ...render import render_template, workspace_nav
-        from ...utils import html_response
         msg_prefix = "/_human" + prefix.rstrip("/").rsplit("/", 1)[0] + "/msg" \
                      if "/" in prefix.strip("/") else "/_human/msg"
         html = render_template(
@@ -298,12 +297,12 @@ def attach_register(inact_app, prefix: str, registry: AgentRegistry,
         )
         return html_response(html)
 
-    def _set_callback(agent_id: str):
+    def _set_callback(agent_id: str, request: Request):
         try:
             aid = int(agent_id)
         except ValueError:
             return text_response("ERROR 400: agent id must be an integer\n", 400)
-        api_key = request.headers.get("X-Api-Key", "").strip()
+        api_key = request.headers.get("x-api-key", "").strip()
         if not api_key:
             return text_response(
                 "ERROR 401: X-Api-Key header required\n"
@@ -312,7 +311,7 @@ def attach_register(inact_app, prefix: str, registry: AgentRegistry,
                 '  Body:   {"callback": "http://host/wake"}\n',
                 401,
             )
-        body = request.get_json(force=True, silent=True) or {}
+        body = _body(request)
         callback_url = (body.get("callback") or "").strip()
         if not callback_url:
             return text_response("ERROR 400: 'callback' required\n", 400)
@@ -323,10 +322,9 @@ def attach_register(inact_app, prefix: str, registry: AgentRegistry,
             notify_fn(str(aid), callback_url)
         return text_response(f"OK\ncallback = {toml_str(callback_url)}\n")
 
-    def _me():
-        """Return the caller's own profile, identified by X-Api-Key or cookie."""
+    def _me(request: Request):
         api_key = (
-            request.headers.get("X-Api-Key", "")
+            request.headers.get("x-api-key", "")
             or request.cookies.get("_inact_key", "")
         ).strip()
         if not api_key:
@@ -348,21 +346,11 @@ def attach_register(inact_app, prefix: str, registry: AgentRegistry,
         lines.append(f"url        = {toml_str(prefix + '/' + str(agent['id']))}\n")
         return text_response("".join(lines))
 
-    flask_app.add_url_rule(
-        prefix + "/",
-        endpoint=ep + "_root", view_func=_root, methods=["GET"])
-    flask_app.add_url_rule(
-        prefix + "/.me",
-        endpoint=ep + "_me", view_func=_me)
-    flask_app.add_url_rule(
-        prefix + "/<agent_id>",
-        endpoint=ep + "_agent", view_func=_agent, methods=["GET", "DELETE"])
-    flask_app.add_url_rule(
-        prefix + "/<agent_id>/.email",
-        endpoint=ep + "_email", view_func=_set_email, methods=["POST"])
-    flask_app.add_url_rule(
-        prefix + "/<agent_id>/.callback",
-        endpoint=ep + "_callback", view_func=_set_callback, methods=["POST"])
+    fastapi_app.add_api_route(prefix + "/", _root, methods=["GET"])
+    fastapi_app.add_api_route(prefix + "/.me", _me, methods=["GET"])
+    fastapi_app.add_api_route(prefix + "/{agent_id}", _agent, methods=["GET", "DELETE"])
+    fastapi_app.add_api_route(prefix + "/{agent_id}/.email", _set_email, methods=["POST"])
+    fastapi_app.add_api_route(prefix + "/{agent_id}/.callback", _set_callback, methods=["POST"])
 
     inact_app._human_views[prefix] = lambda path: _human()
     inact_app.add_nav_item("agents", "/_human" + prefix + "/")
@@ -371,19 +359,18 @@ def attach_register(inact_app, prefix: str, registry: AgentRegistry,
 def attach_admin(inact_app, prefix: str, registry: AgentRegistry,
                  admin_key: str, notify_fn=None) -> None:
     prefix = "/" + prefix.strip("/")
-    ep = "_inact_admin_" + prefix.replace("/", "__")
-    flask_app = inact_app.app
+    fastapi_app = inact_app.app
     _COOKIE = "_inact_admin"
 
-    def _admin_require() -> bool | tuple:
+    def _admin_require(request: Request):
         if not admin_key:
             return text_response("ERROR 503: admin_key not configured\n", 503)
-        if request.headers.get("X-Admin-Key", "").strip() != admin_key:
+        if request.headers.get("x-admin-key", "").strip() != admin_key:
             return text_response("ERROR 401: X-Admin-Key required\n", 401)
         return True
 
-    def _admin_list():
-        auth = _admin_require()
+    def _admin_list(request: Request):
+        auth = _admin_require(request)
         if auth is not True: return auth
         entries = registry.list_all_with_keys()
         lines = [f"# All entries ({len(entries)})\n\n"]
@@ -401,10 +388,10 @@ def attach_admin(inact_app, prefix: str, registry: AgentRegistry,
             ]
         return text_response("".join(lines))
 
-    def _admin_create():
-        auth = _admin_require()
+    def _admin_create(request: Request):
+        auth = _admin_require(request)
         if auth is not True: return auth
-        body = request.get_json(force=True, silent=True) or {}
+        body = _body(request)
         name        = (body.get("name")        or "").strip()
         kind        = (body.get("kind")        or "agent").strip()
         email       = (body.get("email")       or "").strip()
@@ -423,8 +410,8 @@ def attach_admin(inact_app, prefix: str, registry: AgentRegistry,
             f"api_key = {toml_str(api_key)}\n"
         )
 
-    def _admin_delete(agent_id: str):
-        auth = _admin_require()
+    def _admin_delete(agent_id: str, request: Request):
+        auth = _admin_require(request)
         if auth is not True: return auth
         try:
             aid = int(agent_id)
@@ -433,8 +420,8 @@ def attach_admin(inact_app, prefix: str, registry: AgentRegistry,
         ok = registry.force_delete(aid)
         return text_response("OK\n" if ok else "ERROR 404: not found\n", 200 if ok else 404)
 
-    def _admin_rekey(agent_id: str):
-        auth = _admin_require()
+    def _admin_rekey(agent_id: str, request: Request):
+        auth = _admin_require(request)
         if auth is not True: return auth
         try:
             aid = int(agent_id)
@@ -445,14 +432,14 @@ def attach_admin(inact_app, prefix: str, registry: AgentRegistry,
             return text_response("ERROR 404: not found\n", 404)
         return text_response(f"OK\napi_key = {toml_str(new_key)}\n")
 
-    def _admin_update(agent_id: str):
-        auth = _admin_require()
+    def _admin_update(agent_id: str, request: Request):
+        auth = _admin_require(request)
         if auth is not True: return auth
         try:
             aid = int(agent_id)
         except ValueError:
             return text_response("ERROR 400: integer id required\n", 400)
-        body = request.get_json(force=True, silent=True) or {}
+        body = _body(request)
         fields = {
             k: str(body[k] or "").strip()
             for k in ("name", "kind", "email", "description", "api_key", "callback_url")
@@ -466,29 +453,27 @@ def attach_admin(inact_app, prefix: str, registry: AgentRegistry,
             return text_response(f"ERROR 409: {e}\n", 409)
         return text_response("OK\n" if ok else "ERROR 404: not found\n", 200 if ok else 404)
 
-    def _admin_human():
+    async def _admin_human(request: Request):
         from inact.render import render_template
         from inact.utils import html_response
-        from flask import make_response, redirect
 
         if not admin_key:
-            from inact.utils import text_response as tr
-            return tr("ERROR 404: not found\n", 404)
+            return text_response("ERROR 404: not found\n", 404)
 
         if request.method == "POST":
-            submitted = (request.form.get("key") or "").strip()
+            form = await request.form()
+            submitted = (form.get("key") or "").strip()
             if submitted == admin_key:
-                resp = make_response(redirect(request.path))
+                resp = RedirectResponse(url=request.url.path, status_code=302)
                 resp.set_cookie(_COOKIE, admin_key,
-                                httponly=True, samesite="Lax",
+                                httponly=True, samesite="lax",
                                 max_age=8 * 3600)
                 return resp
             html = render_template("admin_login.html", error="Incorrect key.")
-            return make_response(html_response(html)[0], 401,
-                                 {"Content-Type": "text/html; charset=utf-8"})
+            return html_response(html, 401)
 
-        if request.args.get("logout"):
-            resp = make_response(redirect(request.path))
+        if request.query_params.get("logout"):
+            resp = RedirectResponse(url=request.url.path, status_code=302)
             resp.delete_cookie(_COOKIE)
             return resp
 
@@ -503,29 +488,14 @@ def attach_admin(inact_app, prefix: str, registry: AgentRegistry,
             workspace_links=workspace_nav("/_human" + prefix),
             show_identity=False))
 
-    flask_app.add_url_rule(
-        prefix + "/list",
-        endpoint=ep + "_list", view_func=_admin_list)
-    flask_app.add_url_rule(
-        prefix + "/create",
-        endpoint=ep + "_create", view_func=_admin_create, methods=["POST"])
-    flask_app.add_url_rule(
-        prefix + "/<agent_id>/delete",
-        endpoint=ep + "_delete", view_func=_admin_delete, methods=["POST"])
-    flask_app.add_url_rule(
-        prefix + "/<agent_id>/rekey",
-        endpoint=ep + "_rekey", view_func=_admin_rekey, methods=["POST"])
-    flask_app.add_url_rule(
-        prefix + "/<agent_id>/update",
-        endpoint=ep + "_update", view_func=_admin_update, methods=["POST"])
+    fastapi_app.add_api_route(prefix + "/list", _admin_list, methods=["GET"])
+    fastapi_app.add_api_route(prefix + "/create", _admin_create, methods=["POST"])
+    fastapi_app.add_api_route(prefix + "/{agent_id}/delete", _admin_delete, methods=["POST"])
+    fastapi_app.add_api_route(prefix + "/{agent_id}/rekey", _admin_rekey, methods=["POST"])
+    fastapi_app.add_api_route(prefix + "/{agent_id}/update", _admin_update, methods=["POST"])
 
-    ep_human = ep + "_human"
-    inact_app.app.add_url_rule(
-        "/_human" + prefix,
-        endpoint=ep_human, view_func=_admin_human, methods=["GET", "POST"])
-    inact_app.app.add_url_rule(
-        "/_human" + prefix + "/",
-        endpoint=ep_human + "_slash", view_func=_admin_human, methods=["GET", "POST"])
+    inact_app.app.add_api_route("/_human" + prefix, _admin_human, methods=["GET", "POST"])
+    inact_app.app.add_api_route("/_human" + prefix + "/", _admin_human, methods=["GET", "POST"])
     inact_app.add_nav_item("admin", "/_human" + prefix)
 
 

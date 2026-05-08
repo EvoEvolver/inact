@@ -1,5 +1,5 @@
 """
-Inact — AI-oriented Flask toolkit.
+Inact — AI-oriented FastAPI toolkit.
 
 Provides:
   - inact_md / inact_toml   : content-typed route decorators
@@ -10,10 +10,14 @@ Provides:
 
 from __future__ import annotations
 
+import inspect
 import os
 from typing import Callable
 
-from flask import Flask
+from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import Response
+from starlette.middleware.base import BaseHTTPMiddleware
 
 from .pages import normalize_md, normalize_toml
 from .render import render_markdown, render_toml, render_plain
@@ -23,24 +27,48 @@ from .utils import text_response
 # Internal types
 # ---------------------------------------------------------------------------
 
-_RouteEntry = tuple[str, Callable[[], str]]  # ("md" | "toml", fn)
+_RouteEntry = tuple[str, Callable]  # ("md" | "toml", fn)
+
+
+class _BodyCacheMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        body = await request.body()
+        request.state.body = body
+        return await call_next(request)
 
 
 class Inact:
-    def __init__(self, import_name_or_app: str | Flask = __name__):
-        if isinstance(import_name_or_app, Flask):
+    def __init__(self, import_name_or_app: str | FastAPI = __name__):
+        if isinstance(import_name_or_app, FastAPI):
             self.app = import_name_or_app
         else:
-            self.app = Flask(import_name_or_app)
+            self.app = FastAPI(
+                title=import_name_or_app,
+                docs_url=None,
+                redoc_url=None,
+                openapi_url=None,
+            )
 
         self._routes: dict[str, _RouteEntry] = {}
-        self._help: dict[str, Callable[[], str] | str] = {}
-        self._mounts: dict[str, str] = {}  # prefix -> abs folder
-        self._mount_handlers: dict[str, any] = {}  # prefix -> {ext -> handler}
-        self._mount_editable: dict[str, bool | list[str]] = {}  # prefix -> editable spec
-        self._website_mounts: dict[str, str] = {}  # prefix -> base URL (used by _render_human)
-        self._app_mounts: list[tuple[str, str]] = []  # (prefix, help_text) injected by mount_*
-        self._human_views: dict[str, Callable] = {}   # prefix -> fn(path) -> HTML response
+        self._help: dict[str, Callable | str] = {}
+        self._mounts: dict[str, str] = {}
+        self._mount_handlers: dict[str, any] = {}
+        self._mount_editable: dict[str, bool | list[str]] = {}
+        self._website_mounts: dict[str, str] = {}
+        self._app_mounts: list[tuple[str, str]] = []
+        self._human_views: dict[str, Callable] = {}
+
+        # Body cache must be innermost (added first); auth added later by mount_auth
+        self.app.add_middleware(_BodyCacheMiddleware)
+
+        # Plain-text validation errors instead of FastAPI's default JSON
+        @self.app.exception_handler(RequestValidationError)
+        async def _validation_error(request: Request, exc: RequestValidationError):
+            detail = "; ".join(
+                f"{'.'.join(str(l) for l in e['loc'])}: {e['msg']}"
+                for e in exc.errors()
+            )
+            return text_response(f"ERROR 422: {detail}\n", 422)
 
         self._register_builtins()
 
@@ -50,74 +78,78 @@ class Inact:
 
     def inact_md(self, path: str):
         """Register a Markdown + YAML-frontmatter route."""
-        def decorator(fn: Callable[[], str]):
+        def decorator(fn: Callable):
             self._add_route(path, "md", fn)
             return fn
         return decorator
 
     def inact_toml(self, path: str):
         """Register a TOML route (plain text for agents, HTML for humans)."""
-        def decorator(fn: Callable[[], str]):
+        def decorator(fn: Callable):
             self._add_route(path, "toml", fn)
             return fn
         return decorator
 
     def help(self, path: str):
         """Register help text for a path (used by /.help)."""
-        def decorator(fn: Callable[[], str] | str):
+        def decorator(fn: Callable | str):
             self._help[path.rstrip("/") or "/"] = fn
             return fn
         return decorator
 
     def route(self, path: str, **kwargs):
-        """Pass-through to Flask's @app.route."""
-        return self.app.route(path, **kwargs)
+        """Decorator that registers a route on the FastAPI app."""
+        def decorator(fn: Callable):
+            self.app.add_api_route(path, fn, **kwargs)
+            return fn
+        return decorator
 
     def add_nav_item(self, label: str, href: str) -> None:
-        """Register a human-nav entry for a mounted app."""
         from .render import register_nav_item
         register_nav_item(label, href)
 
     def run(self, **kwargs):
-        self.app.run(**kwargs)
-
+        import uvicorn
+        host = kwargs.pop("host", "127.0.0.1")
+        port = kwargs.pop("port", 8000)
+        debug = kwargs.pop("debug", False)
+        uvicorn.run(self.app, host=host, port=port, reload=debug)
 
     # -----------------------------------------------------------------------
     # Built-in global routes
     # -----------------------------------------------------------------------
 
     def _register_builtins(self):
-        app = self.app
-
-        @app.route("/_human/", defaults={"subpath": ""})
-        @app.route("/_human/<path:subpath>")
-        def _human(subpath: str):
+        def _human(subpath: str = ""):
             return self._render_human("/" + subpath)
 
-        @app.route("/.help")
-        def _root_help():
+        def _root_help(request: Request):
             return self._serve_help("/")
 
-        @app.route("/<path:subpath>/.help")
-        def _path_help(subpath: str):
+        def _path_help(subpath: str, request: Request):
             return self._serve_help("/" + subpath)
+
+        self.app.add_api_route("/_human", _human, methods=["GET"])
+        self.app.add_api_route("/_human/", _human, methods=["GET"])
+        self.app.add_api_route("/_human/{subpath:path}", _human, methods=["GET"])
+        self.app.add_api_route("/.help", _root_help, methods=["GET"])
+        self.app.add_api_route("/{subpath:path}/.help", _path_help, methods=["GET"])
 
     # -----------------------------------------------------------------------
     # Route registration helpers
     # -----------------------------------------------------------------------
 
-    def _add_route(self, path: str, kind: str, fn: Callable[[], str]):
+    def _add_route(self, path: str, kind: str, fn: Callable):
         self._routes[path] = (kind, fn)
+        _needs_request = "request" in inspect.signature(fn).parameters
 
-        app = self.app
-        ep = "_inact_" + path.replace("/", "__")
+        def _handler(request: Request, _kind=kind, _fn=fn, _nr=_needs_request):
+            return self._serve_plain(_kind, _fn, request if _nr else None)
 
-        @app.route(path, endpoint=ep)
-        def _handler(_kind=kind, _fn=fn, _path=path):
-            return self._serve_plain(_kind, _fn)
+        self.app.add_api_route(path, _handler, methods=["GET"])
 
-    def _serve_plain(self, kind: str, fn: Callable) -> tuple:
-        value = fn()
+    def _serve_plain(self, kind: str, fn: Callable, request=None) -> Response:
+        value = fn(request=request) if request is not None else fn()
         if kind == "md":
             _, body = normalize_md(value)
             return text_response(body)
@@ -130,13 +162,11 @@ class Inact:
     # /_human/ rendering
     # -----------------------------------------------------------------------
 
-    def _render_human(self, path: str) -> tuple:
-        # App human views (checked first — they override the generic file/route rendering)
+    def _render_human(self, path: str) -> Response:
         for prefix, view_fn in self._human_views.items():
             if path == prefix or path.startswith(prefix + "/"):
                 return view_fn(path)
 
-        # Registered md / toml routes
         if path in self._routes:
             kind, fn = self._routes[path]
             value = fn()
@@ -152,12 +182,10 @@ class Inact:
     # /.help
     # -----------------------------------------------------------------------
 
-    def _serve_help(self, path: str) -> tuple:
+    def _serve_help(self, path: str) -> Response:
         text = self._find_help(path)
         if text:
             return text_response(text)
-
-        # Auto-generate a stub listing child routes under this path
         stub = self._auto_help(path)
         return text_response(stub)
 
@@ -168,7 +196,6 @@ class Inact:
             if candidate in self._help:
                 entry = self._help[candidate]
                 return entry() if callable(entry) else entry
-            # Pull help from frontmatter of md routes
             if candidate in self._routes:
                 kind, fn = self._routes[candidate]
                 if kind == "md":

@@ -39,10 +39,10 @@ import threading
 import time
 import uuid
 
-from flask import request
+from fastapi import Request
 
 from ..storage import Storage
-from ..utils import text_response, toml_str
+from ..utils import text_response, toml_str, _body
 
 _DDL = [
     """CREATE TABLE IF NOT EXISTS jobs (
@@ -95,13 +95,13 @@ def _fmt_ts(ts: int | None) -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(ts))
 
 
-def _parse_page_params() -> tuple[int, int]:
+def _parse_page_params(request: Request) -> tuple[int, int]:
     try:
-        page = max(1, int(request.args.get("page", 1)))
+        page = max(1, int(request.query_params.get("page", 1)))
     except (ValueError, TypeError):
         page = 1
     try:
-        per_page = min(_MAX_PER_PAGE, max(1, int(request.args.get("per_page", _DEFAULT_PER_PAGE))))
+        per_page = min(_MAX_PER_PAGE, max(1, int(request.query_params.get("per_page", _DEFAULT_PER_PAGE))))
     except (ValueError, TypeError):
         per_page = _DEFAULT_PER_PAGE
     return page, per_page
@@ -466,15 +466,13 @@ def _job_lines(prefix: str, j: dict, *, full: bool) -> list[str]:
 def attach_jobs(inact_app, prefix: str, store: JobStore,
                 notify_store=None, registry=None) -> None:
     prefix = "/" + prefix.strip("/")
-    ep = "_inact_jobs_" + prefix.replace("/", "__")
-    flask_app = inact_app.app
+    fastapi_app = inact_app.app
 
-    def _resolve_agent_id() -> str | None:
-        """Infer agent_id from X-Api-Key header or _inact_key cookie via registry."""
+    def _resolve_agent_id(request: Request) -> str | None:
         if registry is None:
             return None
         api_key = (
-            request.headers.get("X-Api-Key", "")
+            request.headers.get("x-api-key", "")
             or request.cookies.get("_inact_key", "")
         ).strip()
         if not api_key:
@@ -482,9 +480,9 @@ def attach_jobs(inact_app, prefix: str, store: JobStore,
         agent = registry.get_by_key(api_key)
         return str(agent["id"]) if agent else None
 
-    def _jobs():
+    def _jobs(request: Request):
         if request.method == "POST":
-            body = request.get_json(force=True, silent=True) or {}
+            body = _body(request)
             title     = (body.get("title") or "").strip()
             kind      = (body.get("kind")  or "generic").strip() or "generic"
             backend   = (body.get("backend") or "").strip()
@@ -504,12 +502,11 @@ def attach_jobs(inact_app, prefix: str, store: JobStore,
                 "OK\n" + "".join(_job_lines(prefix, job, full=False)),
                 201,
             )
-        # GET — list (scoped to the requesting agent)
-        agent_id = _resolve_agent_id()
+        agent_id = _resolve_agent_id(request)
         if not agent_id:
             agent_id = (
-                request.args.get("agent_id", "")
-                or request.headers.get("X-Agent-Id", "")
+                request.query_params.get("agent_id", "")
+                or request.headers.get("x-agent-id", "")
             ).strip()
         if not agent_id:
             return text_response(
@@ -518,15 +515,15 @@ def attach_jobs(inact_app, prefix: str, store: JobStore,
                 "       or set X-Api-Key header\n",
                 400,
             )
-        page, per_page = _parse_page_params()
-        status_filter = request.args.get("status", "").strip() or None
+        page, per_page = _parse_page_params(request)
+        status_filter = request.query_params.get("status", "").strip() or None
         if status_filter and status_filter not in VALID_STATUSES:
             return text_response(
                 f"ERROR 400: invalid status {status_filter!r}\n"
                 f"valid: {', '.join(sorted(VALID_STATUSES))}\n",
                 400,
             )
-        kind_filter = request.args.get("kind", "").strip() or None
+        kind_filter = request.query_params.get("kind", "").strip() or None
         if kind_filter == "*":
             kind_filter = None
         rows, total = store.list(
@@ -545,7 +542,7 @@ def attach_jobs(inact_app, prefix: str, store: JobStore,
             lines.append("\n")
         return text_response("".join(lines))
 
-    def _job(job_id: str):
+    def _job(job_id: str, request: Request):
         if request.method == "DELETE":
             ok = store.delete(job_id)
             return text_response("OK\n" if ok else "ERROR 404: not found\n",
@@ -555,8 +552,8 @@ def attach_jobs(inact_app, prefix: str, store: JobStore,
             return text_response("ERROR 404: job not found\n", 404)
         return text_response("".join(_job_lines(prefix, j, full=True)))
 
-    def _update(job_id: str):
-        body    = request.get_json(force=True, silent=True) or {}
+    def _update(job_id: str, request: Request):
+        body    = _body(request)
         status  = (body.get("status") or "").strip() or None
         if status and status not in VALID_STATUSES:
             return text_response(
@@ -595,21 +592,20 @@ def attach_jobs(inact_app, prefix: str, store: JobStore,
             f"status = {toml_str(job['status'])}\n"
         )
 
-    def _logs(job_id: str):
+    def _logs(job_id: str, request: Request):
         if not store.get(job_id):
             return text_response("ERROR 404: job not found\n", 404)
         if request.method == "POST":
-            body = request.get_json(force=True, silent=True) or {}
+            body = _body(request)
             stream = (body.get("stream") or "").strip()
             content = body.get("content") or ""
             if not stream:
                 return text_response("ERROR 400: 'stream' required\n", 400)
             seq = store.append_log(job_id, stream, content)
             return text_response(f"OK\nseq = {seq}\n")
-        # GET
-        stream = request.args.get("stream", "").strip() or None
+        stream = request.query_params.get("stream", "").strip() or None
         try:
-            since_seq = int(request.args.get("since_seq", 0))
+            since_seq = int(request.query_params.get("since_seq", 0))
         except (ValueError, TypeError):
             since_seq = 0
         rows = store.read_logs(job_id, stream=stream, since_seq=since_seq)
@@ -624,34 +620,10 @@ def attach_jobs(inact_app, prefix: str, store: JobStore,
                 out.append("\n")
         return text_response("".join(out))
 
-    flask_app.add_url_rule(
-        prefix, endpoint=ep + "_jobs",
-        view_func=_jobs, methods=["GET", "POST"])
-    flask_app.add_url_rule(
-        prefix + "/<job_id>", endpoint=ep + "_job",
-        view_func=_job, methods=["GET", "DELETE"])
-    flask_app.add_url_rule(
-        prefix + "/<job_id>/update", endpoint=ep + "_update",
-        view_func=_update, methods=["POST"])
-    flask_app.add_url_rule(
-        prefix + "/<job_id>/logs", endpoint=ep + "_logs",
-        view_func=_logs, methods=["GET", "POST"])
-
-    def _human(_path: str):
-        from ..render import render_template, workspace_nav
-        from ..utils import html_response
-        html = render_template(
-            "jobs_human.html",
-            title="Jobs",
-            prefix=prefix,
-            agents_prefix="/agents",
-            workspace_links=workspace_nav("/_human" + prefix + "/"),
-            show_identity=True,
-        )
-        return html_response(html)
-
-    inact_app._human_views[prefix] = _human
-    inact_app.add_nav_item("jobs", "/_human" + prefix + "/")
+    fastapi_app.add_api_route(prefix, _jobs, methods=["GET", "POST"])
+    fastapi_app.add_api_route(prefix + "/{job_id}", _job, methods=["GET", "DELETE"])
+    fastapi_app.add_api_route(prefix + "/{job_id}/update", _update, methods=["POST"])
+    fastapi_app.add_api_route(prefix + "/{job_id}/logs", _logs, methods=["GET", "POST"])
 
     def _human(_path: str):
         from ..render import render_template, workspace_nav

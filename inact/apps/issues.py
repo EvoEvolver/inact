@@ -39,10 +39,10 @@ Listings sorted by updated_at DESC.
 from __future__ import annotations
 
 import time
-from flask import request
+from fastapi import Request
 
 from ..storage import Storage
-from ..utils import text_response, toml_str
+from ..utils import text_response, toml_str, _body
 
 _DDL = [
     """CREATE TABLE IF NOT EXISTS issues (
@@ -88,13 +88,13 @@ def _fmt_ts(ts: int | None) -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(ts))
 
 
-def _parse_page_params() -> tuple[int, int]:
+def _parse_page_params(request: Request) -> tuple[int, int]:
     try:
-        page = max(1, int(request.args.get("page", 1)))
+        page = max(1, int(request.query_params.get("page", 1)))
     except (ValueError, TypeError):
         page = 1
     try:
-        per_page = min(_MAX_PER_PAGE, max(1, int(request.args.get("per_page", _DEFAULT_PER_PAGE))))
+        per_page = min(_MAX_PER_PAGE, max(1, int(request.query_params.get("per_page", _DEFAULT_PER_PAGE))))
     except (ValueError, TypeError):
         per_page = _DEFAULT_PER_PAGE
     return page, per_page
@@ -391,8 +391,7 @@ def attach_issues(inact_app, prefix: str, store: IssueStore,
                   lookup_agent_by_key=None,
                   agents_prefix: str = "/agents") -> None:
     prefix = "/" + prefix.strip("/")
-    ep = "_inact_issues_" + prefix.replace("/", "__")
-    flask_app = inact_app.app
+    fastapi_app = inact_app.app
 
     def _agent_display(agent_id: str) -> str:
         if not agent_id or lookup_agent is None:
@@ -402,12 +401,11 @@ def attach_issues(inact_app, prefix: str, store: IssueStore,
             return f"{agent['name']}#{agent_id}"
         return agent_id
 
-    def _caller_id() -> str:
-        """Resolve the calling agent's id from X-Api-Key header or _inact_key cookie."""
+    def _caller_id(request: Request) -> str:
         if lookup_agent_by_key is None:
             return ""
         api_key = (
-            request.headers.get("X-Api-Key", "")
+            request.headers.get("x-api-key", "")
             or request.cookies.get("_inact_key", "")
         ).strip()
         if not api_key:
@@ -424,9 +422,9 @@ def attach_issues(inact_app, prefix: str, store: IssueStore,
                 f"  comment : POST {prefix}/{number}/comments  body: {{\"body\":\"...\"}}"
             ))
 
-    def _root():
+    def _root(request: Request):
         if request.method == "POST":
-            body   = request.get_json(force=True, silent=True) or {}
+            body   = _body(request)
             title  = (body.get("title") or "").strip()
             if not title:
                 return text_response(
@@ -437,7 +435,7 @@ def attach_issues(inact_app, prefix: str, store: IssueStore,
                     400,
                 )
             issue_body = (body.get("body") or "").strip()
-            author     = str(body.get("author") or "").strip() or _caller_id()
+            author     = str(body.get("author") or "").strip() or _caller_id(request)
             assignee   = str(body.get("assignee") or "").strip()
             raw_labels = body.get("labels") or []
             labels = [str(l).strip() for l in raw_labels if str(l).strip()]
@@ -457,11 +455,10 @@ def attach_issues(inact_app, prefix: str, store: IssueStore,
                 201,
             )
 
-        # GET — list
-        state_f    = request.args.get("state",    "open").strip() or "open"
-        label_f    = request.args.get("label",    "").strip() or None
-        assignee_f = request.args.get("assignee", None)
-        author_f   = request.args.get("author",   None)
+        state_f    = request.query_params.get("state",    "open").strip() or "open"
+        label_f    = request.query_params.get("label",    "").strip() or None
+        assignee_f = request.query_params.get("assignee", None)
+        author_f   = request.query_params.get("author",   None)
         if assignee_f is not None:
             assignee_f = assignee_f.strip()
         if author_f is not None:
@@ -472,7 +469,7 @@ def attach_issues(inact_app, prefix: str, store: IssueStore,
                 "valid: open | closed | all\n",
                 400,
             )
-        page, per_page = _parse_page_params()
+        page, per_page = _parse_page_params(request)
         total  = store.count(state_f, label_f, assignee_f, author_f)
         issues = store.list_issues(page, per_page, state_f, label_f, assignee_f, author_f)
         lines  = [f"# Issues ({state_f})\n", _page_header(page, per_page, total)]
@@ -495,7 +492,7 @@ def attach_issues(inact_app, prefix: str, store: IssueStore,
             lines.append(_issue_row_toml(iss, prefix, _agent_display))
         return text_response("".join(lines))
 
-    def _issue(number: int):
+    def _issue(number: int, request: Request):
         if request.method == "DELETE":
             ok = store.delete(number)
             return text_response("OK\n" if ok else "ERROR 404: not found\n", 200 if ok else 404)
@@ -504,7 +501,7 @@ def attach_issues(inact_app, prefix: str, store: IssueStore,
             issue = store.get(number)
             if not issue:
                 return text_response("ERROR 404: issue not found\n", 404)
-            body   = request.get_json(force=True, silent=True) or {}
+            body   = _body(request)
             fields: dict = {}
             if "title" in body:
                 t = (body["title"] or "").strip()
@@ -553,11 +550,11 @@ def attach_issues(inact_app, prefix: str, store: IssueStore,
         store.update(number, {"state": "open"})
         return text_response("OK\n")
 
-    def _assign(number: int):
+    def _assign(number: int, request: Request):
         issue = store.get(number)
         if not issue:
             return text_response("ERROR 404: issue not found\n", 404)
-        body     = request.get_json(force=True, silent=True) or {}
+        body     = _body(request)
         assignee = str(body.get("assignee") or "").strip()
         if not assignee:
             return text_response(
@@ -578,10 +575,10 @@ def attach_issues(inact_app, prefix: str, store: IssueStore,
             _notify_assign(assignee, number, issue["title"])
         return text_response(f"OK\nassignee = {toml_str(assignee)}\n")
 
-    def _add_label_route(number: int):
+    def _add_label_route(number: int, request: Request):
         if not store.get(number):
             return text_response("ERROR 404: issue not found\n", 404)
-        body  = request.get_json(force=True, silent=True) or {}
+        body  = _body(request)
         label = (body.get("label") or "").strip()
         if not label:
             return text_response(
@@ -600,15 +597,15 @@ def attach_issues(inact_app, prefix: str, store: IssueStore,
         return text_response("OK\n" if ok else "ERROR 404: label not on this issue\n",
                              200 if ok else 404)
 
-    def _comments(number: int):
+    def _comments(number: int, request: Request):
         issue = store.get(number)
         if not issue:
             return text_response("ERROR 404: issue not found\n", 404)
 
         if request.method == "POST":
-            body   = request.get_json(force=True, silent=True) or {}
+            body   = _body(request)
             cbody  = (body.get("body") or "").strip()
-            author = str(body.get("author") or "").strip() or _caller_id()
+            author = str(body.get("author") or "").strip() or _caller_id(request)
             if not cbody:
                 return text_response(
                     "ERROR 400: 'body' required\n"
@@ -618,7 +615,6 @@ def attach_issues(inact_app, prefix: str, store: IssueStore,
                 )
             c = store.add_comment(number, cbody, author)
 
-            # Notify assignee and creator on new replies, skipping the commenter themself
             if notify_fn:
                 title = issue.get("title", "")
                 from_id = author or ""
@@ -663,9 +659,9 @@ def attach_issues(inact_app, prefix: str, store: IssueStore,
             ]
         return text_response("".join(lines))
 
-    def _comment(number: int, cid: int):
+    def _comment(number: int, cid: int, request: Request):
         if request.method == "POST":
-            body = request.get_json(force=True, silent=True) or {}
+            body = _body(request)
             cbody = (body.get("body") or "").strip()
             if not cbody:
                 return text_response(
@@ -681,9 +677,9 @@ def attach_issues(inact_app, prefix: str, store: IssueStore,
             ok = store.delete_comment(cid)
             return text_response("OK\n" if ok else "ERROR 404: not found\n", 200 if ok else 404)
 
-    def _labels_root():
+    def _labels_root(request: Request):
         if request.method == "POST":
-            body = request.get_json(force=True, silent=True) or {}
+            body = _body(request)
             name = (body.get("name") or "").strip()
             if not name:
                 return text_response(
@@ -713,51 +709,25 @@ def attach_issues(inact_app, prefix: str, store: IssueStore,
             ]
         return text_response("".join(lines))
 
-    def _label(label_name: str):
+    def _label(label_name: str, request: Request):
         if request.method == "DELETE":
             ok = store.delete_label(label_name)
             return text_response("OK\n" if ok else "ERROR 404: label not found\n",
                                  200 if ok else 404)
 
-    flask_app.add_url_rule(
-        prefix + "/",
-        endpoint=ep + "_root", view_func=_root, methods=["GET", "POST"])
-    flask_app.add_url_rule(
-        prefix + "/.open",
-        endpoint=ep + "_open", view_func=_open_issues)
-    flask_app.add_url_rule(
-        prefix + "/.closed",
-        endpoint=ep + "_closed", view_func=_closed_issues)
-    flask_app.add_url_rule(
-        prefix + "/labels/",
-        endpoint=ep + "_labels", view_func=_labels_root, methods=["GET", "POST"])
-    flask_app.add_url_rule(
-        prefix + "/labels/<label_name>",
-        endpoint=ep + "_label", view_func=_label, methods=["DELETE"])
-    flask_app.add_url_rule(
-        prefix + "/<int:number>",
-        endpoint=ep + "_issue", view_func=_issue, methods=["GET", "POST", "DELETE"])
-    flask_app.add_url_rule(
-        prefix + "/<int:number>/.close",
-        endpoint=ep + "_close", view_func=_close, methods=["POST"])
-    flask_app.add_url_rule(
-        prefix + "/<int:number>/.reopen",
-        endpoint=ep + "_reopen", view_func=_reopen, methods=["POST"])
-    flask_app.add_url_rule(
-        prefix + "/<int:number>/.assign",
-        endpoint=ep + "_assign", view_func=_assign, methods=["POST"])
-    flask_app.add_url_rule(
-        prefix + "/<int:number>/.label",
-        endpoint=ep + "_add_label", view_func=_add_label_route, methods=["POST"])
-    flask_app.add_url_rule(
-        prefix + "/<int:number>/labels/<label_name>",
-        endpoint=ep + "_remove_label", view_func=_remove_label_route, methods=["DELETE"])
-    flask_app.add_url_rule(
-        prefix + "/<int:number>/comments",
-        endpoint=ep + "_comments", view_func=_comments, methods=["GET", "POST"])
-    flask_app.add_url_rule(
-        prefix + "/<int:number>/comments/<int:cid>",
-        endpoint=ep + "_comment", view_func=_comment, methods=["POST", "DELETE"])
+    fastapi_app.add_api_route(prefix + "/", _root, methods=["GET", "POST"])
+    fastapi_app.add_api_route(prefix + "/.open", _open_issues, methods=["GET"])
+    fastapi_app.add_api_route(prefix + "/.closed", _closed_issues, methods=["GET"])
+    fastapi_app.add_api_route(prefix + "/labels/", _labels_root, methods=["GET", "POST"])
+    fastapi_app.add_api_route(prefix + "/labels/{label_name}", _label, methods=["DELETE"])
+    fastapi_app.add_api_route(prefix + "/{number}", _issue, methods=["GET", "POST", "DELETE"])
+    fastapi_app.add_api_route(prefix + "/{number}/.close", _close, methods=["POST"])
+    fastapi_app.add_api_route(prefix + "/{number}/.reopen", _reopen, methods=["POST"])
+    fastapi_app.add_api_route(prefix + "/{number}/.assign", _assign, methods=["POST"])
+    fastapi_app.add_api_route(prefix + "/{number}/.label", _add_label_route, methods=["POST"])
+    fastapi_app.add_api_route(prefix + "/{number}/labels/{label_name}", _remove_label_route, methods=["DELETE"])
+    fastapi_app.add_api_route(prefix + "/{number}/comments", _comments, methods=["GET", "POST"])
+    fastapi_app.add_api_route(prefix + "/{number}/comments/{cid}", _comment, methods=["POST", "DELETE"])
 
     def _human(path: str):
         from ..render import render_template, workspace_nav

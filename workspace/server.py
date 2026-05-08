@@ -27,6 +27,8 @@ if os.path.exists(".env"):
             "or remove the .env file if you don't need it."
         )
 
+from fastapi import Request
+
 from inact import Inact
 from inact.utils import server_base
 from inact.apps.auth      import mount_auth
@@ -54,8 +56,8 @@ app = Inact("agent-workspace")
 
 # Home page
 @app.inact_md("/")
-def home():
-    base = server_base()
+def home(request: Request):
+    base = server_base(request)
     return f"""# Agent Workspace
 
 `{base}`

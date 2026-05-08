@@ -244,6 +244,7 @@ echo "WebDAV pid=$!"
 nginx -c /tmp/nginx.conf -g "daemon off;" &
 
 exec gunicorn server:wsgi \
+    -k uvicorn.workers.UvicornWorker \
     --bind "0.0.0.0:5051" \
     --workers 1 \
     --timeout 120 \

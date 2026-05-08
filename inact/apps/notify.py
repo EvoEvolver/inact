@@ -36,12 +36,13 @@ import time
 
 import logging
 
-from flask import request
+from fastapi import Request
+from fastapi.responses import Response
 
 _log = logging.getLogger(__name__)
 
 from ..storage import Storage
-from ..utils import text_response, toml_str
+from ..utils import text_response, toml_str, _body
 
 _DDL = [
     """CREATE TABLE IF NOT EXISTS notifications (
@@ -81,13 +82,13 @@ def _fmt_ts(ts: int) -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(ts))
 
 
-def _parse_page_params() -> tuple[int, int]:
+def _parse_page_params(request: Request) -> tuple[int, int]:
     try:
-        page = max(1, int(request.args.get("page", 1)))
+        page = max(1, int(request.query_params.get("page", 1)))
     except (ValueError, TypeError):
         page = 1
     try:
-        per_page = min(_MAX_PER_PAGE, max(1, int(request.args.get("per_page", _DEFAULT_PER_PAGE))))
+        per_page = min(_MAX_PER_PAGE, max(1, int(request.query_params.get("per_page", _DEFAULT_PER_PAGE))))
     except (ValueError, TypeError):
         per_page = _DEFAULT_PER_PAGE
     return page, per_page
@@ -401,15 +402,13 @@ def attach_notify(inact_app, prefix: str, store: NotifyStore,
                   agents_prefix: str = "/agents", registry=None) -> None:
     prefix = "/" + prefix.strip("/")
     agents_prefix = "/" + agents_prefix.strip("/")
-    ep = "_inact_notify_" + prefix.replace("/", "__")
-    flask_app = inact_app.app
+    fastapi_app = inact_app.app
 
-    def _resolve_agent_id() -> str | None:
-        """Infer agent_id from X-Api-Key header or _inact_key cookie via registry."""
+    def _resolve_agent_id(request: Request) -> str | None:
         if registry is None:
             return None
         api_key = (
-            request.headers.get("X-Api-Key", "")
+            request.headers.get("x-api-key", "")
             or request.cookies.get("_inact_key", "")
         ).strip()
         if not api_key:
@@ -426,8 +425,8 @@ def attach_notify(inact_app, prefix: str, store: NotifyStore,
         )
         return f"{name}#{agent_id}"
 
-    def _register():
-        body = request.get_json(force=True, silent=True) or {}
+    def _register(request: Request):
+        body = _body(request)
         agent_id = str(body.get("agent_id") or "").strip()
         callback = (body.get("callback") or "").strip()
         secret   = (body.get("secret")   or "").strip()
@@ -440,13 +439,8 @@ def attach_notify(inact_app, prefix: str, store: NotifyStore,
             f"OK\nagent_id = {toml_str(agent_id)}\ncallback = {toml_str(callback)}\n"
         )
 
-    def _webhook_register():
-        """Register a Hermes webhook endpoint for an agent.
-
-        Body: {"agent_id":"1","hermes_url":"http://localhost:8644","route":"my-route","secret":"..."}
-        Constructs callback as {hermes_url}/webhooks/{route} and stores the HMAC secret.
-        """
-        body = request.get_json(force=True, silent=True) or {}
+    def _webhook_register(request: Request):
+        body = _body(request)
         agent_id   = str(body.get("agent_id")   or "").strip()
         hermes_url = (body.get("hermes_url")     or "").strip().rstrip("/")
         route      = (body.get("route")          or "").strip().strip("/")
@@ -467,8 +461,8 @@ def attach_notify(inact_app, prefix: str, store: NotifyStore,
             f"route       = {toml_str(route)}\n"
         )
 
-    def _send():
-        body = request.get_json(force=True, silent=True) or {}
+    def _send(request: Request):
+        body = _body(request)
         to_id   = str(body.get("to")      or "").strip()
         message = (body.get("message")    or "").strip()
         from_id = str(body.get("from")    or "").strip()
@@ -484,15 +478,14 @@ def attach_notify(inact_app, prefix: str, store: NotifyStore,
         notif_id = store.send(to_id, message, from_id)
         name = (member_fn(from_id) or {}).get("name", "") if member_fn and from_id else ""
         _push(store, to_id, notif_id, message, from_id, name=name)
-
         return text_response(f"OK\nid = {notif_id}\n")
 
-    def _inbox():
-        agent_id = _resolve_agent_id()
+    def _inbox(request: Request):
+        agent_id = _resolve_agent_id(request)
         if not agent_id:
             agent_id = (
-                request.args.get("agent_id", "")
-                or request.headers.get("X-Agent-Id", "")
+                request.query_params.get("agent_id", "")
+                or request.headers.get("x-agent-id", "")
             ).strip()
         if not agent_id:
             return text_response(
@@ -501,9 +494,9 @@ def attach_notify(inact_app, prefix: str, store: NotifyStore,
                 "       or set X-Api-Key header\n",
                 400,
             )
-        show_all = request.args.get("all", "0") == "1"
+        show_all = request.query_params.get("all", "0") == "1"
         unread_only = not show_all
-        page, per_page = _parse_page_params()
+        page, per_page = _parse_page_params(request)
         total = store.count(agent_id, unread_only)
         notifs = store.list_inbox(agent_id, page, per_page, unread_only)
         lines = [
@@ -527,12 +520,29 @@ def attach_notify(inact_app, prefix: str, store: NotifyStore,
                       "\n"]
         return text_response("".join(lines))
 
-    def _notif(notif_id: str):
+    def _inbox_clear(request: Request):
+        agent_id = _resolve_agent_id(request)
+        if not agent_id:
+            agent_id = (
+                request.query_params.get("agent_id", "")
+                or request.headers.get("x-agent-id", "")
+            ).strip()
+        if not agent_id:
+            return text_response(
+                "ERROR 400: agent_id required\n"
+                f"Usage: DELETE {prefix}/inbox/all?agent_id=<id>\n"
+                "       or set X-Api-Key header\n",
+                400,
+            )
+        n = store.clear_inbox(agent_id)
+        return text_response(f"OK\ndeleted = {n}\n")
+
+    def _notif(notif_id: str, request: Request):
         if request.method == "DELETE":
             n = store.get(notif_id)
             if not n:
                 return text_response("ERROR 404: not found\n", 404)
-            caller = _resolve_agent_id()
+            caller = _resolve_agent_id(request)
             if caller is not None and str(n.get("to_id", "")) != caller:
                 return text_response("ERROR 403: forbidden\n", 403)
             ok = store.delete(notif_id)
@@ -551,38 +561,18 @@ def attach_notify(inact_app, prefix: str, store: NotifyStore,
             f"read      = {str(bool(n['read'])).lower()}\n"
         )
 
-    def _inbox_clear():
-        agent_id = _resolve_agent_id()
-        if not agent_id:
-            agent_id = (
-                request.args.get("agent_id", "")
-                or request.headers.get("X-Agent-Id", "")
-            ).strip()
-        if not agent_id:
-            return text_response(
-                "ERROR 400: agent_id required\n"
-                f"Usage: DELETE {prefix}/inbox/all?agent_id=<id>\n"
-                "       or set X-Api-Key header\n",
-                400,
-            )
-        n = store.clear_inbox(agent_id)
-        return text_response(f"OK\ndeleted = {n}\n")
-
     def _vapid_public_key():
-        from flask import make_response as flask_resp
         try:
             _, public_b64 = store.get_or_create_vapid_keys()
         except Exception as exc:
             return text_response(f"ERROR 500: {exc}\n", 500)
-        resp = flask_resp(public_b64, 200)
-        resp.content_type = "text/plain"
-        return resp
+        return Response(content=public_b64, media_type="text/plain")
 
-    def _push_subscribe():
-        body = request.get_json(force=True, silent=True) or {}
+    def _push_subscribe(request: Request):
+        body = _body(request)
         agent_id = str(body.get("agent_id") or "").strip()
         if not agent_id:
-            agent_id = _resolve_agent_id() or ""
+            agent_id = _resolve_agent_id(request) or ""
         endpoint = (body.get("endpoint") or "").strip()
         p256dh   = (body.get("p256dh")   or "").strip()
         auth     = (body.get("auth")     or "").strip()
@@ -593,42 +583,24 @@ def attach_notify(inact_app, prefix: str, store: NotifyStore,
         store.store_push_subscription(agent_id, endpoint, p256dh, auth)
         return text_response(f"OK\nagent_id = {toml_str(agent_id)}\n")
 
-    def _push_unsubscribe():
-        body = request.get_json(force=True, silent=True) or {}
+    def _push_unsubscribe(request: Request):
+        body = _body(request)
         endpoint = (body.get("endpoint") or "").strip()
         if not endpoint:
             return text_response("ERROR 400: 'endpoint' required\n", 400)
         store.delete_push_subscription(endpoint)
         return text_response("OK\n")
 
-
-    flask_app.add_url_rule(
-        prefix + "/register",
-        endpoint=ep + "_register", view_func=_register, methods=["POST"])
-    flask_app.add_url_rule(
-        prefix + "/webhook/register",
-        endpoint=ep + "_webhook_register", view_func=_webhook_register, methods=["POST"])
-    flask_app.add_url_rule(
-        prefix + "/send",
-        endpoint=ep + "_send", view_func=_send, methods=["POST"])
-    flask_app.add_url_rule(
-        prefix + "/inbox",
-        endpoint=ep + "_inbox", view_func=_inbox)
-    flask_app.add_url_rule(
-        prefix + "/inbox/<notif_id>",
-        endpoint=ep + "_notif", view_func=_notif, methods=["GET", "DELETE"])
-    flask_app.add_url_rule(
-        prefix + "/inbox/all",
-        endpoint=ep + "_inbox_clear", view_func=_inbox_clear, methods=["DELETE"])
-    flask_app.add_url_rule(
-        prefix + "/push/vapid-public-key",
-        endpoint=ep + "_vapid_pk", view_func=_vapid_public_key, methods=["GET"])
-    flask_app.add_url_rule(
-        prefix + "/push/subscribe",
-        endpoint=ep + "_push_sub", view_func=_push_subscribe, methods=["POST"])
-    flask_app.add_url_rule(
-        prefix + "/push/unsubscribe",
-        endpoint=ep + "_push_unsub", view_func=_push_unsubscribe, methods=["DELETE", "POST"])
+    # Register /inbox/all before /inbox/{notif_id} so the literal route wins
+    fastapi_app.add_api_route(prefix + "/register", _register, methods=["POST"])
+    fastapi_app.add_api_route(prefix + "/webhook/register", _webhook_register, methods=["POST"])
+    fastapi_app.add_api_route(prefix + "/send", _send, methods=["POST"])
+    fastapi_app.add_api_route(prefix + "/inbox", _inbox, methods=["GET"])
+    fastapi_app.add_api_route(prefix + "/inbox/all", _inbox_clear, methods=["DELETE"])
+    fastapi_app.add_api_route(prefix + "/inbox/{notif_id}", _notif, methods=["GET", "DELETE"])
+    fastapi_app.add_api_route(prefix + "/push/vapid-public-key", _vapid_public_key, methods=["GET"])
+    fastapi_app.add_api_route(prefix + "/push/subscribe", _push_subscribe, methods=["POST"])
+    fastapi_app.add_api_route(prefix + "/push/unsubscribe", _push_unsubscribe, methods=["DELETE", "POST"])
 
     _SW_JS = """\
 self.addEventListener('push', function(e) {
@@ -652,14 +624,14 @@ self.addEventListener('notificationclick', function(e) {
 """.replace("__SW_NOTIFY_PATH__", prefix)
 
     def _human(_path: str):
-        from flask import make_response as flask_resp
         from ..render import render_template, workspace_nav
         from ..utils import html_response
         if _path == prefix + "/sw.js":
-            resp = flask_resp(_SW_JS, 200)
-            resp.content_type = "application/javascript"
-            resp.headers["Service-Worker-Allowed"] = "/_human" + prefix + "/"
-            return resp
+            return Response(
+                content=_SW_JS,
+                media_type="application/javascript",
+                headers={"Service-Worker-Allowed": "/_human" + prefix + "/"},
+            )
         html = render_template(
             "notify_human.html",
             title="Notifications",
@@ -703,6 +675,8 @@ def mount_notify(
     store = NotifyStore(backend)
 
     kind_fn = None
+    member_fn = None
+    _reg = None
     if registry is not None:
         from .workspace.register import AgentRegistry
         _reg = registry if isinstance(registry, AgentRegistry) \
@@ -727,9 +701,6 @@ def mount_notify(
             except Exception:
                 pass
             return {"name": "", "kind": "agent"}
-
-    else:
-        member_fn = None
 
     if revival_interval > 0:
         _start_revival(store, revival_interval)

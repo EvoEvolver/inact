@@ -30,7 +30,7 @@ import tempfile
 
 from flask import request, send_file
 
-from ..utils import text_response, toml_str
+from inact.utils import text_response, toml_str
 
 PAGE_RE = re.compile(r"^(.+)/p/(\d+)$")
 

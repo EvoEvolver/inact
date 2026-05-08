@@ -33,7 +33,7 @@ import re
 
 from flask import request
 
-from ..utils import text_response, toml_str
+from inact.utils import text_response, toml_str
 
 _DEFAULT_PER_PAGE = 50
 _MAX_PER_PAGE = 500

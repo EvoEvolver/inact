@@ -50,8 +50,8 @@ from email.mime.text import MIMEText
 
 from flask import request
 
-from ...storage import Storage
-from ...utils import text_response, toml_str
+from inact.storage import Storage
+from inact.utils import text_response, toml_str
 
 log = logging.getLogger(__name__)
 

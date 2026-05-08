@@ -16,7 +16,7 @@ import os
 import httpx
 from flask import request
 
-from ..utils import text_response, toml_str
+from inact.utils import text_response, toml_str
 
 _TAVILY_URL = "https://api.tavily.com/search"
 

@@ -1,12 +1,22 @@
-from flask import request
+import json
+
+from fastapi import Request
+from fastapi.responses import Response, HTMLResponse
 
 
-def text_response(body: str, status: int = 200) -> tuple:
-    return body, status, {"Content-Type": "text/plain; charset=utf-8"}
+def text_response(body: str, status: int = 200) -> Response:
+    return Response(content=body, status_code=status, media_type="text/plain; charset=utf-8")
 
 
-def html_response(body: str, status: int = 200) -> tuple:
-    return body, status, {"Content-Type": "text/html; charset=utf-8"}
+def html_response(body: str, status: int = 200) -> HTMLResponse:
+    return HTMLResponse(content=body, status_code=status)
+
+
+def _body(request: Request) -> dict:
+    try:
+        return json.loads(getattr(request.state, "body", b"") or b"{}") or {}
+    except Exception:
+        return {}
 
 
 def toml_str(s: str) -> str:
@@ -19,9 +29,9 @@ def toml_str(s: str) -> str:
             + '"')
 
 
-def server_base() -> str:
-    proto = request.headers.get("X-Forwarded-Proto", "http")
-    return f"{proto}://{request.host}"
+def server_base(request: Request) -> str:
+    proto = request.headers.get("x-forwarded-proto", "http")
+    return f"{proto}://{request.headers.get('host', 'localhost')}"
 
 
 def format_table(headers: list[str], rows: list[list[str]]) -> str:

@@ -91,6 +91,24 @@ class SkillStore:
     def __init__(self) -> None:
         self._skills: dict[str, SkillEntry] = {}
         self._roots: list[tuple[Path, list[str]]] = []
+        self._tag_descriptions: dict[str, str] = {}
+
+    # -- tag descriptions ----------------------------------------------------
+
+    def describe_tag(self, name: str, description: str) -> None:
+        """Attach a one-line description to a tag (shown on index pages)."""
+        self._tag_descriptions[name] = description
+
+    def tag_descriptions(self) -> dict[str, str]:
+        """Return descriptions for tags actually in use, sorted by name."""
+        used: set[str] = set()
+        for s in self._skills.values():
+            used.update(s.tags)
+        return {
+            name: self._tag_descriptions[name]
+            for name in sorted(used)
+            if name in self._tag_descriptions
+        }
 
     # -- registration --------------------------------------------------------
 
@@ -109,6 +127,18 @@ class SkillStore:
             return 0
         defaults = list(default_tags)
         added = 0
+        # Optional sibling file: <root>/TAGS.yaml — `{tag: description}`.
+        tags_file = root / "TAGS.yaml"
+        if tags_file.is_file():
+            try:
+                data = yaml.safe_load(tags_file.read_text(encoding="utf-8"))
+            except yaml.YAMLError:
+                data = None
+            if isinstance(data, dict):
+                for k, v in data.items():
+                    if isinstance(k, str) and isinstance(v, str):
+                        self._tag_descriptions[k] = v.strip()
+
         for skill_dir in sorted(p for p in root.iterdir() if p.is_dir()):
             skill_md = skill_dir / "SKILL.md"
             if not skill_md.is_file():
@@ -207,10 +237,15 @@ def _toml_list_value(items: list[str]) -> str:
     return "[" + ", ".join(toml_str(x) for x in items) + "]"
 
 
-def _format_list(prefix: str, entries: list[SkillEntry]) -> str:
+def _format_list(prefix: str, entries: list[SkillEntry],
+                 tag_descriptions: dict[str, str]) -> str:
     if not entries:
         return f"# No skills mounted at {prefix}\n"
     rows = [f"# {len(entries)} skill(s) at {prefix}\n\n"]
+    for tag, desc in tag_descriptions.items():
+        rows.append("[[tags]]\n")
+        rows.append(f"name = {toml_str(tag)}\n")
+        rows.append(f"description = {toml_str(desc)}\n\n")
     for s in entries:
         rows.append("[[skills]]\n")
         rows.append(f"name = {toml_str(s.name)}\n")
@@ -227,7 +262,8 @@ def _attach_skills(inact_app, prefix: str, store: SkillStore) -> None:
         tag = request.query_params.get("tag") or None
         q = request.query_params.get("q") or None
         entries = store.list(tag=tag, q=q)
-        return text_response(_format_list(prefix, entries))
+        return text_response(_format_list(prefix, entries,
+                                          store.tag_descriptions()))
 
     def _detail(name: str):
         entry = store.get(name)
@@ -254,6 +290,12 @@ def _attach_skills(inact_app, prefix: str, store: SkillStore) -> None:
         if not sub:
             entries = store.list()
             lines = [f"# Skills ({len(entries)})\n\n"]
+            tag_descs = store.tag_descriptions()
+            if tag_descs:
+                lines.append("## Tags\n\n")
+                for tag, desc in tag_descs.items():
+                    lines.append(f"- `{tag}` — {desc}\n")
+                lines.append("\n## Skills\n\n")
             for s in entries:
                 tag_str = ", ".join(f"`{t}`" for t in s.tags)
                 lines.append(

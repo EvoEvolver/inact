@@ -167,6 +167,35 @@ def test_http_index_empty_when_no_skills(tmp_path):
     assert "No skills mounted" in resp.text
 
 
+def test_tags_yaml_loaded_from_root(tmp_path):
+    client, store, root_a, _ = _make_app(tmp_path)
+    _write_skill(root_a, "alpha", tags=["custom"])
+    (root_a / "TAGS.yaml").write_text(
+        'custom: "A custom tag for testing."\n'
+        'unused: "Should not appear."\n',
+        encoding="utf-8",
+    )
+    store.register_root(root_a)
+
+    # tag_descriptions only surfaces tags actually in use
+    descs = store.tag_descriptions()
+    assert descs == {"custom": "A custom tag for testing."}
+
+    # surfaced in TOML index
+    resp = client.get("/skills")
+    assert resp.status_code == 200
+    assert "[[tags]]" in resp.text
+    assert 'name = "custom"' in resp.text
+    assert "A custom tag for testing." in resp.text
+    assert "unused" not in resp.text
+
+    # surfaced in human view
+    human = client.get("/_human/skills/")
+    assert human.status_code == 200
+    assert "custom" in human.text
+    assert "A custom tag for testing." in human.text
+
+
 def test_human_view_index_and_detail(tmp_path):
     client, store, root_a, _ = _make_app(tmp_path)
     _write_skill(root_a, "alpha", description="Use alpha here.",

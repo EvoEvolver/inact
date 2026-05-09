@@ -505,26 +505,24 @@ def attach_issues(inact_app, prefix: str, store: IssueStore,
             fields: dict = {}
             if "body" in body:
                 b = body["body"]
-                if isinstance(b, dict):
-                    mode = (b.get("mode") or "").strip().lower()
-                    text = b.get("text") or ""
-                    if mode == "replace":
-                        fields["body"] = text
-                    elif mode == "append":
-                        prev = issue.get("body") or ""
-                        sep  = "\n\n" if prev and text else ""
-                        fields["body"] = prev + sep + text
-                    else:
-                        return text_response(
-                            "ERROR 400: body.mode must be 'replace' or 'append'\n"
-                            '  body: {"body": {"mode": "replace|append", "text": "..."}}\n',
-                            400,
-                        )
-                else:
+                if not isinstance(b, dict):
                     return text_response(
-                        "ERROR 400: body must be {\"mode\":\"replace|append\", \"text\":\"...\"}\n",
+                        "ERROR 400: body must be {\"old\":\"...\", \"new\":\"...\"}\n"
+                        "Use POST /issues/{n}/.append to append text.\n",
                         400,
                     )
+                old = (b.get("old") or "").strip()
+                new = (b.get("new") or "").strip()
+                if not old:
+                    return text_response(
+                        "ERROR 400: 'old' required\n"
+                        '  body: {"body": {"old": "text to find", "new": "replacement"}}\n',
+                        400,
+                    )
+                current = issue.get("body") or ""
+                if old not in current:
+                    return text_response("ERROR 400: 'old' text not found in body\n", 400)
+                fields["body"] = current.replace(old, new, 1)
             if "state" in body:
                 s = (body["state"] or "").strip()
                 if s not in _VALID_STATES:
@@ -563,6 +561,24 @@ def attach_issues(inact_app, prefix: str, store: IssueStore,
         if not store.get(number):
             return text_response("ERROR 404: issue not found\n", 404)
         store.update(number, {"state": "open"})
+        return text_response("OK\n")
+
+    def _append(number: int, request: Request):
+        issue = store.get(number)
+        if not issue:
+            return text_response("ERROR 404: issue not found\n", 404)
+        body = _body(request)
+        text = (body.get("text") or "").strip()
+        if not text:
+            return text_response(
+                "ERROR 400: 'text' required\n"
+                f"POST {prefix}/{{number}}/.append\n"
+                '  body: {"text":"..."}\n',
+                400,
+            )
+        prev = issue.get("body") or ""
+        sep  = "\n\n" if prev else ""
+        store.update(number, {"body": prev + sep + text})
         return text_response("OK\n")
 
     def _assign(number: int, request: Request):
@@ -841,7 +857,8 @@ def mount_issues(
         f"  GET    {p}/.open                      open issues\n"
         f"  GET    {p}/.closed                    closed issues\n"
         f"  GET    {p}/{{number}}                   issue detail + comments\n"
-        f"  POST   {p}/{{number}}                   update (body: replace|append, state, assignee)\n"
+        f"  POST   {p}/{{number}}                   update (body: old→new, state, assignee)\n"
+        f"  POST   {p}/{{number}}/.append           append to body  body: {{\"text\":\"...\"}}\n"
         f"  DELETE {p}/{{number}}                   delete issue\n"
         f"  POST   {p}/{{number}}/.close             close\n"
         f"  POST   {p}/{{number}}/.reopen            reopen\n"

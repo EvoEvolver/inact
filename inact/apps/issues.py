@@ -503,13 +503,28 @@ def attach_issues(inact_app, prefix: str, store: IssueStore,
                 return text_response("ERROR 404: issue not found\n", 404)
             body   = _body(request)
             fields: dict = {}
-            if "title" in body:
-                t = (body["title"] or "").strip()
-                if not t:
-                    return text_response("ERROR 400: 'title' cannot be empty\n", 400)
-                fields["title"] = t
             if "body" in body:
-                fields["body"] = body["body"] or ""
+                b = body["body"]
+                if isinstance(b, dict):
+                    mode = (b.get("mode") or "").strip().lower()
+                    text = b.get("text") or ""
+                    if mode == "replace":
+                        fields["body"] = text
+                    elif mode == "append":
+                        prev = issue.get("body") or ""
+                        sep  = "\n\n" if prev and text else ""
+                        fields["body"] = prev + sep + text
+                    else:
+                        return text_response(
+                            "ERROR 400: body.mode must be 'replace' or 'append'\n"
+                            '  body: {"body": {"mode": "replace|append", "text": "..."}}\n',
+                            400,
+                        )
+                else:
+                    return text_response(
+                        "ERROR 400: body must be {\"mode\":\"replace|append\", \"text\":\"...\"}\n",
+                        400,
+                    )
             if "state" in body:
                 s = (body["state"] or "").strip()
                 if s not in _VALID_STATES:
@@ -826,7 +841,7 @@ def mount_issues(
         f"  GET    {p}/.open                      open issues\n"
         f"  GET    {p}/.closed                    closed issues\n"
         f"  GET    {p}/{{number}}                   issue detail + comments\n"
-        f"  POST   {p}/{{number}}                   update (title/body/state/assignee)\n"
+        f"  POST   {p}/{{number}}                   update (body: replace|append, state, assignee)\n"
         f"  DELETE {p}/{{number}}                   delete issue\n"
         f"  POST   {p}/{{number}}/.close             close\n"
         f"  POST   {p}/{{number}}/.reopen            reopen\n"

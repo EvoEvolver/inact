@@ -35,6 +35,8 @@ the agent in notify_to (requires notify_store).
 from __future__ import annotations
 
 import json
+import logging
+import os
 import threading
 import time
 import uuid
@@ -118,13 +120,150 @@ def _page_header(page: int, per_page: int, total: int) -> str:
 
 
 # ---------------------------------------------------------------------------
+# File storage backends (optional — for jobs that produce output files)
+# ---------------------------------------------------------------------------
+
+class FileStorage:
+    """Abstract storage for job output files."""
+
+    def save(self, job_id: str, name: str, data: bytes) -> str:
+        raise NotImplementedError
+
+    def exists(self, job_id: str, name: str) -> bool:
+        raise NotImplementedError
+
+    def get_response(self, job_id: str, name: str):
+        """Return a FastAPI Response or None if file not found."""
+        raise NotImplementedError
+
+
+class LocalFileStorage(FileStorage):
+    def __init__(self, files_root: str):
+        self.files_root = files_root
+        os.makedirs(files_root, exist_ok=True)
+
+    def _path(self, job_id: str, name: str) -> str:
+        from fastapi.responses import FileResponse
+        rel = _safe_rel(name)
+        if rel is None:
+            raise ValueError(f"unsafe file path: {name!r}")
+        return os.path.join(self.files_root, f"job_{job_id}", rel)
+
+    def save(self, job_id: str, name: str, data: bytes) -> str:
+        rel = _safe_rel(name)
+        if rel is None:
+            raise ValueError(f"unsafe file path: {name!r}")
+        dest = self._path(job_id, name)
+        os.makedirs(os.path.dirname(dest) or ".", exist_ok=True)
+        with open(dest, "wb") as fh:
+            fh.write(data)
+        return rel
+
+    def exists(self, job_id: str, name: str) -> bool:
+        return os.path.isfile(self._path(job_id, name))
+
+    def get_response(self, job_id: str, name: str):
+        from fastapi.responses import FileResponse
+        full = self._path(job_id, name)
+        if not os.path.isfile(full):
+            return None
+        return FileResponse(full)
+
+
+class S3FileStorage(FileStorage):
+    def __init__(self, bucket: str, prefix: str = "",
+                 region: str | None = None, endpoint_url: str | None = None):
+        import boto3
+        self.bucket = bucket
+        self.prefix = prefix.rstrip("/")
+        self.s3 = boto3.client(
+            "s3", region_name=region or None,
+            endpoint_url=endpoint_url or None,
+        )
+
+    def _key(self, job_id: str, name: str) -> str:
+        rel = _safe_rel(name)
+        if rel is None:
+            raise ValueError(f"unsafe file path: {name!r}")
+        if self.prefix:
+            return f"{self.prefix}/job_{job_id}/{rel}"
+        return f"job_{job_id}/{rel}"
+
+    def save(self, job_id: str, name: str, data: bytes) -> str:
+        key = self._key(job_id, name)
+        try:
+            self.s3.put_object(Bucket=self.bucket, Key=key, Body=data)
+            logging.info("[s3] saved key=%s size=%d", key, len(data))
+        except Exception as e:
+            logging.error("[s3] failed to save key=%s: %s", key, e)
+            raise
+        return _safe_rel(name)
+
+    def exists(self, job_id: str, name: str) -> bool:
+        import botocore
+        try:
+            self.s3.head_object(Bucket=self.bucket, Key=self._key(job_id, name))
+            return True
+        except botocore.exceptions.ClientError as e:
+            if e.response["Error"]["Code"] == "404":
+                return False
+            raise
+
+    def get_response(self, job_id: str, name: str):
+        from fastapi.responses import StreamingResponse
+        import botocore
+        key = self._key(job_id, name)
+        try:
+            obj = self.s3.get_object(Bucket=self.bucket, Key=key)
+            logging.info("[s3] serving key=%s size=%s", key, obj.get("ContentLength", "?"))
+        except botocore.exceptions.ClientError as e:
+            if e.response["Error"]["Code"] == "NoSuchKey":
+                return None
+            logging.error("[s3] failed to get key=%s: %s", key, e)
+            raise
+
+        body = obj["Body"]
+
+        def _iter():
+            while True:
+                chunk = body.read(65536)
+                if not chunk:
+                    break
+                yield chunk
+
+        return StreamingResponse(
+            _iter(),
+            media_type="application/octet-stream",
+            headers={"Content-Length": str(obj["ContentLength"])},
+        )
+
+
+def _safe_rel(path: str) -> str | None:
+    """Reject path traversal. Return normalized POSIX rel path or None."""
+    if not path:
+        return None
+    p = path.replace("\\", "/").lstrip("/")
+    parts = []
+    for seg in p.split("/"):
+        if not seg or seg == ".":
+            continue
+        if seg == "..":
+            return None
+        parts.append(seg)
+    if not parts:
+        return None
+    return "/".join(parts)
+
+
+# ---------------------------------------------------------------------------
 # Data layer
 # ---------------------------------------------------------------------------
 
 class JobStore:
-    def __init__(self, storage: Storage):
+    def __init__(self, storage: Storage, file_storage: FileStorage | None = None):
         self._s = storage
         self._s.init(_DDL)
+        self.file_storage = file_storage
 
     # ---- helpers ----
 
@@ -389,6 +528,18 @@ class JobStore:
         )
         return list(reversed(rows))
 
+    # ---- file storage (optional) ----
+
+    def save_output_file(self, job_id: str, name: str, data: bytes) -> str:
+        if self.file_storage is None:
+            raise RuntimeError("file_storage not configured")
+        return self.file_storage.save(job_id, name, data)
+
+    def get_file_response(self, job_id: str, name: str):
+        if self.file_storage is None:
+            return None
+        return self.file_storage.get_response(job_id, name)
+
 
 # ---------------------------------------------------------------------------
 # Notification helper
@@ -620,10 +771,22 @@ def attach_jobs(inact_app, prefix: str, store: JobStore,
                 out.append("\n")
         return text_response("".join(out))
 
+    def _job_file(job_id: str, path: str):
+        if not store.get(job_id):
+            return text_response("ERROR 404: job not found\n", 404)
+        rel = _safe_rel(path)
+        if rel is None:
+            return text_response("ERROR 400: unsafe path\n", 400)
+        resp = store.get_file_response(job_id, rel)
+        if resp is None:
+            return text_response("ERROR 404: file not found\n", 404)
+        return resp
+
     fastapi_app.add_api_route(prefix, _jobs, methods=["GET", "POST"])
     fastapi_app.add_api_route(prefix + "/{job_id}", _job, methods=["GET", "DELETE"])
     fastapi_app.add_api_route(prefix + "/{job_id}/update", _update, methods=["POST"])
     fastapi_app.add_api_route(prefix + "/{job_id}/logs", _logs, methods=["GET", "POST"])
+    fastapi_app.add_api_route(prefix + "/{job_id}/files/{path:path}", _job_file, methods=["GET"])
 
     def _human(_path: str):
         from ..render import render_template, workspace_nav
@@ -650,6 +813,8 @@ def mount_jobs(
     inact_app,
     prefix: str,
     storage,
+    *,
+    file_storage=None,
     notify_store=None,
     registry=None,
 ) -> JobStore:
@@ -658,6 +823,7 @@ def mount_jobs(
     — slurm, etc. — can persist their own job kinds in the same store).
 
     *storage*      — database URL/path or Storage instance.
+    *file_storage* — optional FileStorage for job output files.
     *notify_store* — NotifyStore; on terminal status, agents in notify_to
                      get push notifications.
 
@@ -673,7 +839,7 @@ def mount_jobs(
     from ..storage import make_storage
     p = "/" + prefix.strip("/")
     backend = make_storage(storage) if isinstance(storage, str) else storage
-    store = JobStore(backend)
+    store = JobStore(backend, file_storage=file_storage)
 
     ns = None
     if notify_store is not None:

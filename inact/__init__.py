@@ -2,8 +2,9 @@ from .core import Inact
 from .apps.auth import mount_auth
 from .apps.workspace import mount_workspace
 from .apps.notify import mount_notify, NotifyStore
-from .apps.jobs import mount_jobs, JobStore
+from .apps.jobs import mount_jobs, JobStore, FileStorage, LocalFileStorage, S3FileStorage
 from .apps.skills import mount_skills, SkillStore
+from .apps.git_proxy import mount_git_proxy
 from .apps.issues import mount_issues, IssueStore
 from .handlers import FileHandler, PDFHandler, CSVHandler
 from .apps.workspace.message import MessageStore, mount_message
@@ -45,8 +46,12 @@ __all__ = [
     "make_storage",
     "IssueStore",
     "JobStore",
+    "FileStorage",
+    "LocalFileStorage",
+    "S3FileStorage",
     "mount_issues",
     "mount_jobs",
+    "mount_git_proxy",
     "mount_message",
     "mount_skills",
     "SkillStore",

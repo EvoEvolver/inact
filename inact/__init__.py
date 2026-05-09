@@ -3,6 +3,7 @@ from .apps.auth import mount_auth
 from .apps.workspace import mount_workspace
 from .apps.notify import mount_notify, NotifyStore
 from .apps.jobs import mount_jobs, JobStore
+from .apps.git_proxy import mount_git_proxy
 from .apps.issues import mount_issues, IssueStore
 from .handlers import FileHandler, PDFHandler, CSVHandler
 from .apps.workspace.message import MessageStore, mount_message
@@ -44,6 +45,7 @@ __all__ = [
     "JobStore",
     "mount_issues",
     "mount_jobs",
+    "mount_git_proxy",
     "mount_message",
     "mount_register",
     "mount_workspace",

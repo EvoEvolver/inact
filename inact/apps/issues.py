@@ -508,7 +508,7 @@ def attach_issues(inact_app, prefix: str, store: IssueStore,
                 if not isinstance(b, dict):
                     return text_response(
                         "ERROR 400: body must be {\"old\":\"...\", \"new\":\"...\"}\n"
-                        "Use POST /issues/{n}/.append to append text.\n",
+                        "Use POST /issues/{n}/.patch to append text.\n",
                         400,
                     )
                 old = (b.get("old") or "").strip()
@@ -563,7 +563,7 @@ def attach_issues(inact_app, prefix: str, store: IssueStore,
         store.update(number, {"state": "open"})
         return text_response("OK\n")
 
-    def _append(number: int, request: Request):
+    def _patch(number: int, request: Request):
         issue = store.get(number)
         if not issue:
             return text_response("ERROR 404: issue not found\n", 404)
@@ -572,7 +572,7 @@ def attach_issues(inact_app, prefix: str, store: IssueStore,
         if not text:
             return text_response(
                 "ERROR 400: 'text' required\n"
-                f"POST {prefix}/{{number}}/.append\n"
+                f"POST {prefix}/{{number}}/.patch\n"
                 '  body: {"text":"..."}\n',
                 400,
             )
@@ -754,6 +754,7 @@ def attach_issues(inact_app, prefix: str, store: IssueStore,
     fastapi_app.add_api_route(prefix + "/{number}", _issue, methods=["GET", "POST", "DELETE"])
     fastapi_app.add_api_route(prefix + "/{number}/.close", _close, methods=["POST"])
     fastapi_app.add_api_route(prefix + "/{number}/.reopen", _reopen, methods=["POST"])
+    fastapi_app.add_api_route(prefix + "/{number}/.patch", _patch, methods=["POST"])
     fastapi_app.add_api_route(prefix + "/{number}/.assign", _assign, methods=["POST"])
     fastapi_app.add_api_route(prefix + "/{number}/.label", _add_label_route, methods=["POST"])
     fastapi_app.add_api_route(prefix + "/{number}/labels/{label_name}", _remove_label_route, methods=["DELETE"])
@@ -858,7 +859,7 @@ def mount_issues(
         f"  GET    {p}/.closed                    closed issues\n"
         f"  GET    {p}/{{number}}                   issue detail + comments\n"
         f"  POST   {p}/{{number}}                   update (body: old→new, state, assignee)\n"
-        f"  POST   {p}/{{number}}/.append           append to body  body: {{\"text\":\"...\"}}\n"
+        f"  POST   {p}/{{number}}/.patch           append to body  body: {{\"text\":\"...\"}}\n"
         f"  DELETE {p}/{{number}}                   delete issue\n"
         f"  POST   {p}/{{number}}/.close             close\n"
         f"  POST   {p}/{{number}}/.reopen            reopen\n"

@@ -11,10 +11,18 @@ from .utils import html_response
 # Jinja2 environment
 # ---------------------------------------------------------------------------
 
-_env = jinja2.Environment(
-    loader=jinja2.FileSystemLoader(os.path.join(os.path.dirname(__file__), "templates")),
-    autoescape=True,
-)
+_builtin_dir = os.path.join(os.path.dirname(__file__), "templates")
+_loader = jinja2.ChoiceLoader([jinja2.FileSystemLoader(_builtin_dir)])
+_env = jinja2.Environment(loader=_loader, autoescape=True)
+
+
+def add_template_dir(path: str) -> None:
+    """Prepend an external template dir so apps outside inact can render via
+    `render_template` while still extending inact base templates."""
+    for ld in _loader.loaders:
+        if isinstance(ld, jinja2.FileSystemLoader) and path in ld.searchpath:
+            return
+    _loader.loaders.insert(0, jinja2.FileSystemLoader(path))
 
 
 def render_template(name: str, **ctx) -> str:

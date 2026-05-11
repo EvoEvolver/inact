@@ -1,5 +1,5 @@
 """
-Agent task list — tasks with due dates, assignees, and arbitrary nesting.
+Agent task list — tasks with assignees and arbitrary nesting.
 
 mount_tasks(prefix, storage) registers:
 
@@ -8,13 +8,10 @@ mount_tasks(prefix, storage) registers:
   GET    {prefix}/?assignee=alice           filter by assignee
   POST   {prefix}/                          create task
                                             body: {"title":"...","description":"...",
-                                                   "due":"YYYY-MM-DD",
                                                    "assignee":"...","parent_id":"optional-id"}
-  GET    {prefix}/.today                    due today or overdue, not done (all levels)
-  GET    {prefix}/.overdue                  past due, not done (all levels)
   GET    {prefix}/.unassigned               no assignee, not done (all levels)
   GET    {prefix}/{id}                      task detail + direct children
-  POST   {prefix}/{id}                      update fields (title/description/status/due/assignee)
+  POST   {prefix}/{id}                      update fields (title/description/status/assignee)
   DELETE {prefix}/{id}                      delete task and all descendants
   GET    {prefix}/{id}/children             list direct children
   POST   {prefix}/{id}/.done                mark done
@@ -22,13 +19,12 @@ mount_tasks(prefix, storage) registers:
   POST   {prefix}/{id}/.assign              set assignee  body: {"assignee":"alice"}
 
 Status values:   todo | done
-Listings sorted by due date asc (no-due last), then created_at.
+Listings sorted by created_at asc.
 """
 
 from __future__ import annotations
 
 import time
-from datetime import datetime, timezone
 
 from fastapi import Request
 
@@ -42,7 +38,6 @@ _DDL = [
         title       TEXT    NOT NULL,
         description TEXT    NOT NULL DEFAULT '',
         status      TEXT    NOT NULL DEFAULT 'todo',
-        due         TEXT,
         assignee    TEXT    NOT NULL DEFAULT '',
         created_at  BIGINT  NOT NULL,
         updated_at  BIGINT  NOT NULL,
@@ -61,15 +56,8 @@ _VALID_STATUS = frozenset({"todo", "done"})
 # Data layer
 # ---------------------------------------------------------------------------
 
-def _today_str() -> str:
-    return datetime.now(tz=timezone.utc).strftime("%Y-%m-%d")
-
-
 def _sort_key(t: dict):
-    return (
-        t["due"] or "9999-99-99",
-        t["created_at"],
-    )
+    return t["created_at"]
 
 
 class TaskStore:
@@ -95,13 +83,12 @@ class TaskStore:
                 pass
 
     def create(self, title: str, description: str = "",
-               due: str | None = None, assignee: str = "",
-               parent_id: str | None = None) -> str:
+               assignee: str = "", parent_id: str | None = None) -> str:
         now = int(time.time())
         new_id = self._s.insert(
-            "INSERT INTO tasks (parent_id, title, description, status, due, assignee,"
-            " created_at, updated_at, done_at) VALUES (?,?,?,?,?,?,?,?,?)",
-            (parent_id, title, description, "todo", due, assignee, now, now, None),
+            "INSERT INTO tasks (parent_id, title, description, status, assignee,"
+            " created_at, updated_at, done_at) VALUES (?,?,?,?,?,?,?,?)",
+            (parent_id, title, description, "todo", assignee, now, now, None),
         )
         return str(new_id)
 
@@ -124,7 +111,7 @@ class TaskStore:
         return self._s.fetchone("SELECT * FROM tasks WHERE id=?", (task_id,))
 
     def update(self, task_id: str, fields: dict) -> bool:
-        allowed = {"title", "description", "status", "due", "assignee"}
+        allowed = {"title", "description", "status", "assignee"}
         updates = {k: v for k, v in fields.items() if k in allowed and v is not None}
         if not updates:
             return False
@@ -160,24 +147,6 @@ class TaskStore:
         )
         return (total[0]["cnt"] if total else 0), (done[0]["cnt"] if done else 0)
 
-    def today(self) -> list[dict]:
-        td = _today_str()
-        return sorted(
-            self._s.fetchall(
-                "SELECT * FROM tasks WHERE due <= ? AND status != 'done'", (td,)
-            ),
-            key=_sort_key,
-        )
-
-    def overdue(self) -> list[dict]:
-        td = _today_str()
-        return sorted(
-            self._s.fetchall(
-                "SELECT * FROM tasks WHERE due < ? AND status != 'done'", (td,)
-            ),
-            key=_sort_key,
-        )
-
     def unassigned(self) -> list[dict]:
         return sorted(
             self._s.fetchall(
@@ -197,10 +166,6 @@ def _fmt_ts(ts: int | None) -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(ts))
 
 
-def _is_overdue(task: dict) -> bool:
-    return bool(task["due"]) and task["due"] < _today_str() and task["status"] != "done"
-
-
 def _task_row_toml(task: dict, prefix: str,
                    total_children: int = 0, done_children: int = 0) -> str:
     lines = [
@@ -211,10 +176,6 @@ def _task_row_toml(task: dict, prefix: str,
     ]
     if task.get("assignee"):
         lines.append(f"assignee = {toml_str(task['assignee'])}\n")
-    if task["due"]:
-        lines.append(f"due      = {toml_str(task['due'])}\n")
-        if _is_overdue(task):
-            lines.append("overdue  = true\n")
     if task["parent_id"]:
         lines.append(f"parent   = {toml_str(prefix + '/' + str(task['parent_id']))}\n")
     if total_children:
@@ -227,15 +188,13 @@ def _task_row_toml(task: dict, prefix: str,
 
 def _task_detail(task: dict, children: list[dict], prefix: str) -> str:
     tid = str(task["id"])
-    lines = [f"# {task['title']}{'  [OVERDUE]' if _is_overdue(task) else ''}\n\n"]
+    lines = [f"# {task['title']}\n\n"]
     lines.append(f"id          = {toml_str(tid)}\n")
     lines.append(f"title       = {toml_str(task['title'])}\n")
     if task["description"]:
         lines.append(f"description = {toml_str(task['description'])}\n")
     lines.append(f"status      = {toml_str(task['status'])}\n")
     lines.append(f"assignee    = {toml_str(task.get('assignee') or '')}\n")
-    if task["due"]:
-        lines.append(f"due         = {toml_str(task['due'])}\n")
     if task["parent_id"]:
         lines.append(f"parent      = {toml_str(prefix + '/' + str(task['parent_id']))}\n")
     lines.append(f"created_at  = {toml_str(_fmt_ts(task['created_at']))}\n")
@@ -255,10 +214,6 @@ def _task_detail(task: dict, children: list[dict], prefix: str) -> str:
             lines.append(f"status   = {toml_str(child['status'])}\n")
             if child.get("assignee"):
                 lines.append(f"assignee = {toml_str(child['assignee'])}\n")
-            if child["due"]:
-                lines.append(f"due      = {toml_str(child['due'])}\n")
-                if _is_overdue(child):
-                    lines.append("overdue  = true\n")
             lines.append(f"url      = {toml_str(prefix + '/' + cid)}\n")
             lines.append(f"children = {toml_str(prefix + '/' + cid + '/children')}\n")
             lines.append("\n")
@@ -271,19 +226,12 @@ def _parse_create_body(body: dict,
     title = (body.get("title") or "").strip()
     if not title:
         return None, "'title' required"
-    due = (body.get("due") or "").strip() or None
-    if due:
-        try:
-            datetime.strptime(due, "%Y-%m-%d")
-        except ValueError:
-            return None, "'due' must be YYYY-MM-DD"
     assignee = (body.get("assignee") or "").strip()
     if assignee and lookup_agent is not None:
         if lookup_agent(assignee) is None:
             return None, f"'assignee' {assignee!r} is not a registered agent id"
     return title, {
         "description": (body.get("description") or "").strip(),
-        "due": due,
         "assignee": assignee,
     }
 
@@ -297,7 +245,6 @@ def attach_tasks(inact_app, prefix: str, store: TaskStore,
                  lookup_agent=None,
                  notify_fn=None) -> None:
     prefix = "/" + prefix.strip("/")
-    ep = "_inact_tasks_" + prefix.replace("/", "__")
     fastapi_app = inact_app.app
 
     def _name(agent_id: str) -> str:
@@ -323,8 +270,8 @@ def attach_tasks(inact_app, prefix: str, store: TaskStore,
                 return text_response(
                     f"ERROR 400: {result}\n"
                     f"POST {prefix}/\n"
-                    '  Body: {"title":"...","description":"...","due":"YYYY-MM-DD",'
-                    '"assignee":"<agent_id>","parent_id":"optional-id"}\n'
+                    '  Body: {"title":"...","description":"...","assignee":"<agent_id>",'
+                    '"parent_id":"optional-id"}\n'
                     f"\nassignee: integer agent id from {agents_prefix}/\n",
                     400,
                 )
@@ -344,29 +291,11 @@ def attach_tasks(inact_app, prefix: str, store: TaskStore,
         if assignee_f is not None:
             assignee_f = assignee_f.strip()
         tasks = store.list_tasks(status=status_f, assignee=assignee_f)
-        td = _today_str()
-        n_overdue = sum(1 for t in tasks if t["due"] and t["due"] < td and t["status"] != "done")
-        lines = [f"# Tasks\n# {len(tasks)} task(s)"]
-        if n_overdue:
-            lines.append(f", {n_overdue} overdue")
-        lines.append("\n# tip: ?status=todo|done  ?assignee=<agent_id>\n\n")
+        lines = [f"# Tasks\n# {len(tasks)} task(s)\n"]
+        lines.append("# tip: ?status=todo|done  ?assignee=<agent_id>\n\n")
         for t in tasks:
             total, done = store.child_counts(t["id"])
             lines.append(_task_row_toml(t, prefix, total, done))
-        return text_response("".join(lines))
-
-    def _today():
-        tasks = store.today()
-        lines = [f"# Due today or overdue ({_today_str()})\n# {len(tasks)} task(s)\n\n"]
-        for t in tasks:
-            lines.append(_task_row_toml(t, prefix))
-        return text_response("".join(lines))
-
-    def _overdue():
-        tasks = store.overdue()
-        lines = [f"# Overdue tasks\n# {len(tasks)} task(s)\n\n"]
-        for t in tasks:
-            lines.append(_task_row_toml(t, prefix))
         return text_response("".join(lines))
 
     def _unassigned():
@@ -398,14 +327,6 @@ def attach_tasks(inact_app, prefix: str, store: TaskStore,
                         f"ERROR 400: 'status' must be one of: {', '.join(sorted(_VALID_STATUS))}\n", 400
                     )
                 fields["status"] = s
-            if "due" in body:
-                due = (body["due"] or "").strip() or None
-                if due:
-                    try:
-                        datetime.strptime(due, "%Y-%m-%d")
-                    except ValueError:
-                        return text_response("ERROR 400: 'due' must be YYYY-MM-DD\n", 400)
-                fields["due"] = due
             if "assignee" in body:
                 new_assignee = (body["assignee"] or "").strip()
                 if new_assignee and lookup_agent is not None:
@@ -476,8 +397,6 @@ def attach_tasks(inact_app, prefix: str, store: TaskStore,
         return text_response(f"OK\nassignee = {toml_str(assignee)}\n")
 
     fastapi_app.add_api_route(prefix + "/", _root, methods=["GET", "POST"])
-    fastapi_app.add_api_route(prefix + "/.today", _today, methods=["GET"])
-    fastapi_app.add_api_route(prefix + "/.overdue", _overdue, methods=["GET"])
     fastapi_app.add_api_route(prefix + "/.unassigned", _unassigned, methods=["GET"])
     fastapi_app.add_api_route(prefix + "/{task_id}", _task, methods=["GET", "POST", "DELETE"])
     fastapi_app.add_api_route(prefix + "/{task_id}/children", _list_children, methods=["GET"])
@@ -551,8 +470,6 @@ def mount_tasks(inact_app, prefix: str, storage,
         f"\nTasks: {p}\n"
         f"  GET    {p}/                           list tasks  (?status=todo|done  ?assignee=name)\n"
         f"  POST   {p}/                           create task\n"
-        f"  GET    {p}/.today                     due today or overdue\n"
-        f"  GET    {p}/.overdue                   past due, not done\n"
         f"  GET    {p}/.unassigned                no assignee, not done\n"
         f"  GET    {p}/{{id}}                       task detail + children\n"
         f"  POST   {p}/{{id}}                       update fields\n"

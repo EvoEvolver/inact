@@ -75,7 +75,7 @@ def home(request: Request):
 | `POST /issues/`        | open an issue |
 | `GET  /notify/inbox`   | notification inbox |
 | `POST /notify/register`| register push callback |
-| `GET  /tasks/`         | shared task list |
+| `GET  /tasks/`         | task list |
 | `POST /tasks/`         | create a task |
 
 ## Help

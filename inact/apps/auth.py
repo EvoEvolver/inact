@@ -76,8 +76,20 @@ def _check(request: Request, store: _AuthStore,
         if path.startswith("/_human/"):
             return RedirectResponse("/_human/members/", status_code=302), ""
         return text_response(
-            "ERROR 401: X-Api-Key header required\n"
-            "  Register at POST /members/ to get an API key.\n",
+            "ERROR 401: no API key — ask your human to register you and share the key.\n"
+            "\n"
+            "  Step 1 — your human registers you:\n"
+            '    curl -X POST /members/ -H "Content-Type: application/json" \\\n'
+            '         -d \'{"name": "your-agent-name"}\'\n'
+            "    # Response contains your api_key\n"
+            "\n"
+            "  Step 2 — set up a shell alias so every request includes the key:\n"
+            "    export INACT_KEY='<your-api-key>'\n"
+            "    alias icurl='curl -H \"X-Api-Key: $INACT_KEY\"'\n"
+            "\n"
+            "  Step 3 — use icurl for all requests to this server:\n"
+            "    icurl http://host:port/\n"
+            "    icurl -X POST http://host:port/tasks/ -d '{\"title\":\"...\"}'\n",
             401,
         ), ""
 
@@ -88,7 +100,20 @@ def _check(request: Request, store: _AuthStore,
             if request.cookies.get(_SESSION_COOKIE):
                 resp.delete_cookie(_SESSION_COOKIE)
             return resp, ""
-        return text_response("ERROR 403: invalid api_key\n", 403), ""
+        return text_response(
+            "ERROR 403: invalid api_key — key not recognised.\n"
+            "\n"
+            "  If your key was recently regenerated, update your alias:\n"
+            "    export INACT_KEY='<new-api-key>'\n"
+            "    alias icurl='curl -H \"X-Api-Key: $INACT_KEY\"'\n"
+            "\n"
+            "  To get a fresh key, ask your human to run:\n"
+            "    curl -X POST /members/.admin/<id>/rekey -H 'X-Admin-Key: <admin-key>'\n"
+            "  Or re-register:\n"
+            '    curl -X POST /members/ -H "Content-Type: application/json" \\\n'
+            '         -d \'{"name": "your-agent-name"}\'\n',
+            403,
+        ), ""
 
     return None, agent_id
 

@@ -450,24 +450,12 @@ def attach_admin(inact_app, prefix: str, registry: AgentRegistry,
             return text_response(f"ERROR 409: {e}\n", 409)
         return text_response("OK\n" if ok else "ERROR 404: not found\n", 200 if ok else 404)
 
-    async def _admin_human(request: Request):
+    def _admin_human_get(request: Request):
         from inact.render import render_template
         from inact.utils import html_response
 
         if not admin_key:
             return text_response("ERROR 404: not found\n", 404)
-
-        if request.method == "POST":
-            form = await request.form()
-            submitted = (form.get("key") or "").strip()
-            if submitted == admin_key:
-                resp = RedirectResponse(url=request.url.path, status_code=302)
-                resp.set_cookie(_COOKIE, admin_key,
-                                httponly=True, samesite="lax",
-                                max_age=8 * 3600)
-                return resp
-            html = render_template("admin_login.html", error="Incorrect key.")
-            return html_response(html, 401)
 
         if request.query_params.get("logout"):
             resp = RedirectResponse(url=request.url.path, status_code=302)
@@ -485,6 +473,23 @@ def attach_admin(inact_app, prefix: str, registry: AgentRegistry,
             workspace_links=workspace_nav("/_human" + prefix),
             show_identity=False))
 
+    async def _admin_human(request: Request):
+        from inact.render import render_template
+        from inact.utils import html_response
+
+        if request.method == "POST":
+            form = await request.form()
+            submitted = (form.get("key") or "").strip()
+            if submitted == admin_key:
+                resp = RedirectResponse(url=request.url.path, status_code=302)
+                resp.set_cookie(_COOKIE, admin_key,
+                                httponly=True, samesite="lax",
+                                max_age=8 * 3600)
+                return resp
+            html = render_template("admin_login.html", error="Incorrect key.")
+            return html_response(html, 401)
+        return _admin_human_get(request)
+
     fastapi_app.add_api_route(prefix + "/list", _admin_list, methods=["GET"])
     fastapi_app.add_api_route(prefix + "/create", _admin_create, methods=["POST"])
     fastapi_app.add_api_route(prefix + "/{agent_id}/delete", _admin_delete, methods=["POST"])
@@ -493,6 +498,7 @@ def attach_admin(inact_app, prefix: str, registry: AgentRegistry,
 
     inact_app.app.add_api_route("/_human" + prefix, _admin_human, methods=["GET", "POST"])
     inact_app.app.add_api_route("/_human" + prefix + "/", _admin_human, methods=["GET", "POST"])
+    inact_app._human_views[prefix] = lambda path, request: _admin_human_get(request)
     inact_app.add_nav_item("admin", "/_human" + prefix)
 
 

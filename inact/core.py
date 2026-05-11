@@ -165,6 +165,8 @@ class Inact:
     def _render_human(self, path: str, request: Request | None = None) -> Response:
         for prefix, view_fn in self._human_views.items():
             if path == prefix or path.startswith(prefix + "/"):
+                if "request" in inspect.signature(view_fn).parameters and request is not None:
+                    return view_fn(path, request=request)
                 return view_fn(path)
 
         if path in self._routes:

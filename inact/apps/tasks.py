@@ -3,8 +3,9 @@ Agent task list — tasks with assignees and arbitrary nesting.
 
 mount_tasks(prefix, storage) registers:
 
-  GET    {prefix}/                          list root tasks (no parent)
-  GET    {prefix}/?status=todo|done         filter by status
+  GET    {prefix}/                          list unfinished root tasks (paginated)
+  GET    {prefix}/?status=todo|done|all     filter by status
+  GET    {prefix}/?page=2&per_page=20       paginate list responses
   GET    {prefix}/?assignee=alice           filter by assignee
   POST   {prefix}/                          create task
                                             body: {"title":"...","description":"...",
@@ -13,7 +14,7 @@ mount_tasks(prefix, storage) registers:
   GET    {prefix}/{id}                      task detail + direct children
   POST   {prefix}/{id}                      update fields (title/description/status/assignee)
   DELETE {prefix}/{id}                      delete task and all descendants
-  GET    {prefix}/{id}/children             list direct children
+  GET    {prefix}/{id}/children             list unfinished direct children
   POST   {prefix}/{id}/.done                mark done
   POST   {prefix}/{id}/.reopen              reopen (status → todo)
   POST   {prefix}/{id}/.assign              set assignee  body: {"assignee":"alice"}
@@ -50,6 +51,8 @@ _MIGRATIONS = [
 ]
 
 _VALID_STATUS = frozenset({"todo", "done"})
+_DEFAULT_PER_PAGE = 20
+_MAX_PER_PAGE = 100
 
 
 # ---------------------------------------------------------------------------
@@ -94,18 +97,36 @@ class TaskStore:
 
     def list_tasks(self, parent_id: str | None = None,
                    status: str | None = None,
-                   assignee: str | None = None) -> list[dict]:
+                   assignee: str | None = None,
+                   page: int = 1,
+                   per_page: int = _DEFAULT_PER_PAGE) -> list[dict]:
+        q, params = self._list_query(parent_id, status, assignee)
+        q += " ORDER BY created_at ASC LIMIT ? OFFSET ?"
+        params.extend([per_page, (page - 1) * per_page])
+        return self._s.fetchall(q, tuple(params))
+
+    def count_tasks(self, parent_id: str | None = None,
+                    status: str | None = None,
+                    assignee: str | None = None) -> int:
+        q, params = self._list_query(parent_id, status, assignee, select="COUNT(*) AS cnt")
+        row = self._s.fetchone(q, tuple(params))
+        return int(row["cnt"]) if row else 0
+
+    def _list_query(self, parent_id: str | None = None,
+                    status: str | None = None,
+                    assignee: str | None = None,
+                    select: str = "*") -> tuple[str, list]:
         if parent_id is None:
-            q, params = "SELECT * FROM tasks WHERE parent_id IS NULL", []
+            q, params = f"SELECT {select} FROM tasks WHERE parent_id IS NULL", []
         else:
-            q, params = "SELECT * FROM tasks WHERE parent_id=?", [parent_id]
-        if status:
+            q, params = f"SELECT {select} FROM tasks WHERE parent_id=?", [parent_id]
+        if status and status != "all":
             q += " AND status=?"
             params.append(status)
         if assignee is not None:
             q += " AND assignee=?"
             params.append(assignee)
-        return sorted(self._s.fetchall(q, tuple(params)), key=_sort_key)
+        return q, params
 
     def get(self, task_id: str) -> dict | None:
         return self._s.fetchone("SELECT * FROM tasks WHERE id=?", (task_id,))
@@ -132,10 +153,17 @@ class TaskStore:
             self.delete(child["id"])
         return self._s.execute("DELETE FROM tasks WHERE id=?", (task_id,)) > 0
 
-    def children(self, task_id: str) -> list[dict]:
-        return sorted(
-            self._s.fetchall("SELECT * FROM tasks WHERE parent_id=?", (task_id,)),
-            key=_sort_key,
+    def children(self, task_id: str,
+                 page: int | None = None,
+                 per_page: int = _DEFAULT_PER_PAGE) -> list[dict]:
+        if page is None:
+            return sorted(
+                self._s.fetchall("SELECT * FROM tasks WHERE parent_id=?", (task_id,)),
+                key=_sort_key,
+            )
+        return self._s.fetchall(
+            "SELECT * FROM tasks WHERE parent_id=? ORDER BY created_at ASC LIMIT ? OFFSET ?",
+            (task_id, per_page, (page - 1) * per_page),
         )
 
     def child_counts(self, task_id: str) -> tuple[int, int]:
@@ -147,13 +175,20 @@ class TaskStore:
         )
         return (total[0]["cnt"] if total else 0), (done[0]["cnt"] if done else 0)
 
-    def unassigned(self) -> list[dict]:
-        return sorted(
-            self._s.fetchall(
-                "SELECT * FROM tasks WHERE (assignee IS NULL OR assignee='') AND status != 'done'"
-            ),
-            key=_sort_key,
+    def unassigned(self, page: int = 1,
+                   per_page: int = _DEFAULT_PER_PAGE) -> list[dict]:
+        return self._s.fetchall(
+            "SELECT * FROM tasks WHERE (assignee IS NULL OR assignee='') AND status != 'done' "
+            "ORDER BY created_at ASC LIMIT ? OFFSET ?",
+            (per_page, (page - 1) * per_page),
         )
+
+    def count_unassigned(self) -> int:
+        row = self._s.fetchone(
+            "SELECT COUNT(*) AS cnt FROM tasks "
+            "WHERE (assignee IS NULL OR assignee='') AND status != 'done'"
+        )
+        return int(row["cnt"]) if row else 0
 
 
 # ---------------------------------------------------------------------------
@@ -164,6 +199,28 @@ def _fmt_ts(ts: int | None) -> str:
     if not ts:
         return ""
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(ts))
+
+
+def _parse_page_params(request: Request) -> tuple[int, int]:
+    try:
+        page = max(1, int(request.query_params.get("page", 1)))
+    except (ValueError, TypeError):
+        page = 1
+    try:
+        per_page = min(_MAX_PER_PAGE, max(1, int(request.query_params.get("per_page", _DEFAULT_PER_PAGE))))
+    except (ValueError, TypeError):
+        per_page = _DEFAULT_PER_PAGE
+    return page, per_page
+
+
+def _page_header(page: int, per_page: int, total: int) -> str:
+    total_pages = max(1, (total + per_page - 1) // per_page)
+    lines = [f"# page {page} of {total_pages} ({total} total)\n"]
+    if page > 1:
+        lines.append(f"# ?page={page - 1}&per_page={per_page} for prev\n")
+    if page < total_pages:
+        lines.append(f"# ?page={page + 1}&per_page={per_page} for next\n")
+    return "".join(lines)
 
 
 def _task_row_toml(task: dict, prefix: str,
@@ -286,21 +343,31 @@ def attach_tasks(inact_app, prefix: str, store: TaskStore,
                 f"OK\nid  = {toml_str(task_id)}\nurl = {toml_str(prefix + '/' + task_id)}\n"
             )
 
-        status_f   = request.query_params.get("status",   "").strip() or None
+        status_f = request.query_params.get("status", "todo").strip() or "todo"
+        if status_f not in _VALID_STATUS and status_f != "all":
+            return text_response(
+                f"ERROR 400: invalid status {status_f!r}\n"
+                "valid: todo | done | all\n",
+                400,
+            )
         assignee_f = request.query_params.get("assignee", None)
         if assignee_f is not None:
             assignee_f = assignee_f.strip()
-        tasks = store.list_tasks(status=status_f, assignee=assignee_f)
-        lines = [f"# Tasks\n# {len(tasks)} task(s)\n"]
-        lines.append("# tip: ?status=todo|done  ?assignee=<agent_id>\n\n")
+        page, per_page = _parse_page_params(request)
+        total = store.count_tasks(status=status_f, assignee=assignee_f)
+        tasks = store.list_tasks(status=status_f, assignee=assignee_f, page=page, per_page=per_page)
+        lines = [f"# Tasks ({status_f})\n", _page_header(page, per_page, total)]
+        lines.append("# tip: default is ?status=todo; use ?status=done or ?status=all  ?assignee=<agent_id>\n\n")
         for t in tasks:
             total, done = store.child_counts(t["id"])
             lines.append(_task_row_toml(t, prefix, total, done))
         return text_response("".join(lines))
 
-    def _unassigned():
-        tasks = store.unassigned()
-        lines = [f"# Unassigned tasks\n# {len(tasks)} task(s)\n\n"]
+    def _unassigned(request: Request):
+        page, per_page = _parse_page_params(request)
+        total = store.count_unassigned()
+        tasks = store.unassigned(page=page, per_page=per_page)
+        lines = [f"# Unassigned tasks\n", _page_header(page, per_page, total), "\n"]
         for t in tasks:
             lines.append(_task_row_toml(t, prefix))
         return text_response("".join(lines))
@@ -348,12 +415,25 @@ def attach_tasks(inact_app, prefix: str, store: TaskStore,
             return text_response("ERROR 404: task not found\n", 404)
         return text_response(_task_detail(task, store.children(task_id), prefix))
 
-    def _list_children(task_id: str):
+    def _list_children(task_id: str, request: Request):
         task = store.get(task_id)
         if not task:
             return text_response("ERROR 404: task not found\n", 404)
-        kids = store.children(task_id)
-        lines = [f"# Children: {task['title']}\n# {len(kids)} task(s)\n\n"]
+        status_f = request.query_params.get("status", "todo").strip() or "todo"
+        if status_f not in _VALID_STATUS and status_f != "all":
+            return text_response(
+                f"ERROR 400: invalid status {status_f!r}\n"
+                "valid: todo | done | all\n",
+                400,
+            )
+        page, per_page = _parse_page_params(request)
+        total = store.count_tasks(parent_id=task_id, status=status_f)
+        kids = store.list_tasks(parent_id=task_id, status=status_f, page=page, per_page=per_page)
+        lines = [
+            f"# Children: {task['title']} ({status_f})\n",
+            _page_header(page, per_page, total),
+            "# tip: default is ?status=todo; use ?status=done or ?status=all\n\n",
+        ]
         for k in kids:
             total, done = store.child_counts(k["id"])
             lines.append(_task_row_toml(k, prefix, total, done))
@@ -470,16 +550,16 @@ def mount_tasks(inact_app, prefix: str, storage,
         f"\nTasks  {p}/\n"
         f"---\n"
         f"\nLIST\n"
-        f"  GET  {p}/\n"
-        f"  GET  {p}/?status=todo|done&assignee=<agent_id>\n"
-        f"  GET  {p}/.unassigned        # no assignee, not done\n"
+        f"  GET  {p}/                         # unfinished root tasks, paginated\n"
+        f"  GET  {p}/?status=todo|done|all&assignee=<agent_id>&page=1&per_page=20\n"
+        f"  GET  {p}/.unassigned?page=1&per_page=20  # no assignee, not done\n"
         f"\nCREATE\n"
         f"  POST {p}/\n"
         f'  Body: {{"title":"Write report","description":"opt","assignee":"<id>","parent_id":"opt"}}\n'
         f"  # Response: OK\\nid = \"42\"\\nurl = \"{p}/42\"\n"
         f"\nREAD\n"
         f"  GET  {p}/<id>               # detail + direct children\n"
-        f"  GET  {p}/<id>/children\n"
+        f"  GET  {p}/<id>/children?status=todo|done|all&page=1&per_page=20\n"
         f"\nUPDATE\n"
         f"  POST {p}/<id>\n"
         f'  Body: {{"title":"...","description":"...","status":"todo|done","assignee":"<id>"}}\n'

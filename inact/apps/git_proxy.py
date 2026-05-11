@@ -257,16 +257,19 @@ def attach_git_proxy(inact_app, prefix: str, store: GitProxyStore, admin_key: st
     # --- help text -----------------------------------------------------------
 
     inact_app._app_mounts.append((prefix, (
-        f"\nGit proxy: {prefix}\n"
-        f"  Admin (X-Admin-Key):\n"
-        f"    GET    {prefix}/repos                list configured repos\n"
-        f"    POST   {prefix}/repos                register repo + token\n"
-        f"    DELETE {prefix}/repos/{{owner}}/{{repo}}  remove repo\n"
-        f"\n"
-        f"  Agent (X-Api-Key):\n"
-        f"    GET|POST|PUT|PATCH|DELETE\n"
-        f"      {prefix}/{{owner}}/{{repo}}/{{rest}}  proxy to GitHub API\n"
-        f"      e.g. GET {prefix}/EvoEvolver/inact/issues/\n"
+        f"\nGit Proxy  {prefix}/\n"
+        f"---\n"
+        f"\nADMIN  (X-Admin-Key required)\n"
+        f"  GET    {prefix}/.admin/repos\n"
+        f"  POST   {prefix}/.admin/repos\n"
+        f'  Body: {{"owner":"MyOrg","repo":"my-repo","token":"ghp_..."}}\n'
+        f"  DELETE {prefix}/.admin/repos/<owner>/<repo>\n"
+        f"\nAGENT  (X-Api-Key required) — proxied to GitHub API\n"
+        f"  GET|POST|PUT|PATCH|DELETE  {prefix}/<owner>/<repo>/<path>\n"
+        f"  Examples:\n"
+        f"    GET  {prefix}/MyOrg/my-repo/issues\n"
+        f"    POST {prefix}/MyOrg/my-repo/issues\n"
+        f'    Body: {{"title":"Bug report","body":"Details"}}\n'
     )))
 
 

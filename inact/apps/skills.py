@@ -349,9 +349,13 @@ def mount_skills(
         store = SkillStore()
     _attach_skills(inact_app, p, store)
     inact_app._app_mounts.append((p, (
-        f"\nSkills: {p}\n"
-        f"  GET    {p}             list skills (TOML)  ?tag=<t> ?q=<s>\n"
-        f"  GET    {p}/{{name}}      raw SKILL.md (frontmatter + body)\n"
-        f"  GET    /_human{p}/      human-readable index\n"
+        f"\nSkills  {p}/\n"
+        f"---\n"
+        f"# SKILL.md files agents load as instructions/prompts.\n"
+        f"\n  GET  {p}/            # list all skills (TOML)\n"
+        f"  GET  {p}/?tag=geometry\n"
+        f"  GET  {p}/?q=orca      # full-text search\n"
+        f"  GET  {p}/<name>       # raw SKILL.md body\n"
+        f"  GET  /_human{p}/      # browser-readable index\n"
     )))
     return store

@@ -467,15 +467,27 @@ def mount_tasks(inact_app, prefix: str, storage,
                  lookup_agent=lookup_agent,
                  notify_fn=notify_fn)
     inact_app._app_mounts.append((p, (
-        f"\nTasks: {p}\n"
-        f"  GET    {p}/                           list tasks  (?status=todo|done  ?assignee=name)\n"
-        f"  POST   {p}/                           create task\n"
-        f"  GET    {p}/.unassigned                no assignee, not done\n"
-        f"  GET    {p}/{{id}}                       task detail + children\n"
-        f"  POST   {p}/{{id}}                       update fields\n"
-        f"  DELETE {p}/{{id}}                       delete task\n"
-        f"  POST   {p}/{{id}}/.done                 mark done\n"
-        f"  POST   {p}/{{id}}/.reopen               reopen\n"
-        f"  POST   {p}/{{id}}/.assign               set assignee\n"
-        f"  GET    {p}/{{id}}/children              list children\n"
+        f"\nTasks  {p}/\n"
+        f"---\n"
+        f"\nLIST\n"
+        f"  GET  {p}/\n"
+        f"  GET  {p}/?status=todo|done&assignee=<agent_id>\n"
+        f"  GET  {p}/.unassigned        # no assignee, not done\n"
+        f"\nCREATE\n"
+        f"  POST {p}/\n"
+        f'  Body: {{"title":"Write report","description":"opt","assignee":"<id>","parent_id":"opt"}}\n'
+        f"  # Response: OK\\nid = \"42\"\\nurl = \"{p}/42\"\n"
+        f"\nREAD\n"
+        f"  GET  {p}/<id>               # detail + direct children\n"
+        f"  GET  {p}/<id>/children\n"
+        f"\nUPDATE\n"
+        f"  POST {p}/<id>\n"
+        f'  Body: {{"title":"...","description":"...","status":"todo|done","assignee":"<id>"}}\n'
+        f"\nSTATUS / ASSIGN\n"
+        f"  POST   {p}/<id>/.done\n"
+        f"  POST   {p}/<id>/.reopen\n"
+        f"  POST   {p}/<id>/.assign\n"
+        f'  Body: {{"assignee":"<agent_id>"}}\n'
+        f"\nDELETE  (cascades to descendants)\n"
+        f"  DELETE {p}/<id>\n"
     )))

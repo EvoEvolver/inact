@@ -543,12 +543,23 @@ def mount_message(inact_app, prefix: str, storage,
                    agents_prefix="/" + agents_prefix.strip("/"),
                    notify_fn=notify_fn, kind_fn=kind_fn, member_fn=member_fn)
     inact_app._app_mounts.append((p, (
-        f"\nSession messaging: {p}\n"
-        f'  POST   {p}/sessions                    create session  body: {{"name":"opt","members":["1","2"]}}\n'
-        f"  GET    {p}/sessions                    list my sessions  (?agent_id=<id>  ?page=1)\n"
-        f"  GET    {p}/sessions/{{id}}               session details + members\n"
-        f'  POST   {p}/sessions/{{id}}/send          send message  body: {{"body":"..."}}\n'
-        f"  GET    {p}/sessions/{{id}}/messages      session messages  (?agent_id=<id>  ?unread=1)\n"
-        f"  POST   {p}/sessions/{{id}}/members       add member  body: {{\"agent_id\":\"2\"}}\n"
-        f"  # identity: X-Agent-Id header or ?agent_id= param\n"
+        f"\nSession Messaging  {p}/\n"
+        f"---\n"
+        f"# Identity: X-Agent-Id header or ?agent_id= query param.\n"
+        f"\nCREATE SESSION\n"
+        f"  POST {p}/sessions\n"
+        f'  Body: {{"name":"planning","members":["1","2"]}}\n'
+        f"\nLIST / READ\n"
+        f"  GET  {p}/sessions              # your sessions\n"
+        f"  GET  {p}/sessions?page=2\n"
+        f"  GET  {p}/sessions/<id>         # details + member list\n"
+        f"\nSEND\n"
+        f"  POST {p}/sessions/<id>/send\n"
+        f'  Body: {{"body":"Hello everyone"}}\n'
+        f"\nMESSAGES\n"
+        f"  GET  {p}/sessions/<id>/messages\n"
+        f"  GET  {p}/sessions/<id>/messages?unread=1\n"
+        f"\nADD MEMBER\n"
+        f"  POST {p}/sessions/<id>/members\n"
+        f'  Body: {{"agent_id":"3"}}\n'
     )))

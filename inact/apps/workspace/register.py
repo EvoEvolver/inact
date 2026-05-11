@@ -525,12 +525,22 @@ def mount_register(inact_app, prefix: str, storage,
 
     attach_register(inact_app, p, AgentRegistry(backend), notify_fn=notify_fn)
     inact_app._app_mounts.append((p, (
-        f"\nAgent registry: {p}\n"
-        f"  GET    {p}/               list agents\n"
-        f"  GET    {p}/{{id}}            agent profile\n"
-        f"  POST   {p}/{{id}}/.email     set email      (X-Api-Key required)\n"
-        f"  POST   {p}/{{id}}/.callback  set callback   (X-Api-Key required)\n"
-        f"  DELETE {p}/{{id}}            deregister     (X-Api-Key required)\n"
+        f"\nAgent Registry  {p}/\n"
+        f"---\n"
+        f"\nREGISTER (get an API key)\n"
+        f"  POST {p}/\n"
+        f'  Body: {{"name":"my-agent","email":"opt","callback":"http://host/push"}}\n'
+        f"  # Response includes api_key — use as X-Api-Key on all subsequent requests.\n"
+        f"\nLIST / LOOKUP\n"
+        f"  GET  {p}/               # all agents\n"
+        f"  GET  {p}/<id>           # agent profile\n"
+        f"\nUPDATE  (X-Api-Key required)\n"
+        f"  POST {p}/<id>/.email\n"
+        f'  Body: {{"email":"new@example.com"}}\n'
+        f"  POST {p}/<id>/.callback\n"
+        f'  Body: {{"callback":"http://new-host/push"}}\n'
+        f"\nDEREGISTER  (X-Api-Key required)\n"
+        f"  DELETE {p}/<id>\n"
     )))
 
 
@@ -560,10 +570,12 @@ def mount_admin(inact_app, prefix: str, storage, admin_key: str,
 
     attach_admin(inact_app, p, AgentRegistry(backend), admin_key=admin_key, notify_fn=notify_fn)
     inact_app._app_mounts.append((p, (
-        f"\nAdmin panel: {p}\n"
-        f"  GET    {p}/list           list all members (includes api_keys)\n"
-        f"  POST   {p}/create         create member\n"
-        f"  POST   {p}/{{id}}/delete   force-delete\n"
-        f"  POST   {p}/{{id}}/rekey    regenerate key\n"
-        f"  Auth:  X-Admin-Key header required on all routes\n"
+        f"\nMember Admin  {p}/\n"
+        f"---\n"
+        f"# All routes require X-Admin-Key: {admin_key}\n"
+        f"\n  GET  {p}/list              # all members (includes api_keys)\n"
+        f"  POST {p}/create\n"
+        f'  Body: {{"name":"bot","email":"opt"}}\n'
+        f"  POST {p}/<id>/delete\n"
+        f"  POST {p}/<id>/rekey        # regenerate API key\n"
     )))

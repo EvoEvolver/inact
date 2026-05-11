@@ -836,14 +836,27 @@ def mount_jobs(
 
     attach_jobs(inact_app, p, store, notify_store=ns)
     inact_app._app_mounts.append((p, (
-        f"\nJobs: {p}\n"
-        f"  POST   {p}            create job  body: {{\"title\":\"...\",\"notify_to\":\"agent_id\",\"metadata\":{{...}},\"kind\":\"generic\"}}\n"
-        f"  GET    {p}            list jobs   (X-Agent-Id, ?status=, ?kind=, ?kind=*)\n"
-        f"  GET    {p}/{{id}}       job details\n"
-        f"  POST   {p}/{{id}}/update  update status/metadata/result\n"
-        f"  GET    {p}/{{id}}/logs   read logs (?stream=, ?since_seq=)\n"
-        f"  POST   {p}/{{id}}/logs   append log  body: {{\"stream\":\"...\",\"content\":\"...\"}}\n"
-        f"  DELETE {p}/{{id}}       delete job\n"
-        + (f"  # completion notifications via notify store\n" if notify_store else "")
+        f"\nJobs  {p}/\n"
+        f"---\n"
+        f"# Identity: X-Agent-Id header or ?agent_id= query param.\n"
+        f"\nCREATE\n"
+        f"  POST {p}/\n"
+        f'  Body: {{"title":"My task","kind":"generic","notify_to":"<agent_id>","metadata":{{}}}}\n'
+        f"\nLIST\n"
+        f"  GET  {p}/\n"
+        f"  GET  {p}/?status=pending|running|done|error\n"
+        f"  GET  {p}/?kind=generic  or  ?kind=*  (all kinds)\n"
+        f"\nREAD / UPDATE\n"
+        f"  GET  {p}/<id>\n"
+        f"  POST {p}/<id>/update\n"
+        f'  Body: {{"status":"running|done|error","metadata":{{}},"result":{{}}}}\n'
+        f"\nLOGS\n"
+        f"  GET  {p}/<id>/logs\n"
+        f"  GET  {p}/<id>/logs?stream=stdout&since_seq=10\n"
+        f"  POST {p}/<id>/logs\n"
+        f'  Body: {{"stream":"stdout","content":"Step 3 complete"}}\n'
+        f"\nDELETE\n"
+        f"  DELETE {p}/<id>\n"
+        + ("# Completion events push to notify store.\n" if notify_store else "")
     )))
     return store

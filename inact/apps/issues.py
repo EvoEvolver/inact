@@ -835,25 +835,39 @@ def mount_issues(
                   lookup_agent=lookup_agent,
                   agents_prefix=ap)
     inact_app._app_mounts.append((p, (
-        f"\nIssues: {p}\n"
-        f"  GET    {p}/                           list issues (?state=open|closed|all ?label=bug ?assignee=id ?author=id)\n"
-        f"  POST   {p}/                           create issue\n"
-        f"  GET    {p}/.open                      open issues\n"
-        f"  GET    {p}/.closed                    closed issues\n"
-        f"  GET    {p}/{{number}}                   issue detail + comments\n"
-        f"  POST   {p}/{{number}}                   update (body: old→new, state, assignee)\n"
-        f"  POST   {p}/{{number}}/.patch           append to body  body: {{\"text\":\"...\"}}\n"
-        f"  DELETE {p}/{{number}}                   delete issue\n"
-        f"  POST   {p}/{{number}}/.close             close\n"
-        f"  POST   {p}/{{number}}/.reopen            reopen\n"
-        f"  POST   {p}/{{number}}/.assign            set assignee\n"
-        f"  POST   {p}/{{number}}/.label             add label   body: {{\"label\":\"bug\"}}\n"
-        f"  DELETE {p}/{{number}}/labels/{{name}}     remove label\n"
-        f"  GET    {p}/{{number}}/comments           list comments\n"
-        f"  POST   {p}/{{number}}/comments           add comment\n"
-        f"  POST   {p}/{{number}}/comments/{{cid}}    update comment\n"
-        f"  DELETE {p}/{{number}}/comments/{{cid}}    delete comment\n"
-        f"  GET    {p}/labels/                    list labels\n"
-        f"  POST   {p}/labels/                    create label\n"
-        f"  DELETE {p}/labels/{{name}}              delete label\n"
+        f"\nIssue Tracker  {p}/\n"
+        f"---\n"
+        f"\nLIST\n"
+        f"  GET  {p}/                 # open issues\n"
+        f"  GET  {p}/.open  {p}/.closed\n"
+        f"  GET  {p}/?state=all&label=bug&assignee=<id>&author=<id>\n"
+        f"\nCREATE\n"
+        f"  POST {p}/\n"
+        f'  Body: {{"title":"Bug title","body":"Details","assignee":"<id>","label":"bug"}}\n'
+        f"\nREAD / UPDATE\n"
+        f"  GET    {p}/<number>         # detail + comments\n"
+        f"  POST   {p}/<number>\n"
+        f'  Body: {{"title":"New title","body":"...","state":"open|closed","assignee":"<id>"}}\n'
+        f"  POST   {p}/<number>/.patch  # append to body\n"
+        f'  Body: {{"text":"Additional context"}}\n'
+        f"\nSTATUS  /  ASSIGN  /  LABELS\n"
+        f"  POST   {p}/<number>/.close\n"
+        f"  POST   {p}/<number>/.reopen\n"
+        f"  POST   {p}/<number>/.assign\n"
+        f'  Body: {{"assignee":"<id>"}}\n'
+        f"  POST   {p}/<number>/.label\n"
+        f'  Body: {{"label":"bug"}}\n'
+        f"  DELETE {p}/<number>/labels/<name>\n"
+        f"\nCOMMENTS\n"
+        f"  GET    {p}/<number>/comments\n"
+        f"  POST   {p}/<number>/comments\n"
+        f'  Body: {{"body":"Comment text"}}\n'
+        f"  POST   {p}/<number>/comments/<cid>  # update\n"
+        f"  DELETE {p}/<number>/comments/<cid>\n"
+        f"\nLABELS\n"
+        f"  GET    {p}/labels/\n"
+        f"  POST   {p}/labels/\n"
+        f'  Body: {{"name":"enhancement","color":"#84b6eb"}}\n'
+        f"  DELETE {p}/labels/<name>\n"
+        f"\n  DELETE {p}/<number>  # delete issue\n"
     )))

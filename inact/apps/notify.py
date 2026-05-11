@@ -697,14 +697,24 @@ def mount_notify(
     attach_notify(inact_app, p, store, kind_fn=kind_fn, member_fn=member_fn,
                   agents_prefix=ap)
     inact_app._app_mounts.append((p, (
-        f"\nNotifications: {p}\n"
-        f'  POST {p}/register          register callback  body: {{"agent_id":"1","callback":"http://...","secret":"optional"}}\n'
-        f'  POST {p}/webhook/register  register Hermes webhook  body: {{"agent_id":"1","hermes_url":"http://localhost:8644","route":"my-route","secret":"..."}}\n'
-        f'  POST {p}/send              send notification  body: {{"to":"1","message":"..."}}\n'
-        f"  GET  {p}/inbox             inbox  unread only by default  (?agent_id=<id>  ?all=1 for all)\n"
-        f"  GET  {p}/inbox/{{id}}        read notification\n"
-        f"  DELETE {p}/inbox/{{id}}      dismiss\n"
-        f"  DELETE {p}/inbox/all       dismiss all notifications for the authenticated agent\n"
-        f"  # revival thread fires callbacks every {revival_interval}s for unread\n"
-        f"  # Hermes webhooks: payload signed with X-Webhook-Signature (HMAC-SHA256)\n"
+        f"\nNotifications  {p}/\n"
+        f"---\n"
+        f"\nREGISTER PUSH CALLBACK\n"
+        f"  POST {p}/register\n"
+        f'  Body: {{"agent_id":"1","callback":"http://my-agent/push","secret":"optional-hmac"}}\n'
+        f"\nREGISTER HERMES WEBHOOK\n"
+        f"  POST {p}/webhook/register\n"
+        f'  Body: {{"agent_id":"1","hermes_url":"http://host:8644","route":"my-route","secret":"opt"}}\n'
+        f"\nSEND\n"
+        f"  POST {p}/send\n"
+        f'  Body: {{"to":"<agent_id>","message":"Build finished"}}\n'
+        f"\nINBOX\n"
+        f"  GET  {p}/inbox                  # unread only\n"
+        f"  GET  {p}/inbox?all=1            # all\n"
+        f"  GET  {p}/inbox?agent_id=<id>\n"
+        f"  GET  {p}/inbox/<id>\n"
+        f"\nDISMISS\n"
+        f"  DELETE {p}/inbox/<id>\n"
+        f"  DELETE {p}/inbox/all\n"
+        f"\n# Unread re-fired every {revival_interval}s. Identity: X-Agent-Id header or ?agent_id=.\n"
     )))

@@ -42,7 +42,7 @@ from fastapi.responses import Response
 _log = logging.getLogger(__name__)
 
 from ..storage import Storage
-from ..utils import text_response, toml_str, _body
+from ..utils import text_response, toml_str, _body, caller_id
 
 _DDL = [
     """CREATE TABLE IF NOT EXISTS notifications (
@@ -399,22 +399,10 @@ def _start_revival(store: NotifyStore, interval: int) -> None:
 
 def attach_notify(inact_app, prefix: str, store: NotifyStore,
                   kind_fn=None, member_fn=None,
-                  agents_prefix: str = "/agents", registry=None) -> None:
+                  agents_prefix: str = "/agents") -> None:
     prefix = "/" + prefix.strip("/")
     agents_prefix = "/" + agents_prefix.strip("/")
     fastapi_app = inact_app.app
-
-    def _resolve_agent_id(request: Request) -> str | None:
-        if registry is None:
-            return None
-        api_key = (
-            request.headers.get("x-api-key", "")
-            or request.cookies.get("_inact_key", "")
-        ).strip()
-        if not api_key:
-            return None
-        agent = registry.get_by_key(api_key)
-        return str(agent["id"]) if agent else None
 
     def _from_str(agent_id: str) -> str:
         if not agent_id:
@@ -481,7 +469,7 @@ def attach_notify(inact_app, prefix: str, store: NotifyStore,
         return text_response(f"OK\nid = {notif_id}\n")
 
     def _inbox(request: Request):
-        agent_id = _resolve_agent_id(request)
+        agent_id = caller_id(request)
         if not agent_id:
             agent_id = (
                 request.query_params.get("agent_id", "")
@@ -521,7 +509,7 @@ def attach_notify(inact_app, prefix: str, store: NotifyStore,
         return text_response("".join(lines))
 
     def _inbox_clear(request: Request):
-        agent_id = _resolve_agent_id(request)
+        agent_id = caller_id(request)
         if not agent_id:
             agent_id = (
                 request.query_params.get("agent_id", "")
@@ -542,7 +530,7 @@ def attach_notify(inact_app, prefix: str, store: NotifyStore,
             n = store.get(notif_id)
             if not n:
                 return text_response("ERROR 404: not found\n", 404)
-            caller = _resolve_agent_id(request)
+            caller = caller_id(request)
             if caller is not None and str(n.get("to_id", "")) != caller:
                 return text_response("ERROR 403: forbidden\n", 403)
             ok = store.delete(notif_id)
@@ -572,7 +560,7 @@ def attach_notify(inact_app, prefix: str, store: NotifyStore,
         body = _body(request)
         agent_id = str(body.get("agent_id") or "").strip()
         if not agent_id:
-            agent_id = _resolve_agent_id(request) or ""
+            agent_id = caller_id(request) or ""
         endpoint = (body.get("endpoint") or "").strip()
         p256dh   = (body.get("p256dh")   or "").strip()
         auth     = (body.get("auth")     or "").strip()
@@ -707,7 +695,7 @@ def mount_notify(
 
     ap = "/" + agents_prefix.strip("/")
     attach_notify(inact_app, p, store, kind_fn=kind_fn, member_fn=member_fn,
-                  agents_prefix=ap, registry=_reg)
+                  agents_prefix=ap)
     inact_app._app_mounts.append((p, (
         f"\nNotifications: {p}\n"
         f'  POST {p}/register          register callback  body: {{"agent_id":"1","callback":"http://...","secret":"optional"}}\n'

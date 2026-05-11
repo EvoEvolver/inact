@@ -42,7 +42,7 @@ import time
 from fastapi import Request
 
 from ..storage import Storage
-from ..utils import text_response, toml_str, _body
+from ..utils import text_response, toml_str, _body, caller_id
 
 _DDL = [
     """CREATE TABLE IF NOT EXISTS issues (
@@ -388,7 +388,6 @@ def _issue_detail_toml(issue: dict, comments: list[dict], prefix: str, name_for=
 
 def attach_issues(inact_app, prefix: str, store: IssueStore,
                   notify_fn=None, lookup_agent=None,
-                  lookup_agent_by_key=None,
                   agents_prefix: str = "/agents") -> None:
     prefix = "/" + prefix.strip("/")
     fastapi_app = inact_app.app
@@ -400,18 +399,6 @@ def attach_issues(inact_app, prefix: str, store: IssueStore,
         if agent and agent.get("name"):
             return f"{agent['name']}#{agent_id}"
         return agent_id
-
-    def _caller_id(request: Request) -> str:
-        if lookup_agent_by_key is None:
-            return ""
-        api_key = (
-            request.headers.get("x-api-key", "")
-            or request.cookies.get("_inact_key", "")
-        ).strip()
-        if not api_key:
-            return ""
-        agent = lookup_agent_by_key(api_key)
-        return str(agent["id"]) if agent else ""
 
     def _notify_assign(assignee_id: str, number: int, title: str) -> None:
         if notify_fn and assignee_id:
@@ -435,7 +422,7 @@ def attach_issues(inact_app, prefix: str, store: IssueStore,
                     400,
                 )
             issue_body = (body.get("body") or "").strip()
-            author     = str(body.get("author") or "").strip() or _caller_id(request)
+            author     = str(body.get("author") or "").strip() or caller_id(request)
             assignee   = str(body.get("assignee") or "").strip()
             raw_labels = body.get("labels") or []
             labels = [str(l).strip() for l in raw_labels if str(l).strip()]
@@ -636,7 +623,7 @@ def attach_issues(inact_app, prefix: str, store: IssueStore,
         if request.method == "POST":
             body   = _body(request)
             cbody  = (body.get("body") or "").strip()
-            author = str(body.get("author") or "").strip() or _caller_id(request)
+            author = str(body.get("author") or "").strip() or caller_id(request)
             if not cbody:
                 return text_response(
                     "ERROR 400: 'body' required\n"
@@ -816,7 +803,6 @@ def mount_issues(
     store = IssueStore(backend)
 
     lookup_agent = None
-    lookup_agent_by_key = None
     if agents_storage is not None:
         from .workspace.register import AgentRegistry
         ag_back = make_storage(agents_storage) if isinstance(agents_storage, str) else agents_storage
@@ -826,8 +812,6 @@ def mount_issues(
                 return ag_reg.get(int(agent_id))
             except (ValueError, TypeError):
                 return None
-        def lookup_agent_by_key(api_key: str) -> dict | None:
-            return ag_reg.get_by_key(api_key)
 
     notify_fn = None
     if notify_storage is not None:
@@ -849,7 +833,6 @@ def mount_issues(
     attach_issues(inact_app, p, store,
                   notify_fn=notify_fn,
                   lookup_agent=lookup_agent,
-                  lookup_agent_by_key=lookup_agent_by_key,
                   agents_prefix=ap)
     inact_app._app_mounts.append((p, (
         f"\nIssues: {p}\n"

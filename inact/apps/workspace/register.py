@@ -21,7 +21,7 @@ from fastapi import Request
 from starlette.responses import RedirectResponse
 
 from ...storage import Storage
-from ...utils import text_response, html_response, toml_str, _body
+from ...utils import text_response, html_response, toml_str, _body, caller_id
 
 _DDL = [
     """CREATE TABLE IF NOT EXISTS agents (
@@ -323,13 +323,10 @@ def attach_register(inact_app, prefix: str, registry: AgentRegistry,
         return text_response(f"OK\ncallback = {toml_str(callback_url)}\n")
 
     def _me(request: Request):
-        api_key = (
-            request.headers.get("x-api-key", "")
-            or request.cookies.get("_inact_key", "")
-        ).strip()
-        if not api_key:
+        aid = caller_id(request)
+        if not aid:
             return text_response("ERROR 401: X-Api-Key required\n", 401)
-        agent = registry.get_by_key(api_key)
+        agent = registry.get(int(aid))
         if not agent:
             return text_response("ERROR 403: invalid api_key\n", 403)
         kind    = agent.get("kind", "agent")

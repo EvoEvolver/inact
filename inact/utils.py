@@ -13,6 +13,10 @@ def html_response(body: str, status: int = 200) -> HTMLResponse:
     return HTMLResponse(content=body, status_code=status)
 
 
+def caller_id(request: Request) -> str:
+    return getattr(request.state, "agent_id", "")
+
+
 def _body(request: Request) -> dict:
     try:
         return json.loads(getattr(request.state, "body", b"") or b"{}") or {}

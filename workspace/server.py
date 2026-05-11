@@ -33,6 +33,7 @@ from inact import Inact
 from inact.utils import server_base
 from inact.apps.auth      import mount_auth
 from inact.apps.notify    import mount_notify
+from inact.apps.tasks     import mount_tasks
 from inact.apps.workspace import mount_workspace
 
 # ---------------------------------------------------------------------------
@@ -46,6 +47,7 @@ os.makedirs(DATA_DIR, exist_ok=True)
 
 STORAGE   = f"{DATA_DIR}/workspace.db"
 NOTIFY_DB = f"{DATA_DIR}/notify.db"
+TASKS_DB  = f"{DATA_DIR}/tasks.db"
 ADMIN_KEY = os.environ.get("ADMIN_KEY", "123456")
 
 # ---------------------------------------------------------------------------
@@ -73,6 +75,8 @@ def home(request: Request):
 | `POST /issues/`        | open an issue |
 | `GET  /notify/inbox`   | notification inbox |
 | `POST /notify/register`| register push callback |
+| `GET  /tasks/`         | shared task list |
+| `POST /tasks/`         | create a task |
 
 ## Help
 
@@ -89,6 +93,11 @@ mount_notify(app, "/notify",
              revival_interval=600,
              registry=STORAGE,
              agents_prefix="/members")
+
+mount_tasks(app, "/tasks",
+            storage=TASKS_DB,
+            agents_storage=STORAGE,
+            notify_storage=NOTIFY_DB)
 
 mount_workspace(app,
     storage=STORAGE,
@@ -121,6 +130,7 @@ if __name__ == "__main__":
         f"  {local}/\n\n"
         f"  /members/  registry     /msg/     messaging\n"
         f"  /issues/   issues       /notify/  notifications\n"
+        f"  /tasks/    tasks\n"
         f"  data: {DATA_DIR}/\n"
     )
     app.run(host="0.0.0.0", port=PORT, debug=False)

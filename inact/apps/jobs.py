@@ -44,7 +44,7 @@ import uuid
 from fastapi import Request
 
 from ..storage import Storage
-from ..utils import text_response, toml_str, _body
+from ..utils import text_response, toml_str, _body, caller_id
 
 _DDL = [
     """CREATE TABLE IF NOT EXISTS jobs (
@@ -615,21 +615,9 @@ def _job_lines(prefix: str, j: dict, *, full: bool) -> list[str]:
 # ---------------------------------------------------------------------------
 
 def attach_jobs(inact_app, prefix: str, store: JobStore,
-                notify_store=None, registry=None) -> None:
+                notify_store=None) -> None:
     prefix = "/" + prefix.strip("/")
     fastapi_app = inact_app.app
-
-    def _resolve_agent_id(request: Request) -> str | None:
-        if registry is None:
-            return None
-        api_key = (
-            request.headers.get("x-api-key", "")
-            or request.cookies.get("_inact_key", "")
-        ).strip()
-        if not api_key:
-            return None
-        agent = registry.get_by_key(api_key)
-        return str(agent["id"]) if agent else None
 
     def _jobs(request: Request):
         if request.method == "POST":
@@ -653,7 +641,7 @@ def attach_jobs(inact_app, prefix: str, store: JobStore,
                 "OK\n" + "".join(_job_lines(prefix, job, full=False)),
                 201,
             )
-        agent_id = _resolve_agent_id(request)
+        agent_id = caller_id(request)
         if not agent_id:
             agent_id = (
                 request.query_params.get("agent_id", "")
@@ -816,7 +804,6 @@ def mount_jobs(
     *,
     file_storage=None,
     notify_store=None,
-    registry=None,
 ) -> JobStore:
     """
     Mount the jobs system at *prefix* and return the JobStore (so other apps
@@ -847,13 +834,7 @@ def mount_jobs(
         ns = notify_store if isinstance(notify_store, NotifyStore) \
              else NotifyStore(make_storage(notify_store) if isinstance(notify_store, str) else notify_store)
 
-    _reg = None
-    if registry is not None:
-        from .workspace.register import AgentRegistry
-        _reg = registry if isinstance(registry, AgentRegistry) \
-               else AgentRegistry(make_storage(registry) if isinstance(registry, str) else registry)
-
-    attach_jobs(inact_app, p, store, notify_store=ns, registry=_reg)
+    attach_jobs(inact_app, p, store, notify_store=ns)
     inact_app._app_mounts.append((p, (
         f"\nJobs: {p}\n"
         f"  POST   {p}            create job  body: {{\"title\":\"...\",\"notify_to\":\"agent_id\",\"metadata\":{{...}},\"kind\":\"generic\"}}\n"

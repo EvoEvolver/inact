@@ -40,30 +40,32 @@ class _AuthStore:
     def __init__(self, storage):
         self._s = storage
 
-    def valid_key(self, api_key: str) -> bool:
+    def get_agent_id(self, api_key: str) -> str | None:
         row = self._s.fetchone(
             "SELECT id FROM agents WHERE api_key = ?", (api_key,)
         )
-        return row is not None
+        return str(row["id"]) if row else None
 
 
-def _check(request: Request, store: _AuthStore, exempt: list[str]) -> Response | None:
+def _check(request: Request, store: _AuthStore,
+           exempt: list[str]) -> tuple[Response | None, str]:
+    """Returns (error_response, agent_id). agent_id is '' on exempt paths."""
     path = request.url.path
 
     if request.method == "OPTIONS":
-        return None
+        return None, ""
 
     if path == "/_human/members" or path.startswith("/_human/members/"):
-        return None
+        return None, ""
 
     for prefix in exempt:
         if prefix in ("/", ""):
             if path == "/":
-                return None
+                return None, ""
             continue
         p = prefix.rstrip("/")
         if path == p or path == p + "/" or path.startswith(p + "/"):
-            return None
+            return None, ""
 
     api_key = (
         request.headers.get("x-api-key", "")
@@ -72,22 +74,23 @@ def _check(request: Request, store: _AuthStore, exempt: list[str]) -> Response |
 
     if not api_key:
         if path.startswith("/_human/"):
-            return RedirectResponse("/_human/members/", status_code=302)
+            return RedirectResponse("/_human/members/", status_code=302), ""
         return text_response(
             "ERROR 401: X-Api-Key header required\n"
             "  Register at POST /members/ to get an API key.\n",
             401,
-        )
+        ), ""
 
-    if not store.valid_key(api_key):
+    agent_id = store.get_agent_id(api_key)
+    if agent_id is None:
         if path.startswith("/_human/"):
             resp = RedirectResponse("/_human/members/", status_code=302)
             if request.cookies.get(_SESSION_COOKIE):
                 resp.delete_cookie(_SESSION_COOKIE)
-            return resp
-        return text_response("ERROR 403: invalid api_key\n", 403)
+            return resp, ""
+        return text_response("ERROR 403: invalid api_key\n", 403), ""
 
-    return None
+    return None, agent_id
 
 
 class _AuthMiddleware(BaseHTTPMiddleware):
@@ -97,9 +100,10 @@ class _AuthMiddleware(BaseHTTPMiddleware):
         self._exempt = exempt
 
     async def dispatch(self, request: Request, call_next):
-        result = _check(request, self._store, self._exempt)
-        if result is not None:
-            return result
+        error, agent_id = _check(request, self._store, self._exempt)
+        if error is not None:
+            return error
+        request.state.agent_id = agent_id
         return await call_next(request)
 
 

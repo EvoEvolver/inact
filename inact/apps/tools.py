@@ -214,9 +214,7 @@ class ToolTree:
         try:
             row = self.row_fn(tool)
             if isinstance(row, dict):
-                row = dict(row)
-                row["folder"] = self.tool_folder(tool)
-                return row
+                return dict(row)
         except Exception:
             pass
         return {

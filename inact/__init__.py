@@ -5,6 +5,7 @@ from .apps.notify import mount_notify, NotifyStore
 from .apps.jobs import mount_jobs, JobStore, FileStorage, LocalFileStorage, S3FileStorage
 from .apps.skills import mount_skills, SkillStore
 from .apps.git_proxy import mount_git_proxy
+from .apps.tools import ToolTree, mount_tool_tree
 from .apps.issues import mount_issues, IssueStore
 from .handlers import FileHandler, PDFHandler, CSVHandler
 from .apps.workspace.message import MessageStore, mount_message
@@ -59,6 +60,8 @@ __all__ = [
     "mount_workspace",
     "NotifyStore",
     "mount_notify",
+    "mount_tool_tree",
+    "ToolTree",
     "server_base",
     "text_response",
     "toml_str",

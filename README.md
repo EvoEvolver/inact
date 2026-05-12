@@ -35,6 +35,7 @@ app.run()
 - **`/_human/<path>`** — Auto-registered HTML rendering for every route and mounted file.
 - **`/.help`** — Contextual help on every path, inherited from nearest ancestor if not defined.
 - **`mount(prefix, folder)`** — Serve a local folder with `/.ls` (file listing) and `/.grep?q=` (content search).
+- **`mount_tool_tree(prefix, ...)`** — Reusable recursive tool discovery for agent-facing apps, with optional sparse-folder collapse.
 
 ## Response types
 

@@ -5,6 +5,8 @@ mount_skills(inact_app, prefix, *, store=None) registers:
 
   GET  {prefix}              list skills (frontmatter only)
                              ?tag=<tag>  ?q=<substring>
+  GET  {prefix}/search       search skills by name/description
+                             ?q=<substring>  (required)
   GET  {prefix}/{name}       raw SKILL.md (frontmatter + body)
 
 A skill is a directory containing a SKILL.md file:
@@ -257,6 +259,21 @@ def _format_list(prefix: str, entries: list[SkillEntry],
     return "".join(rows)
 
 
+def _format_search(prefix: str, q: str, entries: list[SkillEntry]) -> str:
+    if not entries:
+        return f"# No skills matching {toml_str(q)}\n"
+    rows = [f"# {len(entries)} skill(s) matching {toml_str(q)}\n\n"]
+    for s in entries:
+        rows.append("[[results]]\n")
+        rows.append(f"name = {toml_str(s.name)}\n")
+        rows.append(f"description = {toml_str(s.description)}\n")
+        rows.append(f"tags = {_toml_list_value(s.tags)}\n")
+        if s.version is not None:
+            rows.append(f"version = {toml_str(str(s.version))}\n")
+        rows.append(f"url = {toml_str(f'GET {prefix}/{s.name}')}\n\n")
+    return "".join(rows)
+
+
 def _attach_skills(inact_app, prefix: str, store: SkillStore) -> None:
     def _index(request: Request):
         tag = request.query_params.get("tag") or None
@@ -264,6 +281,13 @@ def _attach_skills(inact_app, prefix: str, store: SkillStore) -> None:
         entries = store.list(tag=tag, q=q)
         return text_response(_format_list(prefix, entries,
                                           store.tag_descriptions()))
+
+    def _search(request: Request):
+        q = request.query_params.get("q") or None
+        if not q:
+            return text_response("ERROR 400: missing required query param 'q'\n", 400)
+        entries = store.list(q=q)
+        return text_response(_format_search(prefix, q, entries))
 
     def _detail(name: str):
         entry = store.get(name)
@@ -277,9 +301,11 @@ def _attach_skills(inact_app, prefix: str, store: SkillStore) -> None:
 
     fastapi_app = inact_app.app
     fastapi_app.add_api_route(prefix, _index, methods=["GET"])
+    # /search must be registered before /{name} so FastAPI doesn't consume "search" as a skill name.
+    fastapi_app.add_api_route(prefix + "/search", _search, methods=["GET"])
     fastapi_app.add_api_route(prefix + "/{name}", _detail, methods=["GET"])
 
-    def _human(path: str):
+    def _human(path: str, request: Request | None = None):
         from ..render import render_markdown
         from ..utils import html_response
         # Caller passes the full request path (e.g. "/skills" or
@@ -307,6 +333,21 @@ def _attach_skills(inact_app, prefix: str, store: SkillStore) -> None:
                 lines.append("\n")
             md = "\n".join(lines)
             return render_markdown(md, prefix)
+        if sub == "search":
+            q = (request.query_params.get("q") or "") if request else ""
+            entries = store.list(q=q or None)
+            header = f"# Search results for {q!r}" if q else "# All skills"
+            lines = [f"{header} ({len(entries)})\n\n"]
+            for s in entries:
+                tag_str = ", ".join(f"`{t}`" for t in s.tags)
+                lines.append(
+                    f"- [{s.name}](/_human{prefix}/{s.name}) "
+                    f"— {s.description}"
+                )
+                if tag_str:
+                    lines.append(f"  \n  tags: {tag_str}")
+                lines.append("\n")
+            return render_markdown("\n".join(lines), prefix + "/search")
         entry = store.get(sub)
         if entry is None:
             return html_response(
@@ -354,7 +395,8 @@ def mount_skills(
         f"# SKILL.md files agents load as instructions/prompts.\n"
         f"\n  GET  {p}/            # list all skills (TOML)\n"
         f"  GET  {p}/?tag=geometry\n"
-        f"  GET  {p}/?q=orca      # full-text search\n"
+        f"  GET  {p}/?q=orca      # full-text search on index\n"
+        f"  GET  {p}/search?q=orca  # dedicated search endpoint\n"
         f"  GET  {p}/<name>       # raw SKILL.md body\n"
         f"  GET  /_human{p}/      # browser-readable index\n"
     )))

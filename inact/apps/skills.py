@@ -274,7 +274,13 @@ def _format_search(prefix: str, q: str, entries: list[SkillEntry]) -> str:
     return "".join(rows)
 
 
-def _attach_skills(inact_app, prefix: str, store: SkillStore) -> None:
+def _attach_skills(
+    inact_app,
+    prefix: str,
+    store: SkillStore,
+    *,
+    nav_label: str | None = "skills",
+) -> None:
     def _index(request: Request):
         tag = request.query_params.get("tag") or None
         q = request.query_params.get("q") or None
@@ -356,11 +362,8 @@ def _attach_skills(inact_app, prefix: str, store: SkillStore) -> None:
         return render_markdown(entry.read(), prefix + "/" + sub)
 
     inact_app._human_views[prefix] = _human
-    parts = [p for p in prefix.strip("/").split("/") if p]
-    label = "skills"
-    if len(parts) >= 2 and parts[-1] == "skills":
-        label = parts[-2] + " skills"
-    inact_app.add_nav_item(label, "/_human" + prefix + "/")
+    if nav_label is not None:
+        inact_app.add_nav_item(nav_label, "/_human" + prefix + "/")
 
 
 # ---------------------------------------------------------------------------
@@ -372,6 +375,7 @@ def mount_skills(
     prefix: str = "/skills",
     *,
     store: SkillStore | None = None,
+    nav_label: str | None = "skills",
 ) -> SkillStore:
     """Mount the skills app at *prefix*. Returns the store.
 
@@ -392,7 +396,7 @@ def mount_skills(
     p = "/" + prefix.strip("/")
     if store is None:
         store = SkillStore()
-    _attach_skills(inact_app, p, store)
+    _attach_skills(inact_app, p, store, nav_label=nav_label)
     inact_app._app_mounts.append((p, (
         f"\nSkills  {p}/\n"
         f"---\n"

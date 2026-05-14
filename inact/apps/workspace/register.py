@@ -324,9 +324,12 @@ def attach_register(inact_app, prefix: str, registry: AgentRegistry,
 
     def _me(request: Request):
         aid = caller_id(request)
-        if not aid:
-            return text_response("ERROR 401: X-Api-Key required\n", 401)
-        agent = registry.get(int(aid))
+        agent = registry.get(int(aid)) if aid else None
+        if agent is None:
+            api_key = request.headers.get("x-api-key", "").strip()
+            if not api_key:
+                return text_response("ERROR 401: X-Api-Key required\n", 401)
+            agent = registry.get_by_key(api_key)
         if not agent:
             return text_response("ERROR 403: invalid api_key\n", 403)
         kind    = agent.get("kind", "agent")

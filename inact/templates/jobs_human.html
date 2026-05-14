@@ -45,7 +45,13 @@ import { parse as parseTOML } from 'https://esm.sh/smol-toml';
 const P   = {{ prefix        | tojson }};
 const AP  = {{ agents_prefix | tojson }};
 const KEY = localStorage.getItem('inact_api_key') || '';
-function H(extra) { return Object.assign({'X-Api-Key': KEY}, extra || {}); }
+const AID = localStorage.getItem('inact_agent_id') || '';
+function H(extra) {
+  const h = Object.assign({}, extra || {});
+  if (KEY) h['X-Api-Key'] = KEY;
+  if (AID) h['X-Agent-Id'] = AID;
+  return h;
+}
 function esc(s) { return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 
 let page   = 1;

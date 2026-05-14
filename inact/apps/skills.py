@@ -356,7 +356,11 @@ def _attach_skills(inact_app, prefix: str, store: SkillStore) -> None:
         return render_markdown(entry.read(), prefix + "/" + sub)
 
     inact_app._human_views[prefix] = _human
-    inact_app.add_nav_item("skills", "/_human" + prefix + "/")
+    parts = [p for p in prefix.strip("/").split("/") if p]
+    label = "skills"
+    if len(parts) >= 2 and parts[-1] == "skills":
+        label = parts[-2] + " skills"
+    inact_app.add_nav_item(label, "/_human" + prefix + "/")
 
 
 # ---------------------------------------------------------------------------
